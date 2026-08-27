@@ -15,6 +15,21 @@ const productionEnvWithout = (key: keyof typeof productionEnv): Record<string, u
   return env;
 };
 
+const stagingEnv = {
+  NODE_ENV: 'staging',
+  DATABASE_URL: 'postgresql://user:pass@db.example.supabase.co:5432/postgres',
+  SUPABASE_URL: 'https://project.supabase.co',
+  SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
+  CORS_ALLOWED_ORIGINS: 'https://stage.barakahbazaar.com.bd',
+};
+
+/** stagingEnv minus one key, to prove that key is genuinely required. */
+const stagingEnvWithout = (key: keyof typeof stagingEnv): Record<string, unknown> => {
+  const env: Record<string, unknown> = { ...stagingEnv };
+  delete env[key];
+  return env;
+};
+
 describe('validateEnv', () => {
   describe('defaults', () => {
     it('boots with an empty environment, so a fresh clone runs', () => {
@@ -120,6 +135,66 @@ describe('validateEnv', () => {
 
     it('applies none of these rules outside production', () => {
       expect(() => validateEnv({ NODE_ENV: 'development', SWAGGER_ENABLED: 'true' })).not.toThrow();
+    });
+  });
+
+  describe('staging hardening', () => {
+    it('accepts a fully configured staging environment', () => {
+      expect(() => validateEnv(stagingEnv)).not.toThrow();
+    });
+
+    it('requires DATABASE_URL', () => {
+      expect(() => validateEnv(stagingEnvWithout('DATABASE_URL'))).toThrow(
+        /DATABASE_URL is required when NODE_ENV=staging/,
+      );
+    });
+
+    it('requires SUPABASE_URL', () => {
+      expect(() => validateEnv(stagingEnvWithout('SUPABASE_URL'))).toThrow(
+        /SUPABASE_URL is required when NODE_ENV=staging/,
+      );
+    });
+
+    it('requires the service-role key', () => {
+      expect(() => validateEnv(stagingEnvWithout('SUPABASE_SERVICE_ROLE_KEY'))).toThrow(
+        /SUPABASE_SERVICE_ROLE_KEY is required when NODE_ENV=staging/,
+      );
+    });
+
+    it('refuses an empty CORS allowlist', () => {
+      expect(() => validateEnv({ ...stagingEnv, CORS_ALLOWED_ORIGINS: '  ' })).toThrow(
+        /CORS_ALLOWED_ORIGINS must list/,
+      );
+    });
+
+    it('permits Swagger, because QA and the client need the docs page', () => {
+      expect(() => validateEnv({ ...stagingEnv, SWAGGER_ENABLED: 'true' })).not.toThrow();
+    });
+
+    it('names staging, not production, in the missing-key message', () => {
+      let message = '';
+      try {
+        validateEnv(stagingEnvWithout('DATABASE_URL'));
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('NODE_ENV=staging');
+      expect(message).not.toContain('NODE_ENV=production');
+    });
+
+    it('reports the unconfigured-JWT consequence alongside the missing key', () => {
+      // Removing SUPABASE_URL trips both the required-key rule and the JWT rule.
+      // The JWT issue never fires alone, but it names the actual consequence.
+      let message = '';
+      try {
+        validateEnv(stagingEnvWithout('SUPABASE_URL'));
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('SUPABASE_URL is required when NODE_ENV=staging');
+      expect(message).toContain('JWT verification is unconfigured');
     });
   });
 });
