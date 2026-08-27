@@ -13,9 +13,12 @@ permissions:
   contents: read
 
 concurrency:
-  # One run per branch or pull request; supersede an in-flight run on new pushes.
+  # Supersede redundant verification runs on a pull request, but never cancel a
+  # push run: those include the deploy job, and interrupting it mid-migration can
+  # leave a failed migration recorded (blocking later deploys) or a table with RLS
+  # enabled and no policies (deny-all). Push runs queue instead.
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: "${{ github.event_name == 'pull_request' }}"
 
 env:
   NODE_VERSION: '22'
