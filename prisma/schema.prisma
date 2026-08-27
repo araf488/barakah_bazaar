@@ -1,0 +1,190 @@
+// Barakah Bazaar — Phase 0 schema.
+//
+// Prisma is the single source of truth for schema. Do NOT edit tables in the
+// Supabase dashboard once this file owns them; the two will drift.
+//
+// Money: every monetary column is BigInt poysha (1 BDT = 100 poysha). Never
+// float, never decimal-as-string. See src/common/money/money.ts.
+//
+// Row Level Security cannot be expressed in Prisma — it lives in
+// prisma/rls/001_enable_rls.sql and is applied with `npm run db:rls` after
+// every migration that adds a table.
+
+// Prisma 7 moved connection URLs out of the schema: the CLI reads them from
+// prisma.config.ts, and the runtime client gets a driver adapter instead of a
+// URL. See src/infra/prisma/prisma.service.ts.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Staff roles map 1:1 to the `role` claim in the Supabase JWT's app_metadata.
+enum UserRole {
+  CUSTOMER
+  SUPER_ADMIN
+  OPS
+  WAREHOUSE
+  MARKETING
+  SUPPORT
+}
+
+/// Cold-chain requirement. Drives delivery-slot and hub-radius rules (Phase 4).
+enum StorageType {
+  AMBIENT
+  CHILLED
+  FROZEN
+}
+
+/// UNIT   — sold as a piece/pack; variant price is the price of one variant.
+/// WEIGHT — sold by weight; variant price is the price of that variant's
+///          `weightGrams`, computed server-side at cart time.
+enum PricingMode {
+  UNIT
+  WEIGHT
+}
+
+/// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
+/// user's first authenticated request — see AuthService.resolveUser().
+model User {
+  id             String    @id @default(uuid()) @db.Uuid
+  supabaseUserId String    @unique @map("supabase_user_id") @db.Uuid
+  email          String?   @unique
+  phone          String?   @unique
+  fullName       String?   @map("full_name")
+  role           UserRole  @default(CUSTOMER)
+  isActive       Boolean   @default(true) @map("is_active")
+  lastSeenAt     DateTime? @map("last_seen_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  addresses Address[]
+
+  @@index([role])
+  @@map("users")
+}
+
+/// Structured Bangladesh address. Division/district/upazila are kept as text
+/// against a reference dataset rather than free-form input.
+model Address {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  label         String?
+  recipientName String   @map("recipient_name")
+  phone         String
+  division      String
+  district      String
+  upazila       String
+  area          String?
+  addressLine   String   @map("address_line")
+  postCode      String?  @map("post_code")
+  latitude      Float?
+  longitude     Float?
+  isDefault     Boolean  @default(false) @map("is_default")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+/// Self-referencing category tree, e.g. Health & Beauty > Baby > Skin Care.
+model Category {
+  id        String   @id @default(uuid()) @db.Uuid
+  slug      String   @unique
+  nameEn    String   @map("name_en")
+  nameBn    String   @map("name_bn")
+  parentId  String?  @map("parent_id") @db.Uuid
+  imageUrl  String?  @map("image_url")
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  @@index([parentId])
+  @@index([isActive, sortOrder])
+  @@map("categories")
+}
+
+model Product {
+  id            String      @id @default(uuid()) @db.Uuid
+  slug          String      @unique
+  nameEn        String      @map("name_en")
+  nameBn        String      @map("name_bn")
+  descriptionEn String?     @map("description_en")
+  descriptionBn String?     @map("description_bn")
+  categoryId    String      @map("category_id") @db.Uuid
+  brand         String?
+  pricingMode   PricingMode @default(UNIT) @map("pricing_mode")
+
+  // ── Perishable handling (doi, rosmalai, fresh fruit) ──────────────────────
+  isPerishable          Boolean     @default(false) @map("is_perishable")
+  shelfLifeHours        Int?        @map("shelf_life_hours")
+  storageType           StorageType @default(AMBIENT) @map("storage_type")
+  maxDeliveryDistanceKm Int?        @map("max_delivery_distance_km")
+
+  isActive    Boolean   @default(true) @map("is_active")
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  category Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  variants ProductVariant[]
+  images   ProductImage[]
+
+  @@index([categoryId])
+  @@index([isActive, publishedAt])
+  @@index([isPerishable])
+  @@map("products")
+}
+
+/// The sellable SKU. All prices are BigInt poysha.
+model ProductVariant {
+  id                   String  @id @default(uuid()) @db.Uuid
+  productId            String  @map("product_id") @db.Uuid
+  sku                  String  @unique
+  nameEn               String  @map("name_en")
+  nameBn               String  @map("name_bn")
+  pricePoysha          BigInt  @map("price_poysha")
+  compareAtPricePoysha BigInt? @map("compare_at_price_poysha")
+  /// Net weight this variant represents. Required when the parent product's
+  /// pricingMode is WEIGHT.
+  weightGrams          Int?    @map("weight_grams")
+  /// Display unit shown to the customer: "500g", "1 kg", "pack of 6".
+  unitLabel            String  @map("unit_label")
+  isDefault            Boolean @default(false) @map("is_default")
+  isActive             Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, isActive])
+  @@map("product_variants")
+}
+
+model ProductImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  /// Public URL from the `product-images` Supabase Storage bucket.
+  url       String
+  altText   String?  @map("alt_text")
+  sortOrder Int      @default(0) @map("sort_order")
+  isPrimary Boolean  @default(false) @map("is_primary")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, sortOrder])
+  @@map("product_images")
+}

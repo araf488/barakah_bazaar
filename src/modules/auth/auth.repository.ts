@@ -1,0 +1,68 @@
+import { Injectable } from '@nestjs/common';
+import { User } from '../../infra/prisma/prisma-client';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { PrismaService } from '../../infra/prisma/prisma.service';
+
+/**
+ * Persistence for the local mirror of Supabase Auth users.
+ *
+ * Returns null on failure instead of throwing, so the caller branches on a
+ * value rather than unwinding — a database fault must not surface as an
+ * unhandled 500.
+ */
+@Injectable()
+export class AuthRepository {
+  constructor(
+    private readonly prisma: PrismaService,
+    @InjectPinoLogger(AuthRepository.name) private readonly logger: PinoLogger,
+  ) {}
+
+  /**
+   * Creates or refreshes the local row for a verified token.
+   *
+   * `role` is mirrored from the token on every call: Supabase
+   * `app_metadata.role` is the single source of truth for authorization, and
+   * the admin module writes it through the Supabase Admin API. Keeping this
+   * column as a mirror avoids two divergent answers to "what can this user do".
+   */
+  async upsertFromToken(authenticated: AuthenticatedUser): Promise<User | null> {
+    try {
+      const seenAt = new Date();
+      return await this.prisma.user.upsert({
+        where: { supabaseUserId: authenticated.supabaseUserId },
+        create: {
+          supabaseUserId: authenticated.supabaseUserId,
+          email: authenticated.email ?? null,
+          phone: authenticated.phone ?? null,
+          role: authenticated.role,
+          lastSeenAt: seenAt,
+        },
+        update: {
+          email: authenticated.email ?? null,
+          phone: authenticated.phone ?? null,
+          role: authenticated.role,
+          lastSeenAt: seenAt,
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, supabaseUserId: authenticated.supabaseUserId },
+        'Exception occurred in AuthRepository.upsertFromToken',
+      );
+      return null;
+    }
+  }
+
+  async findBySupabaseId(supabaseUserId: string): Promise<User | null> {
+    try {
+      return await this.prisma.user.findUnique({ where: { supabaseUserId } });
+    } catch (error) {
+      this.logger.error(
+        { err: error, supabaseUserId },
+        'Exception occurred in AuthRepository.findBySupabaseId',
+      );
+      return null;
+    }
+  }
+}

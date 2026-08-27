@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `jose` v6 ships ESM only. Node's require(esm) support handles it at
+    // runtime, but Jest runs CommonJS, so ts-jest transforms jose's own
+    // JavaScript too (see transformIgnorePatterns in package.json) — which
+    // needs allowJs.
+    "allowJs": true,
+    // Generated Prisma output and transformed dependencies are not ours to
+    // police; the build config keeps these strict for src.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  }
+}

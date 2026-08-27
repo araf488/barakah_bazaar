@@ -1,0 +1,130 @@
+{
+  "name": "barakah-bazaar-api",
+  "version": "0.1.0",
+  "description": "Barakah Bazaar API \u2014 halal-first multi-category e-commerce backend for the web storefront, admin portal and Flutter app",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "lint": "eslint \"{src,test}/**/*.ts\" prisma.config.ts",
+    "lint:fix": "eslint \"{src,test}/**/*.ts\" prisma.config.ts --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "prisma:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:rls": "prisma db execute --file prisma/rls/001_enable_rls.sql --schema prisma/schema.prisma",
+    "db:studio": "prisma studio",
+    "prepare": "husky",
+    "postinstall": "prisma generate"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": [
+        "ts-jest",
+        {
+          "tsconfig": "<rootDir>/../tsconfig.spec.json"
+        }
+      ]
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coveragePathIgnorePatterns": [
+      "\\.module\\.ts$",
+      "\\.dto\\.ts$",
+      "main\\.ts$",
+      "src/generated/"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node",
+    "clearMocks": true,
+    "modulePathIgnorePatterns": [
+      "<rootDir>/generated/"
+    ],
+    "transformIgnorePatterns": [
+      "/node_modules/(?!jose/)"
+    ]
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ],
+    "*.prisma": [
+      "prisma format --schema"
+    ]
+  },
+  "dependencies": {
+    "@nestjs/bullmq": "^11.0.5",
+    "@nestjs/common": "^11.2.3",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.2.3",
+    "@nestjs/platform-express": "^11.2.3",
+    "@nestjs/swagger": "^11.4.7",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "@supabase/supabase-js": "^2.112.4",
+    "bullmq": "^5.81.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "jose": "^6.2.10",
+    "nestjs-pino": "^4.6.1",
+    "pg": "^8.23.0",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "pino-pretty": "^13.1.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.2",
+    "@commitlint/config-conventional": "^21.2.2",
+    "@eslint/js": "^10.0.1",
+    "@nestjs/cli": "^11.0.24",
+    "@nestjs/schematics": "^11.1.0",
+    "@nestjs/testing": "^11.2.3",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.3.0",
+    "@types/pg": "^8.23.1",
+    "@types/supertest": "^7.2.1",
+    "dotenv": "^17.4.2",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "eslint-plugin-sonarjs": "^4.2.0",
+    "globals": "^17.11.0",
+    "husky": "^9.1.7",
+    "jest": "^30.4.2",
+    "lint-staged": "^17.3.0",
+    "prettier": "^3.9.6",
+    "prisma": "^7.10.0",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.12",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.68.0"
+  }
+}

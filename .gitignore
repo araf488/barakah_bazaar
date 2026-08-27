@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+
+# generated Prisma client (rebuilt by `npm run prisma:generate`)
+src/generated/
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+
+# environment — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# test output
+coverage/
+.nyc_output/
+
+# editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+*.swp
+
+# supabase local stack
+supabase/.branches/
+supabase/.temp/
+
+# misc
+.cache/
+tmp/

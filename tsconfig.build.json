@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // TypeScript 6 requires rootDir explicitly. It also pins the output layout
+    // to dist/main.js, which is what the Dockerfile's CMD and `start:prod`
+    // expect.
+    "rootDir": "./src",
+    // Incremental builds silently emit NOTHING here once the build info and the
+    // output directory disagree — `tsc` exits 0 with an empty dist/, which is
+    // the worst possible CI failure because it looks like success. The base
+    // config keeps incremental on for fast local type-checking; release builds
+    // are always a full emit.
+    "incremental": false
+  },
+  "exclude": ["node_modules", "test", "dist", "prisma.config.ts", "**/*spec.ts"]
+}
