@@ -133,8 +133,12 @@ describe('validateEnv', () => {
       );
     });
 
-    it('applies none of these rules outside production', () => {
+    it('stays permissive in development', () => {
       expect(() => validateEnv({ NODE_ENV: 'development', SWAGGER_ENABLED: 'true' })).not.toThrow();
+    });
+
+    it('stays permissive in test, since the whole e2e suite boots with NODE_ENV=test', () => {
+      expect(() => validateEnv({ NODE_ENV: 'test', SWAGGER_ENABLED: 'true' })).not.toThrow();
     });
   });
 
