@@ -36,7 +36,11 @@ supabase/.temp/
 
 # documentation and local planning artefacts (specs, plans, product plan) — kept
 # out of the public repo entirely
-docs/
+/docs/
+
+# local orchestration scratch — never intended for the public repo; anchored so
+# it doesn't rely solely on tooling-supplied nested ignore files
+/.superpowers/
 
 # misc
 .cache/
