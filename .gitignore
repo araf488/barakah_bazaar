@@ -34,6 +34,10 @@ coverage/
 supabase/.branches/
 supabase/.temp/
 
+# documentation and local planning artefacts (specs, plans, product plan) — kept
+# out of the public repo entirely
+docs/
+
 # misc
 .cache/
 tmp/
