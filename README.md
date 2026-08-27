@@ -29,7 +29,7 @@ other module copies.
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API | User, Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
 
-245 tests pass (233 unit across 20 suites + 12 end-to-end). The end-to-end suite boots the whole
+254 tests pass (242 unit across 20 suites + 12 end-to-end). The end-to-end suite boots the whole
 app with **no** Supabase project, **no** database and **no** Redis, and asserts
 it still serves probes, keeps public routes public and protected routes
 protected — so `git clone && npm install && npm start` works on day one.
@@ -457,6 +457,37 @@ commit SHAs survive and the commit QA signed off on is the commit that ships.
 **Hotfixes** branch from `main` and are back-merged `main` → `stg` → `dev` in the
 same session. This is the only exception to forward-only flow — an un-back-merged
 hotfix is silently reverted by the next promotion.
+
+### Repository setup (one-time)
+
+None of this is committed, so a maintainer performs it by hand before the
+pipeline in `.github/workflows/ci.yml` can turn green. **The order matters:**
+
+1. **Run the initial migration first.** `npm run db:migrate -- --name init`
+   against the dev database, then commit `prisma/migrations/`. This has to
+   happen before anything else: without a migration, `db:deploy` applies
+   nothing, and `db:rls` then fails on
+   `ALTER TABLE public.users ENABLE ROW LEVEL SECURITY` because no tables
+   exist yet.
+2. **Create the two Supabase projects** — stage now, production at launch.
+   Enable **Point-in-Time Recovery** on production before launch.
+3. **Create the three GitHub Environments**, named exactly `dev`, `stage` and
+   `prod`, and populate each with environment-scoped (never
+   repository-scoped) secrets and variables per the Environment matrix table
+   above. Add a **required reviewer** to `prod`.
+4. **Create the `stg` branch from `dev`** and push it.
+5. **Create a branch ruleset** targeting `dev`, `stg` and `main`: require a
+   pull request, require the status check named **`Verify`** (the job's
+   _display name_ — that's what GitHub matches on, not the job id `verify`),
+   and block force pushes. Do **not** require linear history: it conflicts
+   with the promotion merge commits above. A status check cannot be selected
+   in a ruleset until it has run at least once, so this step comes after CI
+   has already run at least once on `dev`.
+6. **Enable secret scanning and push protection.** Both are free on public
+   repositories.
+
+The `prod` required-reviewer gate from step 3 is a **repository setting**, not
+something configured in `ci.yml` — don't go looking for it in the workflow.
 
 ### Migrations
 
