@@ -1,0 +1,147 @@
+# Verify every pull request, publish one image per push, and migrate the
+# branch's environment. Branch ownership: dev -> dev, stg -> stage, main -> prod.
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, stg, main]
+  push:
+    branches: [dev, stg, main]
+
+# Least privilege by default. The image job elevates for itself only.
+permissions:
+  contents: read
+
+concurrency:
+  # One run per branch or pull request; supersede an in-flight run on new pushes.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    # No `environment:` here, deliberately and permanently. On a public repo this
+    # job runs untrusted fork code; granting it an environment would expose that
+    # environment's secrets. Everything below must run without secrets.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # `postinstall` runs `prisma generate`, so no separate generate step.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      # Hermetic: app.module.ts sets ignoreEnvFile when NODE_ENV=test, so this
+      # needs no secrets and is safe to run on fork pull requests.
+      - name: End-to-end tests
+        run: npm run test:e2e
+        env:
+          NODE_ENV: test
+
+      - name: Build
+        run: npm run build
+
+      # The Dockerfile had never been built anywhere. Building it here means a
+      # broken Dockerfile fails in review instead of after merge.
+      - name: Build the container image (no push)
+        run: docker build --tag barakah-bazaar-api:verify .
+
+  image:
+    name: Publish image
+    needs: verify
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-ref: ${{ steps.meta.outputs.image-ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        run: |
+          short_sha="$(echo "${{ github.sha }}" | cut -c1-7)"
+          case "${{ github.ref_name }}" in
+            main) moving="prod" ;;
+            stg)  moving="stg" ;;
+            *)    moving="dev" ;;
+          esac
+          echo "image-ref=${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "tags=${IMAGE_NAME}:sha-${short_sha},${IMAGE_NAME}:${moving}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Resolves the branch's environment, which is what makes GitHub inject that
+    # environment's secrets and apply its approval rule (prod requires review).
+    # Single line deliberately: a YAML folded scalar (>-) preserves newlines on
+    # more-indented continuation lines, which would embed literal newlines in the
+    # expression that selects which environment's secrets are injected.
+    environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name == 'stg' && 'stage' || 'dev' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Ordered, never parallel. migrate deploy is forward-only and idempotent;
+      # 001_enable_rls.sql drops each policy before recreating it, so re-running
+      # it on every deploy is safe.
+      - name: Apply migrations
+        run: npm run db:deploy
+        env:
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+      - name: Apply row-level security policies
+        run: npm run db:rls
+        env:
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+      # SEAM: the application host is deliberately unchosen (spec §9). Because
+      # the image is portable and already published, adopting a host is a change
+      # to this step alone, not a pipeline rewrite.
+      - name: Report the image awaiting deployment
+        run: |
+          echo "Image ready: ${{ needs.image.outputs.image-ref }}"
+          echo "Environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name == 'stg' && 'stage' || 'dev' }}"
+          echo "No application host is configured yet — see spec section 9."
