@@ -28,6 +28,7 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # No `environment:` here, deliberately and permanently. On a public repo this
     # job runs untrusted fork code; granting it an environment would expose that
     # environment's secrets. Everything below must run without secrets.
@@ -69,6 +70,7 @@ jobs:
     needs: verify
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write
@@ -87,9 +89,12 @@ jobs:
 
       - name: Compute tags
         id: meta
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
-          short_sha="$(echo "${{ github.sha }}" | cut -c1-7)"
-          case "${{ github.ref_name }}" in
+          short_sha="$(echo "$SHA" | cut -c1-7)"
+          case "$REF_NAME" in
             main) moving="prod" ;;
             stg)  moving="stg" ;;
             *)    moving="dev" ;;
@@ -110,6 +115,7 @@ jobs:
     needs: image
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Resolves the branch's environment, which is what makes GitHub inject that
     # environment's secrets and apply its approval rule (prod requires review).
     # Single line deliberately: a YAML folded scalar (>-) preserves newlines on
@@ -127,24 +133,54 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # dev's Supabase project is local-only: the free tier only affords two
+      # hosted projects (stage, prod), so dev's GitHub Environment has no
+      # DIRECT_URL and a runner can never reach it. Skip migrations rather than
+      # fail the job red on every push to dev, but never skip silently — a
+      # hosted dev database may exist later, so dev is not excluded from this
+      # job entirely, only from the two steps that need a reachable database.
+      - name: Check for a configured database
+        id: dbcheck
+        env:
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: |
+          if [ -n "$DIRECT_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Ordered, never parallel. migrate deploy is forward-only and idempotent;
       # 001_enable_rls.sql drops each policy before recreating it, so re-running
       # it on every deploy is safe.
       - name: Apply migrations
+        if: steps.dbcheck.outputs.configured == 'true'
         run: npm run db:deploy
         env:
           DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
       - name: Apply row-level security policies
+        if: steps.dbcheck.outputs.configured == 'true'
         run: npm run db:rls
         env:
           DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+      - name: No database configured for this environment
+        if: steps.dbcheck.outputs.configured == 'false'
+        run: echo "No DIRECT_URL configured for this environment — skipping migrations and RLS."
 
       # SEAM: the application host is deliberately unchosen (spec §9). Because
       # the image is portable and already published, adopting a host is a change
       # to this step alone, not a pipeline rewrite.
       - name: Report the image awaiting deployment
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           echo "Image ready: ${{ needs.image.outputs.image-ref }}"
-          echo "Environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name == 'stg' && 'stage' || 'dev' }}"
+          case "$REF_NAME" in
+            main) environment_name="prod" ;;
+            stg)  environment_name="stage" ;;
+            *)    environment_name="dev" ;;
+          esac
+          echo "Environment: ${environment_name}"
           echo "No application host is configured yet — see spec section 9."
