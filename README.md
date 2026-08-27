@@ -166,6 +166,36 @@ fails with every problem at once, so a bad deploy is diagnosed in one pass.
 In production the app additionally refuses to start if Swagger is enabled, the
 CORS allowlist is empty, or no JWT verification method is configured.
 
+### Environment matrix
+
+Every deployed environment must set `NODE_ENV` explicitly. The container image
+defaults to `production`, so an unset `NODE_ENV` on the stage host makes the app
+boot with production rules and crash-loop on `SWAGGER_ENABLED` — loudly, by
+design, rather than serving QA under the wrong configuration.
+
+| Variable                             | dev (local)                                   | stage                            | prod                                  |
+| ------------------------------------ | --------------------------------------------- | -------------------------------- | ------------------------------------- |
+| `NODE_ENV`                           | `development`                                 | `staging`                        | `production`                          |
+| `LOG_LEVEL`                          | `debug`                                       | `debug`                          | `info`                                |
+| `SWAGGER_ENABLED`                    | `true`                                        | `true`                           | `false` (enforced)                    |
+| `CORS_ALLOWED_ORIGINS`               | `http://localhost:3001,http://localhost:3002` | stage storefront + admin origins | production storefront + admin origins |
+| `QUEUE_ENABLED`                      | `false`                                       | `false`                          | `false` until Phase 1                 |
+| `DATABASE_URL` / `DIRECT_URL`        | local Supabase                                | stage Supabase project           | production Supabase project           |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | local                                         | stage project                    | production project                    |
+| `SUPABASE_SERVICE_ROLE_KEY`          | local                                         | stage project                    | production project                    |
+
+`staging` and `production` are both **deployed environments** and share the same
+required-key checks: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+a non-empty CORS allowlist, and a configured JWT verification method. Only the
+Swagger rule is production-only, because QA and the client need the docs page.
+
+In CI these values live in **GitHub Environments** (`dev`, `stage`, `prod`) as
+environment-scoped entries, never repository-scoped: secrets are `DATABASE_URL`,
+`DIRECT_URL`, `SUPABASE_SERVICE_ROLE_KEY` and the optional
+`SUPABASE_JWT_SECRET`; everything else in the table above is a non-secret
+variable. `SUPABASE_ANON_KEY` is a variable because it is client-safe;
+`SUPABASE_SERVICE_ROLE_KEY` is a secret in every environment without exception.
+
 ---
 
 ## Scripts
@@ -399,19 +429,77 @@ bug that every unit test missed.
 
 ---
 
+## Environments and branching
+
+Three environments, each owned by exactly one branch.
+
+| Branch | Environment | `NODE_ENV`    | Audience                         |
+| ------ | ----------- | ------------- | -------------------------------- |
+| `dev`  | dev         | `development` | developers                       |
+| `stg`  | stage       | `staging`     | QA and client acceptance testing |
+| `main` | prod        | `production`  | customers                        |
+
+```
+feature/*  ──PR──▶  dev  ──PR──▶  stg  ──PR──▶  main
+hotfix/*   ─────────────PR───────────────────────▶  main
+                              then back-merge main ─▶ stg ─▶ dev
+```
+
+**Merges are forward-only.** Never cherry-pick between environment branches: the
+moment `stg` holds something `main` will not receive, "tested on stage" stops
+carrying information.
+
+**Merge method differs by hop, deliberately.** Squash `feature/*` into `dev` for
+readable history. Use a **merge commit** for `dev` → `stg` and `stg` → `main`, so
+commit SHAs survive and the commit QA signed off on is the commit that ships.
+
+**Hotfixes** branch from `main` and are back-merged `main` → `stg` → `dev` in the
+same session. This is the only exception to forward-only flow — an un-back-merged
+hotfix is silently reverted by the next promotion.
+
+### Migrations
+
+| Environment | Who runs migrations                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------- |
+| dev         | you, locally: `npm run db:migrate` generates the migration and you commit it. CI never runs `migrate dev` |
+| stage       | automatically, on push to `stg`                                                                           |
+| prod        | on push to `main`, behind the `prod` environment's required reviewer                                      |
+
+Three things to know before an incident:
+
+1. **`prisma migrate deploy` is forward-only.** There is no down-migration.
+   Reverting a schema change means writing a new forward migration.
+2. **A paused Supabase free project fails the migration step** with a connection
+   error. Any activity unpauses it.
+3. `prisma/rls/001_enable_rls.sql` is idempotent — every `CREATE POLICY` is
+   preceded by `DROP POLICY IF EXISTS` — so `npm run db:rls` runs on every
+   deploy, always after `db:deploy`.
+
+---
+
 ## Deployment
 
 Supabase hosts Postgres, Auth, Storage and Realtime. This API deploys separately
-as a container — Fly.io, Railway, Render or ECS.
+as a container. CI publishes one portable image per push to
+`ghcr.io/araf488/barakah_bazaar`, tagged immutably as `sha-<short-sha>` plus a
+moving `dev` / `stg` / `prod` tag for convenience. Deployments reference the
+immutable tag only — a moving tag forfeits the ability to say what is running.
+
+**No application host is chosen yet**, deliberately. Because the image is
+portable and already published, adopting one is a change to a single workflow
+step. While pre-launch: dev runs locally, stage runs on a free-tier service, and
+production is created at launch — with Fly.io the current recommendation for
+production, since its Singapore region is the closest low-latency option to
+Bangladesh.
 
 ```bash
 docker build -t barakah-bazaar-api .
 docker compose up -d redis          # local Redis only; Postgres lives in Supabase
 ```
 
-> The `Dockerfile` and `docker-compose.yml` are written but **unverified** —
-> Docker is not installed on the machine this repo was scaffolded on. Build them
-> once before relying on them in CI.
+> The `Dockerfile` is built by the `verify` job on every pull request, so a
+> broken build fails in review. `docker-compose.yml` (local Redis) is still
+> unverified by CI.
 
 Production checklist:
 
@@ -438,7 +526,8 @@ Production checklist:
 | 7      | Load testing, security audit, Digital Commerce Guideline compliance, soft launch                 |               |
 
 Each stub module's README names its phase. The full product plan lives outside
-this repo — keep a copy in `docs/` so it stays alongside the code it describes.
+this repo. `docs/` is gitignored, so a copy kept there stays local to your
+machine and is never published — deliberate, since this repository is public.
 
 ---
 
