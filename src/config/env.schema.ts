@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EnvValidationMessages, requiredKeyMessage } from './env.constants';
 
 /**
  * Environment contract for the API. Parsed once at boot; a failure here stops
@@ -68,47 +69,67 @@ const baseEnvSchema = z.object({
 
 export type Env = z.infer<typeof baseEnvSchema>;
 
-/** Values that must be present before the app may serve production traffic. */
-const PRODUCTION_REQUIRED_KEYS = [
+/**
+ * Environments that serve real traffic. Staging is included because QA and the
+ * client hit it, so it gets production-grade configuration checks.
+ */
+const DEPLOYED_ENVS = ['staging', 'production'] as const satisfies readonly Env['NODE_ENV'][];
+
+/** Values that must be present before the app may serve traffic in any deployed environment. */
+const DEPLOYED_ENV_REQUIRED_KEYS = [
   'DATABASE_URL',
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
 ] as const satisfies readonly (keyof Env)[];
 
+const isDeployedEnv = (nodeEnv: Env['NODE_ENV']): boolean =>
+  (DEPLOYED_ENVS as readonly string[]).includes(nodeEnv);
+
 const addIssue = (ctx: z.RefinementCtx, path: keyof Env, message: string): void => {
   ctx.addIssue({ code: 'custom', path: [path], message });
 };
 
-/** Production-only hardening, kept out of the base schema so dev stays cheap. */
-const enforceProductionRules = (env: Env, ctx: z.RefinementCtx): void => {
+/**
+ * Rules every deployed environment must satisfy, kept out of the base schema so
+ * development and test stay cheap to run.
+ */
+const enforceDeployedEnvRules = (env: Env, ctx: z.RefinementCtx): void => {
+  if (!isDeployedEnv(env.NODE_ENV)) {
+    return;
+  }
+
+  const missing = DEPLOYED_ENV_REQUIRED_KEYS.filter((key) => env[key] === undefined);
+  missing.forEach((key) => addIssue(ctx, key, requiredKeyMessage(key, env.NODE_ENV)));
+
+  // This never fires on its own: SUPABASE_URL is a required key above, so its
+  // absence already raises an issue. It is kept because it names the actual
+  // consequence next to the bare missing-key error, and because it guards the
+  // invariant independently of DEPLOYED_ENV_REQUIRED_KEYS — making SUPABASE_URL
+  // optional later must not silently drop JWT verification. Not dead code.
+  if (!env.SUPABASE_JWT_SECRET && !env.SUPABASE_JWKS_URL && !env.SUPABASE_URL) {
+    addIssue(ctx, 'SUPABASE_JWKS_URL', EnvValidationMessages.JwtVerificationUnconfigured);
+  }
+
+  if (env.CORS_ALLOWED_ORIGINS.trim().length === 0) {
+    addIssue(ctx, 'CORS_ALLOWED_ORIGINS', EnvValidationMessages.CorsAllowlistEmpty);
+  }
+};
+
+/**
+ * Production-only hardening. Staging deliberately keeps Swagger available so QA
+ * and the client can read the API contract.
+ */
+const enforceProductionOnlyRules = (env: Env, ctx: z.RefinementCtx): void => {
   if (env.NODE_ENV !== 'production') {
     return;
   }
 
-  const missing = PRODUCTION_REQUIRED_KEYS.filter((key) => env[key] === undefined);
-  missing.forEach((key) => addIssue(ctx, key, `${key} is required when NODE_ENV=production`));
-
-  if (!env.SUPABASE_JWT_SECRET && !env.SUPABASE_JWKS_URL && !env.SUPABASE_URL) {
-    addIssue(
-      ctx,
-      'SUPABASE_JWKS_URL',
-      'JWT verification is unconfigured: set SUPABASE_JWKS_URL, SUPABASE_URL or SUPABASE_JWT_SECRET',
-    );
-  }
-
   if (env.SWAGGER_ENABLED) {
-    addIssue(ctx, 'SWAGGER_ENABLED', 'SWAGGER_ENABLED must be false in production');
-  }
-
-  if (env.CORS_ALLOWED_ORIGINS.trim().length === 0) {
-    addIssue(
-      ctx,
-      'CORS_ALLOWED_ORIGINS',
-      'CORS_ALLOWED_ORIGINS must list the storefront and admin origins',
-    );
+    addIssue(ctx, 'SWAGGER_ENABLED', EnvValidationMessages.SwaggerEnabledInProduction);
   }
 };
 
-export const envSchema = z
-  .preprocess(emptyToUndefined, baseEnvSchema)
-  .superRefine(enforceProductionRules);
+export const envSchema = z.preprocess(emptyToUndefined, baseEnvSchema).superRefine((env, ctx) => {
+  enforceDeployedEnvRules(env, ctx);
+  enforceProductionOnlyRules(env, ctx);
+});

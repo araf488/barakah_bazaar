@@ -23,7 +23,7 @@
     "prisma:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
-    "db:rls": "prisma db execute --file prisma/rls/001_enable_rls.sql --schema prisma/schema.prisma",
+    "db:rls": "prisma db execute --file prisma/rls/001_enable_rls.sql",
     "db:studio": "prisma studio",
     "prepare": "husky",
     "postinstall": "prisma generate"

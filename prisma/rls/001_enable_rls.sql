@@ -13,7 +13,14 @@
 --     policy for anon/authenticated at all. Absence of a policy is a deny.
 --
 -- This file is idempotent: safe to re-run.
+--
+-- Wrapped in a transaction: Postgres DDL is transactional, so the whole file
+-- applies or none of it does. Without this, an interrupted run could leave a
+-- table with RLS enabled and zero policies — which in Postgres means deny-all
+-- for every non-owner role, an outage rather than a safe failure.
 -- ─────────────────────────────────────────────────────────────────────────────
+
+BEGIN;
 
 -- ── 1. Enable RLS everywhere ────────────────────────────────────────────────
 ALTER TABLE public.users            ENABLE ROW LEVEL SECURITY;
@@ -107,3 +114,5 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public
 --   1. ALTER TABLE ... ENABLE ROW LEVEL SECURITY;
 --   2. Add a policy ONLY if a client legitimately needs to read those rows.
 --   3. Money and stock tables get no anon/authenticated policy. Ever.
+
+COMMIT;

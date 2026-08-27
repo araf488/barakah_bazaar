@@ -29,7 +29,7 @@ other module copies.
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API | User, Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
 
-245 tests pass (233 unit across 20 suites + 12 end-to-end). The end-to-end suite boots the whole
+254 tests pass (242 unit across 20 suites + 12 end-to-end). The end-to-end suite boots the whole
 app with **no** Supabase project, **no** database and **no** Redis, and asserts
 it still serves probes, keeps public routes public and protected routes
 protected — so `git clone && npm install && npm start` works on day one.
@@ -144,27 +144,58 @@ table. See [prisma/rls/001_enable_rls.sql](prisma/rls/001_enable_rls.sql).
 Full annotated list in [.env.example](.env.example). Validation runs at boot and
 fails with every problem at once, so a bad deploy is diagnosed in one pass.
 
-| Variable                     | Required          | Notes                                                                          |
-| ---------------------------- | ----------------- | ------------------------------------------------------------------------------ |
-| `NODE_ENV`                   | no                | `development` \| `test` \| `staging` \| `production`                           |
-| `PORT`                       | no                | Default `3000`                                                                 |
-| `API_PREFIX` / `API_VERSION` | no                | Routes mount at `/{prefix}/{version}` → `/api/v1`                              |
-| `LOG_LEVEL`                  | no                | pino level; `silent` in tests                                                  |
-| `CORS_ALLOWED_ORIGINS`       | **in production** | Comma-separated. Empty = no cross-origin browser call allowed                  |
-| `SWAGGER_ENABLED`            | no                | Rejected in production                                                         |
-| `DATABASE_URL`               | **in production** | Used by the running app. Direct connection (5432) suits a long-lived container |
-| `DIRECT_URL`                 | for migrations    | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable    |
-| `SUPABASE_URL`               | **in production** | Also used to derive the JWKS URL                                               |
-| `SUPABASE_ANON_KEY`          | no                | Client-safe                                                                    |
-| `SUPABASE_SERVICE_ROLE_KEY`  | **in production** | **Bypasses RLS. Server-side only — never in a client bundle**                  |
-| `SUPABASE_JWKS_URL`          | no                | Explicit key set; wins over everything else                                    |
-| `SUPABASE_JWT_SECRET`        | no                | Legacy HS256 secret; wins over a URL-derived key set                           |
-| `SUPABASE_JWT_AUDIENCE`      | no                | Default `authenticated`                                                        |
-| `QUEUE_ENABLED`, `REDIS_*`   | no                | BullMQ is off unless enabled                                                   |
-| `SMS_PROVIDER`, `SMS_*`      | no                | `noop` by default, so tests spend no SMS credits                               |
+| Variable                     | Required                    | Notes                                                                          |
+| ---------------------------- | --------------------------- | ------------------------------------------------------------------------------ |
+| `NODE_ENV`                   | no                          | `development` \| `test` \| `staging` \| `production`                           |
+| `PORT`                       | no                          | Default `3000`                                                                 |
+| `API_PREFIX` / `API_VERSION` | no                          | Routes mount at `/{prefix}/{version}` → `/api/v1`                              |
+| `LOG_LEVEL`                  | no                          | pino level; `silent` in tests                                                  |
+| `CORS_ALLOWED_ORIGINS`       | **in staging & production** | Comma-separated. Empty = no cross-origin browser call allowed                  |
+| `SWAGGER_ENABLED`            | no                          | Rejected in production                                                         |
+| `DATABASE_URL`               | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container |
+| `DIRECT_URL`                 | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable    |
+| `SUPABASE_URL`               | **in staging & production** | Also used to derive the JWKS URL                                               |
+| `SUPABASE_ANON_KEY`          | no                          | Client-safe                                                                    |
+| `SUPABASE_SERVICE_ROLE_KEY`  | **in staging & production** | **Bypasses RLS. Server-side only — never in a client bundle**                  |
+| `SUPABASE_JWKS_URL`          | no                          | Explicit key set; wins over everything else                                    |
+| `SUPABASE_JWT_SECRET`        | no                          | Legacy HS256 secret; wins over a URL-derived key set                           |
+| `SUPABASE_JWT_AUDIENCE`      | no                          | Default `authenticated`                                                        |
+| `QUEUE_ENABLED`, `REDIS_*`   | no                          | BullMQ is off unless enabled                                                   |
+| `SMS_PROVIDER`, `SMS_*`      | no                          | `noop` by default, so tests spend no SMS credits                               |
 
-In production the app additionally refuses to start if Swagger is enabled, the
-CORS allowlist is empty, or no JWT verification method is configured.
+In any deployed environment (`staging` or `production`) the app additionally
+refuses to start if the CORS allowlist is empty or no JWT verification method is
+configured. In production it also refuses to start if Swagger is enabled.
+
+### Environment matrix
+
+Every deployed environment must set `NODE_ENV` explicitly. The container image
+defaults to `production`, so an unset `NODE_ENV` on the stage host makes the app
+boot with production rules and crash-loop on `SWAGGER_ENABLED` — loudly, by
+design, rather than serving QA under the wrong configuration.
+
+| Variable                             | dev (local)                                   | stage                            | prod                                  |
+| ------------------------------------ | --------------------------------------------- | -------------------------------- | ------------------------------------- |
+| `NODE_ENV`                           | `development`                                 | `staging`                        | `production`                          |
+| `LOG_LEVEL`                          | `debug`                                       | `debug`                          | `info`                                |
+| `SWAGGER_ENABLED`                    | `true`                                        | `true`                           | `false` (enforced)                    |
+| `CORS_ALLOWED_ORIGINS`               | `http://localhost:3001,http://localhost:3002` | stage storefront + admin origins | production storefront + admin origins |
+| `QUEUE_ENABLED`                      | `false`                                       | `false`                          | `false` until Phase 1                 |
+| `DATABASE_URL` / `DIRECT_URL`        | local Supabase                                | stage Supabase project           | production Supabase project           |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | local                                         | stage project                    | production project                    |
+| `SUPABASE_SERVICE_ROLE_KEY`          | local                                         | stage project                    | production project                    |
+
+`staging` and `production` are both **deployed environments** and share the same
+required-key checks: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+a non-empty CORS allowlist, and a configured JWT verification method. Only the
+Swagger rule is production-only, because QA and the client need the docs page.
+
+In CI these values live in **GitHub Environments** (`dev`, `stage`, `prod`) as
+environment-scoped entries, never repository-scoped: secrets are `DATABASE_URL`,
+`DIRECT_URL`, `SUPABASE_SERVICE_ROLE_KEY` and the optional
+`SUPABASE_JWT_SECRET`; everything else in the table above is a non-secret
+variable. `SUPABASE_ANON_KEY` is a variable because it is client-safe;
+`SUPABASE_SERVICE_ROLE_KEY` is a secret in every environment without exception.
 
 ---
 
@@ -399,19 +430,108 @@ bug that every unit test missed.
 
 ---
 
+## Environments and branching
+
+Three environments, each owned by exactly one branch.
+
+| Branch | Environment | `NODE_ENV`    | Audience                         |
+| ------ | ----------- | ------------- | -------------------------------- |
+| `dev`  | dev         | `development` | developers                       |
+| `stg`  | stage       | `staging`     | QA and client acceptance testing |
+| `main` | prod        | `production`  | customers                        |
+
+```
+feature/*  ──PR──▶  dev  ──PR──▶  stg  ──PR──▶  main
+hotfix/*   ─────────────PR───────────────────────▶  main
+                              then back-merge main ─▶ stg ─▶ dev
+```
+
+**Merges are forward-only.** Never cherry-pick between environment branches: the
+moment `stg` holds something `main` will not receive, "tested on stage" stops
+carrying information.
+
+**Merge method differs by hop, deliberately.** Squash `feature/*` into `dev` for
+readable history. Use a **merge commit** for `dev` → `stg` and `stg` → `main`, so
+commit SHAs survive and the commit QA signed off on is the commit that ships.
+
+**Hotfixes** branch from `main` and are back-merged `main` → `stg` → `dev` in the
+same session. This is the only exception to forward-only flow — an un-back-merged
+hotfix is silently reverted by the next promotion.
+
+### Repository setup (one-time)
+
+None of this is committed, so a maintainer performs it by hand before the
+pipeline in `.github/workflows/ci.yml` can turn green. **The order matters:**
+
+1. **Run the initial migration first.** `npm run db:migrate -- --name init`
+   against the dev database, then commit `prisma/migrations/`. This has to
+   happen before anything else: without a migration, `db:deploy` applies
+   nothing, and `db:rls` then fails on
+   `ALTER TABLE public.users ENABLE ROW LEVEL SECURITY` because no tables
+   exist yet.
+2. **Create the two Supabase projects** — stage now, production at launch.
+   Enable **Point-in-Time Recovery** on production before launch.
+3. **Create the three GitHub Environments**, named exactly `dev`, `stage` and
+   `prod`, and populate each with environment-scoped (never
+   repository-scoped) secrets and variables per the Environment matrix table
+   above. Add a **required reviewer** to `prod`.
+4. **Create the `stg` branch from `dev`** and push it.
+5. **Create a branch ruleset** targeting `dev`, `stg` and `main`: require a
+   pull request, require the status check named **`Verify`** (the job's
+   _display name_ — that's what GitHub matches on, not the job id `verify`),
+   and block force pushes. Do **not** require linear history: it conflicts
+   with the promotion merge commits above. A status check cannot be selected
+   in a ruleset until it has run at least once, so this step comes after CI
+   has already run at least once on `dev`.
+6. **Enable secret scanning and push protection.** Both are free on public
+   repositories.
+
+The `prod` required-reviewer gate from step 3 is a **repository setting**, not
+something configured in `ci.yml` — don't go looking for it in the workflow.
+
+### Migrations
+
+| Environment | Who runs migrations                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------- |
+| dev         | you, locally: `npm run db:migrate` generates the migration and you commit it. CI never runs `migrate dev` |
+| stage       | automatically, on push to `stg`                                                                           |
+| prod        | on push to `main`, behind the `prod` environment's required reviewer                                      |
+
+Three things to know before an incident:
+
+1. **`prisma migrate deploy` is forward-only.** There is no down-migration.
+   Reverting a schema change means writing a new forward migration.
+2. **A paused Supabase free project fails the migration step** with a connection
+   error. Any activity unpauses it.
+3. `prisma/rls/001_enable_rls.sql` is idempotent — every `CREATE POLICY` is
+   preceded by `DROP POLICY IF EXISTS` — so `npm run db:rls` runs on every
+   deploy, always after `db:deploy`.
+
+---
+
 ## Deployment
 
 Supabase hosts Postgres, Auth, Storage and Realtime. This API deploys separately
-as a container — Fly.io, Railway, Render or ECS.
+as a container. CI publishes one portable image per push to
+`ghcr.io/araf488/barakah_bazaar`, tagged immutably as `sha-<short-sha>` plus a
+moving `dev` / `stg` / `prod` tag for convenience. Deployments reference the
+immutable tag only — a moving tag forfeits the ability to say what is running.
+
+**No application host is chosen yet**, deliberately. Because the image is
+portable and already published, adopting one is a change to a single workflow
+step. While pre-launch: dev runs locally, stage runs on a free-tier service, and
+production is created at launch — with Fly.io the current recommendation for
+production, since its Singapore region is the closest low-latency option to
+Bangladesh.
 
 ```bash
 docker build -t barakah-bazaar-api .
 docker compose up -d redis          # local Redis only; Postgres lives in Supabase
 ```
 
-> The `Dockerfile` and `docker-compose.yml` are written but **unverified** —
-> Docker is not installed on the machine this repo was scaffolded on. Build them
-> once before relying on them in CI.
+> The `Dockerfile` is built by the `verify` job on every pull request, so a
+> broken build fails in review. `docker-compose.yml` (local Redis) is still
+> unverified by CI.
 
 Production checklist:
 
@@ -438,7 +558,8 @@ Production checklist:
 | 7      | Load testing, security audit, Digital Commerce Guideline compliance, soft launch                 |               |
 
 Each stub module's README names its phase. The full product plan lives outside
-this repo — keep a copy in `docs/` so it stays alongside the code it describes.
+this repo. `docs/` is gitignored, so a copy kept there stays local to your
+machine and is never published — deliberate, since this repository is public.
 
 ---
 
