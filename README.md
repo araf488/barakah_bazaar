@@ -144,27 +144,28 @@ table. See [prisma/rls/001_enable_rls.sql](prisma/rls/001_enable_rls.sql).
 Full annotated list in [.env.example](.env.example). Validation runs at boot and
 fails with every problem at once, so a bad deploy is diagnosed in one pass.
 
-| Variable                     | Required          | Notes                                                                          |
-| ---------------------------- | ----------------- | ------------------------------------------------------------------------------ |
-| `NODE_ENV`                   | no                | `development` \| `test` \| `staging` \| `production`                           |
-| `PORT`                       | no                | Default `3000`                                                                 |
-| `API_PREFIX` / `API_VERSION` | no                | Routes mount at `/{prefix}/{version}` → `/api/v1`                              |
-| `LOG_LEVEL`                  | no                | pino level; `silent` in tests                                                  |
-| `CORS_ALLOWED_ORIGINS`       | **in production** | Comma-separated. Empty = no cross-origin browser call allowed                  |
-| `SWAGGER_ENABLED`            | no                | Rejected in production                                                         |
-| `DATABASE_URL`               | **in production** | Used by the running app. Direct connection (5432) suits a long-lived container |
-| `DIRECT_URL`                 | for migrations    | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable    |
-| `SUPABASE_URL`               | **in production** | Also used to derive the JWKS URL                                               |
-| `SUPABASE_ANON_KEY`          | no                | Client-safe                                                                    |
-| `SUPABASE_SERVICE_ROLE_KEY`  | **in production** | **Bypasses RLS. Server-side only — never in a client bundle**                  |
-| `SUPABASE_JWKS_URL`          | no                | Explicit key set; wins over everything else                                    |
-| `SUPABASE_JWT_SECRET`        | no                | Legacy HS256 secret; wins over a URL-derived key set                           |
-| `SUPABASE_JWT_AUDIENCE`      | no                | Default `authenticated`                                                        |
-| `QUEUE_ENABLED`, `REDIS_*`   | no                | BullMQ is off unless enabled                                                   |
-| `SMS_PROVIDER`, `SMS_*`      | no                | `noop` by default, so tests spend no SMS credits                               |
+| Variable                     | Required                    | Notes                                                                          |
+| ---------------------------- | --------------------------- | ------------------------------------------------------------------------------ |
+| `NODE_ENV`                   | no                          | `development` \| `test` \| `staging` \| `production`                           |
+| `PORT`                       | no                          | Default `3000`                                                                 |
+| `API_PREFIX` / `API_VERSION` | no                          | Routes mount at `/{prefix}/{version}` → `/api/v1`                              |
+| `LOG_LEVEL`                  | no                          | pino level; `silent` in tests                                                  |
+| `CORS_ALLOWED_ORIGINS`       | **in staging & production** | Comma-separated. Empty = no cross-origin browser call allowed                  |
+| `SWAGGER_ENABLED`            | no                          | Rejected in production                                                         |
+| `DATABASE_URL`               | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container |
+| `DIRECT_URL`                 | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable    |
+| `SUPABASE_URL`               | **in staging & production** | Also used to derive the JWKS URL                                               |
+| `SUPABASE_ANON_KEY`          | no                          | Client-safe                                                                    |
+| `SUPABASE_SERVICE_ROLE_KEY`  | **in staging & production** | **Bypasses RLS. Server-side only — never in a client bundle**                  |
+| `SUPABASE_JWKS_URL`          | no                          | Explicit key set; wins over everything else                                    |
+| `SUPABASE_JWT_SECRET`        | no                          | Legacy HS256 secret; wins over a URL-derived key set                           |
+| `SUPABASE_JWT_AUDIENCE`      | no                          | Default `authenticated`                                                        |
+| `QUEUE_ENABLED`, `REDIS_*`   | no                          | BullMQ is off unless enabled                                                   |
+| `SMS_PROVIDER`, `SMS_*`      | no                          | `noop` by default, so tests spend no SMS credits                               |
 
-In production the app additionally refuses to start if Swagger is enabled, the
-CORS allowlist is empty, or no JWT verification method is configured.
+In any deployed environment (`staging` or `production`) the app additionally
+refuses to start if the CORS allowlist is empty or no JWT verification method is
+configured. In production it also refuses to start if Swagger is enabled.
 
 ### Environment matrix
 
