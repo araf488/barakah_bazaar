@@ -95,7 +95,8 @@ CREATE POLICY addresses_read_own
   ON public.addresses FOR SELECT
   TO authenticated
   USING (
-    EXISTS (
+    addresses.deleted_at IS NULL
+    AND EXISTS (
       SELECT 1 FROM public.users u
       WHERE u.id = addresses.user_id
         AND u.supabase_user_id = auth.uid()
