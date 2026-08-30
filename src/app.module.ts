@@ -11,6 +11,7 @@ import { buildLoggerParams } from './config/logger.config';
 import { PrismaModule } from './infra/prisma/prisma.module';
 import { QueueModule } from './infra/redis/queue.module';
 import { SupabaseModule } from './infra/supabase/supabase.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { GeoModule } from './modules/geo/geo.module';
@@ -69,6 +70,7 @@ import { UserModule } from './modules/user/user.module';
     CatalogModule,
     GeoModule,
     UserModule,
+    AdminModule,
   ],
   providers: [
     // Ahead of authentication: an unauthenticated flood should be rejected before it costs

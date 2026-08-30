@@ -1,13 +1,51 @@
 # Admin / Backoffice module
 
-**Status:** planned — Phase 2B
+**Status:** in progress — audit trail, catalog write-side and account management done (Phase 2B)
 
 Order management, catalog and inventory CRUD, promotions, dispatch, reports, staff roles and the audit log.
 
 ## Owned tables
 
-- `admin_audit_log`
-- `staff_invitations`
+- `admin_audit_log` ✅ — append-only; no update or delete exists anywhere in the codebase
+- `staff_invitations` — not yet built (invite flow deferred; roles are changed on existing
+  accounts for now)
+
+## Changing a role crosses two systems
+
+Supabase `app_metadata` is the source of truth and is written FIRST, because the role reaches
+this API as a JWT claim and `AuthRepository.upsertFromToken` re-mirrors that claim on every
+request — writing only the column would be undone within seconds.
+
+The two writes cannot share a transaction, so the ORDER is chosen for which failure is
+survivable: if Supabase refuses, nothing changed; if the local write fails afterwards, the
+column self-heals on the user's next request but the AUDIT ROW is lost, so that path logs
+actor, target, old role and new role and returns `RoleChangePartial`.
+
+A role change does NOT take effect until the user's token refreshes — a JWT already issued
+cannot be edited. To revoke access immediately, disable the account: `isActive` is checked
+against the database on every request.
+
+Two guards exist to prevent lockout rather than to enforce policy: nobody may act on their own
+account, and the last enabled super admin may not be demoted or disabled.
+
+## Audit trail
+
+`AuditLogService.record()` returns a **boolean, and the caller must decide what a false
+means.** That is deliberate: losing the record of a description edit is regrettable, losing
+the record of a price change or a role grant is not acceptable. Money- and
+permission-touching operations must treat `false` as a failure and refuse the write, using
+`AdminMessages.AuditTrailUnavailable`.
+
+Catalog writes go further than `record()`: `AdminCatalogRepository.writeAudited` performs the
+domain write and its audit row in ONE transaction, so a price that changed without a record of
+who changed it cannot exist. A `null` from any write means both rolled back, and the service
+surfaces `AdminMessages.AuditTrailUnavailable`.
+
+Actions are a closed set (`AdminAuditActions`), not free text — the trail is queried by
+action, and a typo'd verb makes a write invisible to the search that would have found it.
+
+`before`/`after` are serialised with an explicit BigInt replacer rather than relying on the
+global hook `main.ts` installs, so the service behaves identically outside the bootstrap.
 
 ## Design notes
 

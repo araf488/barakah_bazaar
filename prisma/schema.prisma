@@ -62,6 +62,7 @@ model User {
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
   addresses Address[]
+  auditLog  AdminAuditLog[]
 
   @@index([role])
   @@map("users")
@@ -212,4 +213,41 @@ model ProductImage {
 
   @@index([productId, sortOrder])
   @@map("product_images")
+}
+
+/// Append-only record of every staff write.
+///
+/// Exists so a disputed price, a vanished product or a changed role can be traced to an
+/// actor and a moment. Nothing updates or deletes a row here — the API exposes reads only,
+/// and `service_role` is the sole writer.
+///
+/// `actorId` is RESTRICT rather than CASCADE on purpose: a staff member who did something
+/// must remain resolvable afterwards. Staff are disabled via `users.isActive`, never
+/// deleted, and this constraint enforces that.
+///
+/// `actorEmail` is denormalised beside the id because an email can change and the log must
+/// keep saying who acted at the time.
+model AdminAuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String   @map("actor_id") @db.Uuid
+  actorEmail String?  @map("actor_email")
+  actorRole  UserRole @map("actor_role")
+  /// Dotted verb, e.g. "product.publish". See AdminAuditActions.
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  /// State before and after. Plain JSON: money is serialised to a number by the caller,
+  /// because BigInt has no JSON representation.
+  before     Json?
+  after      Json?
+  /// The x-request-id of the call that caused this, so a log line ties to an audit row.
+  requestId  String?  @map("request_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("admin_audit_log")
 }

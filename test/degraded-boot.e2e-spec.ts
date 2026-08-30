@@ -158,13 +158,21 @@ describe('Degraded boot (no Supabase, no database)', () => {
   });
 
   describe('protected routes stay protected', () => {
-    it('refuses /auth/me with no token', async () => {
-      const response = await request(app.getHttpServer()).get('/api/v1/auth/me');
+    const AUTH_UNAVAILABLE = 'Authentication is temporarily unavailable. Please try again later.';
+
+    // 503 from *authentication*, which is unconfigured in this suite. The point of each is
+    // that the request never reaches the service — and that it is not a 404, which would
+    // mean the route was never registered at all.
+    it.each([
+      ['the current profile', '/api/v1/auth/me'],
+      ['the address book', '/api/v1/users/me/addresses'],
+      ['the admin audit trail', '/api/v1/admin/audit-log'],
+      ['the staff user list', '/api/v1/admin/users'],
+    ])('refuses %s with no token', async (_label, path) => {
+      const response = await request(app.getHttpServer()).get(path);
 
       expect(response.status).toBe(503);
-      expect(response.body.message).toBe(
-        'Authentication is temporarily unavailable. Please try again later.',
-      );
+      expect(response.body.message).toBe(AUTH_UNAVAILABLE);
     });
 
     it('refuses a profile update with no token', async () => {
@@ -172,21 +180,8 @@ describe('Degraded boot (no Supabase, no database)', () => {
         .patch('/api/v1/users/me')
         .send({ fullName: 'Rahim Uddin' });
 
-      // 503 from *authentication*, which is unconfigured in this suite — the point is that
-      // the request never reaches the service.
       expect(response.status).toBe(503);
-      expect(response.body.message).toBe(
-        'Authentication is temporarily unavailable. Please try again later.',
-      );
-    });
-
-    it('refuses the address book with no token', async () => {
-      const response = await request(app.getHttpServer()).get('/api/v1/users/me/addresses');
-
-      expect(response.status).toBe(503);
-      expect(response.body.message).toBe(
-        'Authentication is temporarily unavailable. Please try again later.',
-      );
+      expect(response.body.message).toBe(AUTH_UNAVAILABLE);
     });
 
     it('routes the default-promotion endpoint rather than 404ing it', async () => {
@@ -197,6 +192,16 @@ describe('Degraded boot (no Supabase, no database)', () => {
       // A 404 here would mean the route was never registered; 503 means it was registered
       // and the auth guard rejected the request first.
       expect(response.status).toBe(503);
+    });
+
+    it('refuses the admin audit trail with no token', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/admin/audit-log');
+
+      // 503 from authentication, not 404 — the route is registered and guarded.
+      expect(response.status).toBe(503);
+      expect(response.body.message).toBe(
+        'Authentication is temporarily unavailable. Please try again later.',
+      );
     });
 
     it('refuses /auth/me with a bearer token it cannot verify', async () => {

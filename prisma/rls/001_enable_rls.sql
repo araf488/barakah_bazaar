@@ -29,11 +29,18 @@ ALTER TABLE public.categories       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.product_variants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.product_images   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_audit_log  ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
 ALTER TABLE public.users     FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.addresses FORCE ROW LEVEL SECURITY;
+
+-- The audit log is forced too: it records who did what to money and stock, so not even a
+-- mistaken owner-role connection from a client may read it. It gets NO anon/authenticated
+-- policy at all — absence of a policy is a deny — and only service_role, held by this API,
+-- can reach it.
+ALTER TABLE public.admin_audit_log FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
