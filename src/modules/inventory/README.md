@@ -1,14 +1,43 @@
 # Inventory module
 
-**Status:** planned — Phase 1
+**Status:** stock, receipts, adjustments and the ledger are live. Reservations are modelled but not yet taken — that lands with Cart/Checkout (Phase 1)
 
 Stock per hub, batch and expiry tracking, low-stock and expiring-batch alerts.
 
 ## Owned tables
 
-- `inventory`
-- `inventory_batches`
-- `warehouses`
+- `warehouses` ✅ — one row per hub, dark store or shop
+- `inventory` ✅ — rolling stock per (warehouse, variant)
+- `inventory_batches` ✅ — one delivery, with its own expiry
+- `stock_movements` ✅ — append-only ledger; every quantity change writes one
+- `stock_reservations` ✅ — stock held for a checkout, with an expiry
+
+## Why both `inventory` and `inventory_batches`
+
+`inventory` is a rolling total kept alongside the batch rows it summarises. Sellable quantity
+has to be answerable in one indexed read on every product page, which summing batches cannot
+do. `stock_movements` is the ledger that makes the two reconcilable — without it a
+discrepancy is visible but unexplainable.
+
+Available to sell = `quantityOnHand - quantityReserved`. Reserved stock is physically present
+but promised to a checkout in progress.
+
+## Constraints live in Postgres, not only in code
+
+`quantity_on_hand >= 0`, `quantity_reserved >= 0` and `quantity_reserved <= quantity_on_hand`
+are CHECK constraints. An oversell that only the application prevents is one forgotten code
+path away from happening.
+
+Every foreign key is `RESTRICT`: a warehouse or variant that ever held stock is deactivated,
+never deleted, or its history stops being resolvable. The one exception is
+`stock_movements.batch_id`, which is `SET NULL` so a written-off batch can be purged while
+its ledger entry survives.
+
+## Reservations expire
+
+A hold is taken when checkout starts and released when `expires_at` passes. A hold with no
+expiry leaks stock permanently on every abandoned payment — the `(released_at, expires_at)`
+index exists so the sweep is cheap.
 
 ## Design notes
 

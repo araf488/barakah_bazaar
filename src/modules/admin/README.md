@@ -28,6 +28,20 @@ against the database on every request.
 Two guards exist to prevent lockout rather than to enforce policy: nobody may act on their own
 account, and the last enabled super admin may not be demoted or disabled.
 
+## Product images
+
+Files never stream through this API: staff request a signed URL and PUT straight to Supabase
+Storage, then register the result.
+
+The client supplies an **object path, never a URL** — and only one we issued. A
+caller-supplied URL could point anywhere, which would turn a product image into an
+arbitrary-content embed on the storefront; the path is additionally required to sit under
+`products/{productId}/`, so one product cannot register another's file. The filename is
+generated server-side, because a caller-chosen name is a path-traversal and collision vector.
+
+One image per product is primary. Promoting clears the previous one in the same transaction,
+and deleting the primary hands it to the next by sort order.
+
 ## Audit trail
 
 `AuditLogService.record()` returns a **boolean, and the caller must decide what a false

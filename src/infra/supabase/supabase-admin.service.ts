@@ -132,4 +132,28 @@ export class SupabaseAdminService {
       return false;
     }
   }
+
+  /**
+   * The public URL a stored object is served from.
+   *
+   * Built here rather than accepted from a client: letting the caller supply the URL would
+   * let it point anywhere, turning a product image into an arbitrary-content embed on the
+   * storefront. The caller supplies only the object path we issued it.
+   */
+  getPublicUrl(bucket: string, objectPath: string): string | null {
+    try {
+      if (!this.client) {
+        return null;
+      }
+
+      const { data } = this.client.storage.from(bucket).getPublicUrl(objectPath);
+      return data.publicUrl;
+    } catch (error) {
+      this.logger.error(
+        { err: error, bucket, objectPath },
+        'Exception occurred in SupabaseAdminService.getPublicUrl',
+      );
+      return null;
+    }
+  }
 }

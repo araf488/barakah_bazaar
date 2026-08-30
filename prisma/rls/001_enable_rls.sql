@@ -30,6 +30,11 @@ ALTER TABLE public.products         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.product_variants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.product_images   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admin_audit_log  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.warehouses         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_batches  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_movements    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_reservations ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -41,6 +46,16 @@ ALTER TABLE public.addresses FORCE ROW LEVEL SECURITY;
 -- policy at all — absence of a policy is a deny — and only service_role, held by this API,
 -- can reach it.
 ALTER TABLE public.admin_audit_log FORCE ROW LEVEL SECURITY;
+
+-- Stock is forced too. Section 5 already says money and stock tables get NO anon or
+-- authenticated policy, ever: knowing exactly how many units remain is competitive
+-- information, and a client that can read reservations can infer another customer's basket.
+-- Sellable quantity reaches the storefront through this API, never by direct table read.
+ALTER TABLE public.warehouses         FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory          FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_batches  FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_movements    FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_reservations FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the

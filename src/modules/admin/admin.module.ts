@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AdminCatalogController } from './admin-catalog.controller';
 import { AdminCatalogRepository } from './admin-catalog.repository';
 import { AdminCatalogService } from './admin-catalog.service';
+import { AdminImageService } from './admin-image.service';
 import { AdminImportService } from './admin-import.service';
 import { AdminUserController } from './admin-user.controller';
 import { AdminUserRepository } from './admin-user.repository';
@@ -26,9 +27,10 @@ import { AuditLogService } from './audit-log.service';
     AdminCatalogService,
     AdminCatalogRepository,
     AdminImportService,
+    AdminImageService,
     AdminUserService,
     AdminUserRepository,
   ],
-  exports: [AuditLogService],
+  exports: [AuditLogService, AdminCatalogRepository],
 })
 export class AdminModule {}

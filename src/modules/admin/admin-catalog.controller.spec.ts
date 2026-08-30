@@ -6,6 +6,7 @@ import { UserRole } from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AdminCatalogController } from './admin-catalog.controller';
 import { AdminCatalogService } from './admin-catalog.service';
+import { AdminImageService } from './admin-image.service';
 import { AdminImportService } from './admin-import.service';
 import { CreateCategoryDto, CreateProductDto, CreateVariantDto } from './dto/admin-catalog.dto';
 
@@ -26,6 +27,7 @@ const validVariant = {
 describe('AdminCatalogController', () => {
   let catalogService: Record<string, jest.Mock>;
   let importService: { importProducts: jest.Mock };
+  let imageService: Record<string, jest.Mock>;
   let controller: AdminCatalogController;
 
   beforeEach(() => {
@@ -41,9 +43,18 @@ describe('AdminCatalogController', () => {
       updateVariant: jest.fn().mockResolvedValue({ ok: true, data: { id: 'var-1' } }),
     };
     importService = { importProducts: jest.fn() };
+    imageService = {
+      createUploadUrl: jest.fn().mockResolvedValue({ ok: true, data: { objectPath: 'p' } }),
+      addImage: jest.fn().mockResolvedValue({ ok: true, data: { id: 'img-1' } }),
+      listImages: jest.fn().mockResolvedValue({ ok: true, data: [] }),
+      updateImage: jest.fn().mockResolvedValue({ ok: true, data: { id: 'img-1' } }),
+      setPrimary: jest.fn().mockResolvedValue({ ok: true, data: { id: 'img-1' } }),
+      removeImage: jest.fn().mockResolvedValue({ ok: true, data: undefined }),
+    };
     controller = new AdminCatalogController(
       catalogService as unknown as AdminCatalogService,
       importService as unknown as AdminImportService,
+      imageService as unknown as AdminImageService,
       createMockLogger(),
     );
   });

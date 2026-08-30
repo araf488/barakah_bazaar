@@ -1,6 +1,8 @@
 # Storage module
 
-**Status:** planned — Phase 1
+**Status:** partly in use — product images are wired through `SupabaseAdminService` from the
+Admin module (`AdminImageService`). A dedicated module is still worthwhile once review images
+and vendor documents need the same treatment.
 
 Signed upload URLs for product and review images.
 

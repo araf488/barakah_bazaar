@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { Category, Prisma, Product, ProductVariant } from '../../infra/prisma/prisma-client';
+import {
+  Category,
+  Prisma,
+  Product,
+  ProductImage,
+  ProductVariant,
+} from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { AuditLogRepository, AuditLogWriteData } from './audit-log.repository';
 
@@ -8,6 +14,7 @@ import { AuditLogRepository, AuditLogWriteData } from './audit-log.repository';
 export type CategoryResult = Category | null | undefined;
 export type ProductResult = Product | null | undefined;
 export type VariantResult = ProductVariant | null | undefined;
+export type ImageResult = ProductImage | null | undefined;
 
 /** One product and its variants, already validated, ready to insert. */
 export interface ImportProductPlan {
@@ -372,5 +379,166 @@ export class AdminCatalogRepository {
       );
       return null;
     }
+  }
+
+  // ── Images ────────────────────────────────────────────────────────────────
+
+  async findImageById(id: string): Promise<ImageResult> {
+    try {
+      return (await this.prisma.productImage.findUnique({ where: { id } })) ?? undefined;
+    } catch (error) {
+      this.logger.error(
+        { err: error, imageId: id },
+        'Exception occurred in AdminCatalogRepository.findImageById',
+      );
+      return null;
+    }
+  }
+
+  async countImages(productId: string): Promise<number | null> {
+    try {
+      return await this.prisma.productImage.count({ where: { productId } });
+    } catch (error) {
+      this.logger.error(
+        { err: error, productId },
+        'Exception occurred in AdminCatalogRepository.countImages',
+      );
+      return null;
+    }
+  }
+
+  async listImages(productId: string): Promise<ProductImage[] | null> {
+    try {
+      return await this.prisma.productImage.findMany({
+        where: { productId },
+        orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, productId },
+        'Exception occurred in AdminCatalogRepository.listImages',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Adds an image, and makes it primary when it is the product's first or when asked.
+   *
+   * Only one image may be primary, so promoting clears the previous one in the same
+   * transaction — a product tile that renders two "primary" images picks one at random.
+   */
+  async addImage(
+    productId: string,
+    data: { url: string; altText: string | null; makePrimary: boolean },
+    audit: (created: ProductImage) => AuditLogWriteData,
+  ): Promise<ProductImage | null> {
+    return await this.writeAudited(
+      async (tx) => {
+        const existing = await tx.productImage.count({ where: { productId } });
+        const primary = data.makePrimary || existing === 0;
+
+        if (primary) {
+          await tx.productImage.updateMany({
+            where: { productId, isPrimary: true },
+            data: { isPrimary: false },
+          });
+        }
+
+        return await tx.productImage.create({
+          data: {
+            product: { connect: { id: productId } },
+            url: data.url,
+            altText: data.altText,
+            isPrimary: primary,
+            sortOrder: existing,
+          },
+        });
+      },
+      audit,
+      { productId },
+      'addImage',
+    );
+  }
+
+  /**
+   * Promotes one image to primary, clearing the previous one in the same transaction.
+   *
+   * Only one image may be primary; two would make the product tile pick one at random.
+   */
+  async promoteImage(
+    image: ProductImage,
+    audit: (promoted: ProductImage) => AuditLogWriteData,
+  ): Promise<ImageResult> {
+    return await this.writeAudited(
+      async (tx) => {
+        if (image.isPrimary) {
+          return image;
+        }
+
+        await tx.productImage.updateMany({
+          where: { productId: image.productId, isPrimary: true },
+          data: { isPrimary: false },
+        });
+
+        return await tx.productImage.update({
+          where: { id: image.id },
+          data: { isPrimary: true },
+        });
+      },
+      audit,
+      { imageId: image.id },
+      'promoteImage',
+    );
+  }
+
+  async updateImage(
+    id: string,
+    data: Prisma.ProductImageUpdateInput,
+    audit: (updated: ProductImage) => AuditLogWriteData,
+  ): Promise<ImageResult> {
+    return await this.writeAudited(
+      (tx) => tx.productImage.update({ where: { id }, data }),
+      audit,
+      { imageId: id },
+      'updateImage',
+    );
+  }
+
+  /**
+   * Deletes an image and hands primacy to the next one.
+   *
+   * Deleted rather than soft-deleted: unlike a product, an image is not referenced by a
+   * historical order, and leaving orphaned rows pointing at removed storage objects would
+   * render as broken images forever.
+   */
+  async deleteImage(
+    id: string,
+    audit: (deleted: ProductImage) => AuditLogWriteData,
+  ): Promise<ImageResult> {
+    return await this.writeAudited(
+      async (tx) => {
+        const deleted = await tx.productImage.delete({ where: { id } });
+
+        if (deleted.isPrimary) {
+          const successor = await tx.productImage.findFirst({
+            where: { productId: deleted.productId },
+            orderBy: { sortOrder: 'asc' },
+          });
+
+          if (successor) {
+            await tx.productImage.update({
+              where: { id: successor.id },
+              data: { isPrimary: true },
+            });
+          }
+        }
+
+        return deleted;
+      },
+      audit,
+      { imageId: id },
+      'deleteImage',
+    );
   }
 }

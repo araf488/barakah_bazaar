@@ -8,6 +8,11 @@ export const AdminConstants = {
   MaxAuditPageSize: 50,
   UserResourceName: 'User',
   MaxUserSearchLength: 120,
+  ImageResourceName: 'Product image',
+  MaxImagesPerProduct: 10,
+  MaxAltTextLength: 200,
+  /** Formats a storefront can render everywhere. HEIC and TIFF cannot be. */
+  AllowedImageTypes: ['image/jpeg', 'image/png', 'image/webp'] as readonly string[],
   CategoryResourceName: 'Category',
   ProductResourceName: 'Product',
   VariantResourceName: 'Product variant',
@@ -43,6 +48,9 @@ export const AdminAuditActions = {
   VariantCreated: 'variant.created',
   VariantUpdated: 'variant.updated',
   VariantDeactivated: 'variant.deactivated',
+  ImageAdded: 'product_image.added',
+  ImageUpdated: 'product_image.updated',
+  ImageRemoved: 'product_image.removed',
   CustomerDisabled: 'customer.disabled',
   CustomerEnabled: 'customer.enabled',
   StaffRoleChanged: 'staff.role_changed',
@@ -56,6 +64,7 @@ export const AdminAuditEntities = {
   Category: 'Category',
   Product: 'Product',
   ProductVariant: 'ProductVariant',
+  ProductImage: 'ProductImage',
   User: 'User',
 } as const;
 
@@ -72,6 +81,16 @@ export const AdminMessages = {
   /** Supabase accepted the role but the local record failed — needs an operator. */
   RoleChangePartial:
     'The role was changed in the identity provider but could not be recorded locally. Contact an administrator before making further changes.',
+  /** {0} = the cap. */
+  ImageLimitReachedTemplate:
+    'A product may have at most {0} images. Remove one before adding another.',
+  /** A URL that did not come from our own storage bucket. */
+  ImageUrlNotOurs:
+    "Image URLs must point at this project's product-images storage bucket. Request an upload URL first.",
+  /** {0} = the type sent, {1} = the allowed list. */
+  ImageTypeUnsupportedTemplate: '{0} is not a supported image type. Use one of: {1}.',
+  /** Storage is not configured, so no upload URL can be minted. */
+  StorageUnavailable: 'Image uploads are not available right now.',
   /** The file had no usable rows. */
   ImportEmpty: 'The file contains no product rows.',
   /** {0} = the row cap. */

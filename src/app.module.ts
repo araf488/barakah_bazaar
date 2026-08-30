@@ -16,6 +16,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
 import { UserModule } from './modules/user/user.module';
 
 /**
@@ -71,6 +72,7 @@ import { UserModule } from './modules/user/user.module';
     GeoModule,
     UserModule,
     AdminModule,
+    InventoryModule,
   ],
   providers: [
     // Ahead of authentication: an unauthenticated flood should be rejected before it costs

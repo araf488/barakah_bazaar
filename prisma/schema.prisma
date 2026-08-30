@@ -47,6 +47,21 @@ enum PricingMode {
   WEIGHT
 }
 
+/// Why stock moved. Every change to a quantity writes one of these — the stock ledger is
+/// what makes a discrepancy explainable rather than merely visible.
+enum StockMovementReason {
+  RECEIPT
+  SALE
+  RESERVED
+  RELEASED
+  ADJUSTMENT
+  DAMAGE
+  EXPIRY
+  RETURN
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
 /// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
 /// user's first authenticated request — see AuthService.resolveUser().
 model User {
@@ -193,7 +208,11 @@ model ProductVariant {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product      Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  inventory    Inventory[]
+  batches      InventoryBatch[]
+  movements    StockMovement[]
+  reservations StockReservation[]
 
   @@index([productId, isActive])
   @@map("product_variants")
@@ -250,4 +269,153 @@ model AdminAuditLog {
   @@index([actorId, createdAt])
   @@index([createdAt])
   @@map("admin_audit_log")
+}
+
+/// A place stock physically sits. One row per hub, dark store or shop.
+///
+/// The address uses the same four levels as a customer address so delivery routing can
+/// compare them directly without a second geography vocabulary.
+model Warehouse {
+  id              String   @id @default(uuid()) @db.Uuid
+  /// Short human code used on labels and pick lists, e.g. "DHK-GUL".
+  code            String   @unique
+  nameEn          String   @map("name_en")
+  nameBn          String?  @map("name_bn")
+  division        String
+  district        String
+  upazila         String
+  area            String?
+  addressLine     String   @map("address_line")
+  postCode        String?  @map("post_code")
+  latitude        Float?
+  longitude       Float?
+  /// Radius this hub will deliver within. Perishables are additionally capped per product.
+  serviceRadiusKm Int?     @map("service_radius_km")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  inventory    Inventory[]
+  batches      InventoryBatch[]
+  movements    StockMovement[]
+  reservations StockReservation[]
+
+  @@index([isActive])
+  @@map("warehouses")
+}
+
+/// Current stock of one variant at one warehouse.
+///
+/// A rolling total kept alongside the batch rows it summarises: sellable quantity has to be
+/// answerable in one indexed read on every product page, which summing batches cannot do.
+/// `StockMovement` is the ledger that makes the two reconcilable.
+///
+/// Available to sell = quantityOnHand - quantityReserved. Reserved stock is physically
+/// present but promised to a checkout in progress.
+model Inventory {
+  id               String   @id @default(uuid()) @db.Uuid
+  warehouseId      String   @map("warehouse_id") @db.Uuid
+  variantId        String   @map("variant_id") @db.Uuid
+  quantityOnHand   Int      @default(0) @map("quantity_on_hand")
+  quantityReserved Int      @default(0) @map("quantity_reserved")
+  /// Alert threshold. Null means no alerting for this line.
+  reorderLevel     Int?     @map("reorder_level")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@unique([warehouseId, variantId])
+  @@index([variantId])
+  @@map("inventory")
+}
+
+/// One delivery of stock, with its own expiry.
+///
+/// The reason this module exists: doi and rosmalai are unsellable within hours, so "how many
+/// do we have" is the wrong question — "how many that are still good tomorrow" is the right
+/// one. Picking is first-expiry-first-out, which the (warehouse, variant, expiresAt) index
+/// serves directly.
+model InventoryBatch {
+  id             String    @id @default(uuid()) @db.Uuid
+  warehouseId    String    @map("warehouse_id") @db.Uuid
+  variantId      String    @map("variant_id") @db.Uuid
+  /// Supplier lot number, when they give one.
+  batchCode      String?   @map("batch_code")
+  /// Units left in THIS batch. Sums to Inventory.quantityOnHand across live batches.
+  quantity       Int
+  receivedAt     DateTime  @map("received_at")
+  /// Null for non-perishables. Set for anything with a shelf life.
+  expiresAt      DateTime? @map("expires_at")
+  /// Purchase cost per unit in poysha, for margin reporting. Never shown to a customer.
+  unitCostPoysha BigInt?   @map("unit_cost_poysha")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  movements StockMovement[]
+
+  @@index([warehouseId, variantId, expiresAt])
+  @@index([expiresAt])
+  @@map("inventory_batches")
+}
+
+/// Append-only stock ledger. Every quantity change writes one row.
+///
+/// Without it a discrepancy is visible but unexplainable: the count is wrong and nobody can
+/// say when or why. Nothing updates or deletes a row here.
+model StockMovement {
+  id            String              @id @default(uuid()) @db.Uuid
+  warehouseId   String              @map("warehouse_id") @db.Uuid
+  variantId     String              @map("variant_id") @db.Uuid
+  batchId       String?             @map("batch_id") @db.Uuid
+  /// Signed: positive adds, negative removes.
+  delta         Int
+  reason        StockMovementReason
+  note          String?
+  /// Staff member responsible. Null when the system moved stock, e.g. a sale.
+  actorId       String?             @map("actor_id") @db.Uuid
+  /// What caused it — an order id, a transfer id — so a movement traces back.
+  referenceType String?             @map("reference_type")
+  referenceId   String?             @map("reference_id")
+  createdAt     DateTime            @default(now()) @map("created_at")
+
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  batch     InventoryBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([warehouseId, variantId, createdAt])
+  @@index([referenceType, referenceId])
+  @@index([createdAt])
+  @@map("stock_movements")
+}
+
+/// Stock promised to a checkout that has not been paid for yet.
+///
+/// Held from the moment checkout starts and released automatically when `expiresAt` passes,
+/// so an abandoned basket cannot hold the last unit forever. A hold that merely existed with
+/// no expiry would leak stock permanently on every abandoned payment.
+model StockReservation {
+  id            String    @id @default(uuid()) @db.Uuid
+  warehouseId   String    @map("warehouse_id") @db.Uuid
+  variantId     String    @map("variant_id") @db.Uuid
+  quantity      Int
+  /// What the hold is for: a checkout session, then an order once paid.
+  referenceType String    @map("reference_type")
+  referenceId   String    @map("reference_id")
+  expiresAt     DateTime  @map("expires_at")
+  /// Set when the hold was consumed by a sale or given back. Null while it is live.
+  releasedAt    DateTime? @map("released_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  /// The sweep index: live holds past their expiry, cheapest possible query.
+  @@index([releasedAt, expiresAt])
+  @@index([referenceType, referenceId])
+  @@index([warehouseId, variantId])
+  @@map("stock_reservations")
 }
