@@ -14,6 +14,7 @@ import { SupabaseModule } from './infra/supabase/supabase.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CartModule } from './modules/cart/cart.module';
+import { OrderModule } from './modules/order/order.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
@@ -75,6 +76,7 @@ import { UserModule } from './modules/user/user.module';
     AdminModule,
     InventoryModule,
     CartModule,
+    OrderModule,
   ],
   providers: [
     // Ahead of authentication: an unauthenticated flood should be rejected before it costs

@@ -17,6 +17,6 @@ import { WarehouseService } from './warehouse.service';
   imports: [AuthModule, AdminModule, GeoModule],
   controllers: [InventoryController],
   providers: [InventoryService, WarehouseService, InventoryRepository],
-  exports: [InventoryService, WarehouseService],
+  exports: [InventoryService, WarehouseService, InventoryRepository],
 })
 export class InventoryModule {}

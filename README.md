@@ -29,7 +29,7 @@ other module copies.
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API, **Geo** reference geography, **User** profile + address book | Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
 
-880 tests pass (852 unit across 52 suites + 28 end-to-end). The end-to-end suite boots the whole
+909 tests pass (879 unit across 53 suites + 30 end-to-end). The end-to-end suite boots the whole
 app with **no** Supabase project, **no** database and **no** Redis, and asserts
 it still serves probes, keeps public routes public and protected routes
 protected — so `git clone && npm install && npm start` works on day one.
@@ -249,7 +249,8 @@ src/
     admin/        ✅  audit trail, catalog write-side, staff/customer management
     inventory/    ✅  warehouses, stock, batches with expiry, stock ledger
     cart/         ✅  basket with live pricing and stock warnings
-    order/ payment/ delivery/
+    order/        ✅  checkout, lifecycle state machine, stock settlement
+    payment/ delivery/
     promotion/ notification/ review/ admin/ search/ storage/
                   🚧  folder + README (responsibility, owned tables, phase)
   generated/prisma/          Prisma output — untracked, rebuilt on install

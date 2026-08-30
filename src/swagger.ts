@@ -27,6 +27,7 @@ export const setupSwagger = (app: INestApplication, path: string): void => {
       .addTag('Geo', 'Bangladesh division, district, upazila/thana and area lookups')
       .addTag('Users', 'The current customer: profile and delivery addresses')
       .addTag('Cart', "The signed-in customer's basket")
+      .addTag('Orders', 'Checkout and order history')
       .addTag('Admin', 'Backoffice: audit trail, catalog and staff management')
       .build(),
   );

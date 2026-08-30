@@ -21,5 +21,6 @@ import { UserService } from './user.service';
   imports: [AuthModule, GeoModule],
   controllers: [UserController, AddressController],
   providers: [UserService, UserRepository, AddressService, AddressRepository],
+  exports: [AddressRepository],
 })
 export class UserModule {}

@@ -170,6 +170,8 @@ describe('Degraded boot (no Supabase, no database)', () => {
       ['the staff user list', '/api/v1/admin/users'],
       ['warehouse stock', '/api/v1/admin/inventory'],
       ['the customer basket', '/api/v1/cart'],
+      ['my orders', '/api/v1/orders'],
+      ['the staff order queue', '/api/v1/admin/orders'],
     ])('refuses %s with no token', async (_label, path) => {
       const response = await request(app.getHttpServer()).get(path);
 

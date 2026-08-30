@@ -37,6 +37,9 @@ ALTER TABLE public.stock_movements    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.stock_reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.carts              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cart_items         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_events       ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -64,6 +67,12 @@ ALTER TABLE public.stock_reservations FORCE ROW LEVEL SECURITY;
 -- are checked on every change.
 ALTER TABLE public.carts      FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.cart_items FORCE ROW LEVEL SECURITY;
+
+-- Orders are money. Forced, and a customer may read only their own — never another's, and
+-- never the event ledger, which records which staff member touched what.
+ALTER TABLE public.orders       FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items  FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.order_events FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -157,6 +166,32 @@ CREATE POLICY cart_items_read_own
         AND u.supabase_user_id = auth.uid()
     )
   );
+
+DROP POLICY IF EXISTS orders_read_own ON public.orders;
+CREATE POLICY orders_read_own
+  ON public.orders FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.users u
+      WHERE u.id = orders.user_id AND u.supabase_user_id = auth.uid()
+    )
+  );
+
+DROP POLICY IF EXISTS order_items_read_own ON public.order_items;
+CREATE POLICY order_items_read_own
+  ON public.order_items FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.orders o
+      JOIN public.users u ON u.id = o.user_id
+      WHERE o.id = order_items.order_id AND u.supabase_user_id = auth.uid()
+    )
+  );
+
+-- order_events deliberately gets NO policy: it names the staff member who moved an order,
+-- which is internal. Customers see status through this API, not the ledger behind it.
 
 -- ── 4. Revoke default grants ────────────────────────────────────────────────
 -- Supabase grants anon/authenticated broad table privileges by default. RLS

@@ -62,6 +62,32 @@ enum StockMovementReason {
   TRANSFER_OUT
 }
 
+/// Where an order is in its life. Transitions are enforced in OrderService, not here —
+/// Postgres cannot express "PLACED may become CONFIRMED or CANCELLED but never DELIVERED".
+enum OrderStatus {
+  PLACED
+  CONFIRMED
+  PICKING
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+/// How the customer pays. BKASH exists as a seam: the column and the enum value are here so
+/// adopting a gateway is an adapter and a status transition, not a migration of every order.
+enum PaymentMethod {
+  CASH_ON_DELIVERY
+  BKASH
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
+}
+
 /// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
 /// user's first authenticated request — see AuthService.resolveUser().
 model User {
@@ -79,6 +105,7 @@ model User {
   addresses Address[]
   auditLog  AdminAuditLog[]
   cart      Cart?
+  orders    Order[]
 
   @@index([role])
   @@map("users")
@@ -211,6 +238,7 @@ model ProductVariant {
 
   product      Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
   cartItems    CartItem[]
+  orderItems   OrderItem[]
   inventory    Inventory[]
   batches      InventoryBatch[]
   movements    StockMovement[]
@@ -301,6 +329,7 @@ model Warehouse {
   batches      InventoryBatch[]
   movements    StockMovement[]
   reservations StockReservation[]
+  orders       Order[]
 
   @@index([isActive])
   @@map("warehouses")
@@ -463,4 +492,103 @@ model CartItem {
   @@unique([cartId, variantId])
   @@index([variantId])
   @@map("cart_items")
+}
+
+/// A placed order.
+///
+/// The delivery address is COPIED here as text rather than referenced. A customer may edit or
+/// soft-delete the address after ordering, and an order must always say where it was actually
+/// sent — a foreign key would let history rewrite itself.
+///
+/// Every money column is BigInt poysha, frozen at placement. The catalog may reprice freely
+/// afterwards without touching what was charged.
+model Order {
+  id            String        @id @default(uuid()) @db.Uuid
+  /// Human-readable, e.g. "BB-20260830-000042". What a customer quotes on the phone.
+  orderNumber   String        @unique @map("order_number")
+  userId        String        @map("user_id") @db.Uuid
+  status        OrderStatus   @default(PLACED)
+  paymentMethod PaymentMethod @map("payment_method")
+  paymentStatus PaymentStatus @default(PENDING) @map("payment_status")
+
+  /// Which hub fulfils it. Set at placement so the reservation and the pick list agree.
+  warehouseId String @map("warehouse_id") @db.Uuid
+
+  // ── Delivery address, snapshotted ─────────────────────────────────────────
+  recipientName String  @map("recipient_name")
+  phone         String
+  division      String
+  district      String
+  upazila       String
+  area          String?
+  addressLine   String  @map("address_line")
+  postCode      String? @map("post_code")
+  latitude      Float?
+  longitude     Float?
+
+  // ── Money, frozen ─────────────────────────────────────────────────────────
+  subtotalPoysha    BigInt @map("subtotal_poysha")
+  deliveryFeePoysha BigInt @default(0) @map("delivery_fee_poysha")
+  discountPoysha    BigInt @default(0) @map("discount_poysha")
+  totalPoysha       BigInt @map("total_poysha")
+
+  customerNote String?   @map("customer_note")
+  placedAt     DateTime  @default(now()) @map("placed_at")
+  deliveredAt  DateTime? @map("delivered_at")
+  cancelledAt  DateTime? @map("cancelled_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user      User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  warehouse Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  items     OrderItem[]
+  events    OrderEvent[]
+
+  @@index([userId, placedAt])
+  @@index([status, placedAt])
+  @@index([warehouseId, status])
+  @@map("orders")
+}
+
+/// One line of an order, with everything about the product copied in.
+///
+/// The name and SKU are snapshotted alongside the price: a product renamed or deactivated
+/// next month must not change what an old invoice says was bought.
+model OrderItem {
+  id              String @id @default(uuid()) @db.Uuid
+  orderId         String @map("order_id") @db.Uuid
+  variantId       String @map("variant_id") @db.Uuid
+  sku             String
+  productNameEn   String @map("product_name_en")
+  productNameBn   String @map("product_name_bn")
+  variantNameEn   String @map("variant_name_en")
+  quantity        Int
+  unitPricePoysha BigInt @map("unit_price_poysha")
+  lineTotalPoysha BigInt @map("line_total_poysha")
+
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([variantId])
+  @@map("order_items")
+}
+
+/// Append-only record of every status change.
+///
+/// Answers "when did it ship, and who dispatched it" — which the current status alone cannot.
+/// Nothing updates or deletes a row here.
+model OrderEvent {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @map("order_id") @db.Uuid
+  fromStatus OrderStatus? @map("from_status")
+  toStatus   OrderStatus  @map("to_status")
+  /// Staff member who moved it. Null when the customer or the system did.
+  actorId    String?      @map("actor_id") @db.Uuid
+  note       String?
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_events")
 }
