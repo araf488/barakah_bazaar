@@ -1,0 +1,36 @@
+import { Address, User, UserRole } from '../../src/infra/prisma/prisma-client';
+
+export const userFixture = (overrides: Partial<User> = {}): User => ({
+  id: 'user-1',
+  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  email: 'customer@barakahbazaar.com.bd',
+  phone: '+8801711111111',
+  fullName: 'Rahim Uddin',
+  role: UserRole.CUSTOMER,
+  isActive: true,
+  lastSeenAt: new Date('2026-08-29T00:00:00.000Z'),
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-08-29T00:00:00.000Z'),
+  ...overrides,
+});
+
+export const addressFixture = (overrides: Partial<Address> = {}): Address => ({
+  id: 'address-1',
+  userId: 'user-1',
+  label: 'Home',
+  recipientName: 'Rahim Uddin',
+  phone: '+8801712345678',
+  division: 'Dhaka',
+  district: 'Dhaka',
+  upazila: 'Savar',
+  area: 'Birulia',
+  addressLine: 'House 12, Road 4',
+  postCode: '1344',
+  latitude: null,
+  longitude: null,
+  isDefault: true,
+  deletedAt: null,
+  createdAt: new Date('2026-02-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+  ...overrides,
+});

@@ -127,6 +127,19 @@ describe('Degraded boot (no Supabase, no database)', () => {
       );
     });
 
+    it('refuses a profile update with no token', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/v1/users/me')
+        .send({ fullName: 'Rahim Uddin' });
+
+      // 503 from *authentication*, which is unconfigured in this suite — the point is that
+      // the request never reaches the service.
+      expect(response.status).toBe(503);
+      expect(response.body.message).toBe(
+        'Authentication is temporarily unavailable. Please try again later.',
+      );
+    });
+
     it('refuses /auth/me with a bearer token it cannot verify', async () => {
       const response = await request(app.getHttpServer())
         .get('/api/v1/auth/me')

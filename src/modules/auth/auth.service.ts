@@ -1,9 +1,14 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { User } from '../../infra/prisma/prisma-client';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { ErrorMessages } from '../../common/constants/error-messages.constants';
+import {
+  ErrorMessageTemplates,
+  ErrorMessages,
+  formatMessage,
+} from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
+import { AuthMapper } from './auth.mapper';
+import { AuthConstants } from './auth.constants';
 import { AuthRepository } from './auth.repository';
 import { UserProfileDto } from './dto/user-profile.dto';
 
@@ -38,7 +43,7 @@ export class AuthService {
         return serviceFail(HttpStatus.FORBIDDEN, ErrorMessages.AccountDisabled);
       }
 
-      return serviceOk(AuthService.toProfile(user));
+      return serviceOk(AuthMapper.toProfile(user));
     } catch (error) {
       this.logger.error(
         { err: error, supabaseUserId: authenticated.supabaseUserId },
@@ -48,15 +53,43 @@ export class AuthService {
     }
   }
 
-  private static toProfile(user: User): UserProfileDto {
-    return {
-      id: user.id,
-      supabaseUserId: user.supabaseUserId,
-      email: user.email,
-      phone: user.phone,
-      fullName: user.fullName,
-      role: user.role,
-      createdAt: user.createdAt,
-    };
+  /**
+   * Resolves the local user id for a verified token, without provisioning.
+   *
+   * Deliberately not `resolveProfile`: that upserts on every call, which would turn every
+   * address read into a write. A client that never called `/auth/me` has no local row yet
+   * and gets a 404 saying so.
+   */
+  async resolveActiveUserId(authenticated: AuthenticatedUser): Promise<ServiceResponse<string>> {
+    try {
+      const user = await this.repository.findBySupabaseId(authenticated.supabaseUserId);
+
+      if (user === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      if (user === undefined) {
+        return serviceFail(
+          HttpStatus.NOT_FOUND,
+          formatMessage(ErrorMessageTemplates.NotFound, AuthConstants.UserResourceName),
+        );
+      }
+
+      if (!user.isActive) {
+        this.logger.warn(
+          { supabaseUserId: authenticated.supabaseUserId },
+          'Disabled account attempted an authenticated operation',
+        );
+        return serviceFail(HttpStatus.FORBIDDEN, ErrorMessages.AccountDisabled);
+      }
+
+      return serviceOk(user.id);
+    } catch (error) {
+      this.logger.error(
+        { err: error, supabaseUserId: authenticated.supabaseUserId },
+        'Exception occurred in AuthService.resolveActiveUserId',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
   }
 }

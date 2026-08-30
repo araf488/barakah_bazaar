@@ -11,6 +11,8 @@ export const AuthConstants = {
    * module through the Supabase Admin API; mirrored into `users.role`.
    */
   RoleClaimKey: 'role',
+  /** Resource label used in not-found messages about the local user row. */
+  UserResourceName: 'User',
 } as const;
 
 /** Injection tokens for the auth ports. */

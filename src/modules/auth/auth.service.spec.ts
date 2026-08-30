@@ -27,12 +27,12 @@ const persistedUser = (overrides: Partial<User> = {}): User => ({
 });
 
 describe('AuthService', () => {
-  let repository: { upsertFromToken: jest.Mock };
+  let repository: { upsertFromToken: jest.Mock; findBySupabaseId: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: AuthService;
 
   beforeEach(() => {
-    repository = { upsertFromToken: jest.fn() };
+    repository = { upsertFromToken: jest.fn(), findBySupabaseId: jest.fn() };
     logger = createMockLogger();
     service = new AuthService(repository as unknown as AuthRepository, logger);
   });
@@ -114,6 +114,74 @@ describe('AuthService', () => {
       expect(logger.error).toHaveBeenCalledWith(
         expect.objectContaining({ err: failure }),
         'Exception occurred in AuthService.resolveProfile',
+      );
+    });
+  });
+
+  describe('resolveActiveUserId', () => {
+    it('returns the local user id without writing anything', async () => {
+      repository.findBySupabaseId.mockResolvedValue(persistedUser());
+
+      const result = await service.resolveActiveUserId(authenticated);
+
+      expect(result).toEqual({ ok: true, data: 'user-1' });
+      expect(repository.upsertFromToken).not.toHaveBeenCalled();
+    });
+
+    it('looks the user up by the token subject', async () => {
+      repository.findBySupabaseId.mockResolvedValue(persistedUser());
+
+      await service.resolveActiveUserId(authenticated);
+
+      expect(repository.findBySupabaseId).toHaveBeenCalledWith(authenticated.supabaseUserId);
+    });
+
+    it('answers 404 when the client never exchanged its token at /auth/me', async () => {
+      repository.findBySupabaseId.mockResolvedValue(undefined);
+
+      const result = await service.resolveActiveUserId(authenticated);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.NOT_FOUND,
+        message: 'User was not found.',
+      });
+    });
+
+    it('answers 503 rather than 404 when the read itself failed', async () => {
+      repository.findBySupabaseId.mockResolvedValue(null);
+
+      const result = await service.resolveActiveUserId(authenticated);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+    });
+
+    it('answers 403 for a disabled account holding a valid token', async () => {
+      repository.findBySupabaseId.mockResolvedValue(persistedUser({ isActive: false }));
+
+      const result = await service.resolveActiveUserId(authenticated);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.FORBIDDEN,
+        message: 'This account has been disabled. Please contact support.',
+      });
+    });
+
+    it('answers 500 and logs when the repository throws', async () => {
+      const failure = new Error('unexpected');
+      repository.findBySupabaseId.mockRejectedValue(failure);
+
+      const result = await service.resolveActiveUserId(authenticated);
+
+      expect(!result.ok && result.status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: failure }),
+        'Exception occurred in AuthService.resolveActiveUserId',
       );
     });
   });

@@ -14,6 +14,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
+import { UserModule } from './modules/user/user.module';
 
 /**
  * Modular monolith root (plan §2). New feature modules are added to `imports`;
@@ -53,6 +54,7 @@ import { HealthModule } from './modules/health/health.module';
     AuthModule,
     CatalogModule,
     GeoModule,
+    UserModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },

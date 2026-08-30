@@ -67,8 +67,18 @@ model User {
   @@map("users")
 }
 
-/// Structured Bangladesh address. Division/district/upazila are kept as text
-/// against a reference dataset rather than free-form input.
+/// Structured Bangladesh address. Division/district/upazila/area are kept as text
+/// against the vendored reference dataset rather than free-form input.
+///
+/// Column-to-level mapping, since two names are historical:
+///   division -> division
+///   district -> district
+///   upazila  -> the UNIT: an upazila, a city thana (Gulshan, Motijheel) or a
+///               development circle (Tejgaon). The column predates city coverage;
+///               it holds whichever kind the customer picked.
+///   area     -> the LEAF: a union or a post-office area. Nullable, because a city
+///               thana legitimately has no areas beneath it.
+/// GeoService.validateChain is the only thing that may judge these four values.
 ///
 /// Soft-deleted via `deletedAt`: every read must exclude deleted rows, in the
 /// API (AddressRepository.ownedAndLive) and in RLS (addresses_read_own).

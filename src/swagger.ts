@@ -25,6 +25,7 @@ export const setupSwagger = (app: INestApplication, path: string): void => {
       .addTag('Auth', 'Session exchange and the current user')
       .addTag('Catalog', 'Public browsing of categories and products')
       .addTag('Geo', 'Bangladesh division, district, upazila/thana and area lookups')
+      .addTag('Users', 'The current customer: profile and delivery addresses')
       .build(),
   );
 

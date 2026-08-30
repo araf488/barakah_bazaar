@@ -102,13 +102,13 @@ describe('AuthRepository', () => {
       await expect(repository.findBySupabaseId('abc')).resolves.toEqual({ id: 'user-1' });
     });
 
-    it('returns null when no user matches', async () => {
+    it('returns undefined when no user matches', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
 
-      await expect(repository.findBySupabaseId('abc')).resolves.toBeNull();
+      await expect(repository.findBySupabaseId('abc')).resolves.toBeUndefined();
     });
 
-    it('returns null instead of throwing when the database fails', async () => {
+    it('returns null — distinct from undefined — when the database fails', async () => {
       prisma.user.findUnique.mockRejectedValue(new Error('connection refused'));
 
       await expect(repository.findBySupabaseId('abc')).resolves.toBeNull();

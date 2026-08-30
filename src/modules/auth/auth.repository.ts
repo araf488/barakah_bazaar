@@ -54,9 +54,17 @@ export class AuthRepository {
     }
   }
 
-  async findBySupabaseId(supabaseUserId: string): Promise<User | null> {
+  /**
+   * Reads the local row for a verified token without provisioning it.
+   *
+   * Three-valued on purpose: `undefined` means there is no such row, `null` means the read
+   * itself failed. Collapsing them would answer "user not found" to a caller holding a
+   * perfectly valid token during a database outage — a 404 that sends everyone hunting in
+   * the wrong place.
+   */
+  async findBySupabaseId(supabaseUserId: string): Promise<User | null | undefined> {
     try {
-      return await this.prisma.user.findUnique({ where: { supabaseUserId } });
+      return (await this.prisma.user.findUnique({ where: { supabaseUserId } })) ?? undefined;
     } catch (error) {
       this.logger.error(
         { err: error, supabaseUserId },
