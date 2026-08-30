@@ -29,7 +29,7 @@ other module copies.
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API, **Geo** reference geography, **User** profile + address book | Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
 
-497 tests pass (479 unit across 33 suites + 18 end-to-end). The end-to-end suite boots the whole
+528 tests pass (507 unit across 35 suites + 21 end-to-end). The end-to-end suite boots the whole
 app with **no** Supabase project, **no** database and **no** Redis, and asserts
 it still serves probes, keeps public routes public and protected routes
 protected — so `git clone && npm install && npm start` works on day one.
@@ -244,7 +244,7 @@ src/
     health/       ✅  liveness + readiness with per-dependency detail
     auth/         ✅  local user mirror, GET /auth/me, SMS/OTP ports
     catalog/      ✅  reference vertical slice — copy this one
-    geo/          ✅  vendored Bangladesh geography, chain validation
+    geo/          ✅  vendored geography + map-search proxy (noop/Photon/Geoapify)
     user/         ✅  profile + delivery address book
     inventory/ cart/ order/ payment/ delivery/
     promotion/ notification/ review/ admin/ search/ storage/

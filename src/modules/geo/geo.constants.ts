@@ -2,6 +2,11 @@
 export const GeoConstants = {
   /** Route segment this module is mounted on, under the global API prefix. */
   RouteBase: 'geo',
+  /** Shorter queries match too much to be worth a provider call. */
+  SearchMinLength: 2,
+  SearchMaxLength: 120,
+  SearchDefaultLimit: 10,
+  SearchMaxLimit: 25,
 } as const;
 
 /**
@@ -21,4 +26,10 @@ export const GeoMessages = {
   UnitNotInDistrictTemplate: '{0} is not an upazila or thana of {1}.',
   /** The area does not belong to that unit. {0} = area, {1} = unit. */
   AreaNotInUnitTemplate: '{0} is not an area of {1}.',
+  /** Returned when no geocoding provider is configured. */
+  GeocodingDisabled: 'Map search is not available right now.',
+  /** Returned when the geocoding provider could not be reached. */
+  GeocodingUnavailable: 'Map search is temporarily unavailable. Please try again shortly.',
+  /** Resource label for a reverse-geocode miss. */
+  LocationResourceName: 'Location',
 } as const;

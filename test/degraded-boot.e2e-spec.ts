@@ -12,6 +12,8 @@ process.env.NODE_ENV = 'test';
 process.env.LOG_LEVEL = 'silent';
 process.env.SWAGGER_ENABLED = 'false';
 process.env.QUEUE_ENABLED = 'false';
+// Never let the suite call a third-party geocoder.
+process.env.GEOCODING_PROVIDER = 'noop';
 delete process.env.DATABASE_URL;
 delete process.env.SUPABASE_URL;
 delete process.env.SUPABASE_JWKS_URL;
@@ -105,6 +107,25 @@ describe('Degraded boot (no Supabase, no database)', () => {
       expect(units.map((unit) => unit.nameEn)).toEqual(
         expect.arrayContaining(['Gulshan', 'Motijheel', 'Savar']),
       );
+    });
+
+    it('reports map search as disabled rather than calling a third party', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/search?q=gulshan');
+
+      expect(response.status).toBe(503);
+      expect(response.body.message).toBe('Map search is not available right now.');
+    });
+
+    it('rejects a too-short map search before reaching any provider', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/search?q=a');
+
+      expect(response.status).toBe(400);
+    });
+
+    it('rejects an out-of-range coordinate', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/reverse?lat=999&lng=0');
+
+      expect(response.status).toBe(400);
     });
 
     it('answers 404 with the contract message for an unknown division', async () => {

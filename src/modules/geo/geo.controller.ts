@@ -1,9 +1,10 @@
-import { Controller, Get, HttpStatus, Param } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Param, Query } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Public } from '../../common/decorators/public.decorator';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { GeoAreaListDto, GeoDistrictDto, GeoDivisionDto, GeoUnitDto } from './dto/geo-response.dto';
+import { GeoReverseQueryDto, GeoSearchQueryDto, GeocodedPlaceDto } from './dto/geocoding.dto';
 import { GeoConstants } from './geo.constants';
 import { GeoService } from './geo.service';
 
@@ -82,6 +83,37 @@ export class GeoController {
         { err: error, district, unit },
         'Exception occurred in GeoController.listAreas',
       );
+      throw error;
+    }
+  }
+
+  @Public()
+  @Get('search')
+  @ApiOperation({ summary: 'Search places for the map pin' })
+  @ApiResponse({ status: HttpStatus.OK, type: [GeocodedPlaceDto] })
+  @ApiResponse({
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    description: 'Map search disabled or unreachable',
+  })
+  async search(@Query() query: GeoSearchQueryDto): Promise<GeocodedPlaceDto[]> {
+    try {
+      return unwrapOrThrow(await this.geoService.searchPlaces(query));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in GeoController.search');
+      throw error;
+    }
+  }
+
+  @Public()
+  @Get('reverse')
+  @ApiOperation({ summary: 'Reverse-geocode a dropped pin' })
+  @ApiResponse({ status: HttpStatus.OK, type: GeocodedPlaceDto })
+  @ApiResponse({ status: HttpStatus.SERVICE_UNAVAILABLE })
+  async reverse(@Query() query: GeoReverseQueryDto): Promise<GeocodedPlaceDto> {
+    try {
+      return unwrapOrThrow(await this.geoService.reverseGeocode(query));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in GeoController.reverse');
       throw error;
     }
   }

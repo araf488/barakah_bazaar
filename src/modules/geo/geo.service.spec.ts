@@ -1,6 +1,8 @@
 import { HttpStatus } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
+import { GeoReverseQueryDto, GeoSearchQueryDto } from './dto/geocoding.dto';
+import { NoopGeocodingGateway } from './gateways/noop-geocoding.gateway';
 import { GeoService } from './geo.service';
 
 describe('GeoService', () => {
@@ -9,7 +11,7 @@ describe('GeoService', () => {
 
   beforeEach(() => {
     logger = createMockLogger();
-    service = new GeoService(logger);
+    service = new GeoService(new NoopGeocodingGateway(), logger);
   });
 
   /** Reads a real area name out of the dataset rather than hard-coding a second copy. */
@@ -201,6 +203,90 @@ describe('GeoService', () => {
       const bengali = result.ok ? result.data.areas.find((a) => a.nameBn !== null)?.nameBn : null;
 
       expect(service.validateChain('Dhaka', 'Dhaka', 'Savar', bengali).ok).toBe(true);
+    });
+  });
+
+  describe('map search', () => {
+    it('answers 503 with the disabled message when no provider is configured', async () => {
+      const result = await service.searchPlaces(
+        Object.assign(new GeoSearchQueryDto(), { q: 'gulshan', limit: 5 }),
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'Map search is not available right now.',
+      });
+    });
+
+    it('answers 503 for reverse geocoding too when disabled', async () => {
+      const result = await service.reverseGeocode(
+        Object.assign(new GeoReverseQueryDto(), { lat: 23.79, lng: 90.4 }),
+      );
+
+      expect(!result.ok && result.message).toBe('Map search is not available right now.');
+    });
+
+    it('distinguishes a provider failure from an empty result', async () => {
+      const failing = new GeoService(
+        {
+          name: 'stub',
+          isConfigured: true,
+          search: () => Promise.resolve(null),
+          reverse: () => Promise.resolve(null),
+        },
+        logger,
+      );
+
+      const result = await failing.searchPlaces(
+        Object.assign(new GeoSearchQueryDto(), { q: 'gulshan', limit: 5 }),
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'Map search is temporarily unavailable. Please try again shortly.',
+      });
+    });
+
+    it('returns an empty list — a 200 — when the provider genuinely found nothing', async () => {
+      const empty = new GeoService(
+        {
+          name: 'stub',
+          isConfigured: true,
+          search: () => Promise.resolve([]),
+          reverse: () => Promise.resolve(null),
+        },
+        logger,
+      );
+
+      await expect(
+        empty.searchPlaces(Object.assign(new GeoSearchQueryDto(), { q: 'nowhere', limit: 5 })),
+      ).resolves.toEqual({ ok: true, data: [] });
+    });
+
+    it('maps a provider hit onto the wire contract', async () => {
+      const stub = new GeoService(
+        {
+          name: 'stub',
+          isConfigured: true,
+          search: () =>
+            Promise.resolve([{ label: 'Gulshan 1, Dhaka', latitude: 23.79, longitude: 90.41 }]),
+          reverse: () => Promise.resolve(null),
+        },
+        logger,
+      );
+
+      const result = await stub.searchPlaces(
+        Object.assign(new GeoSearchQueryDto(), { q: 'gulshan', limit: 5 }),
+      );
+
+      expect(result.ok && result.data[0]).toEqual({
+        label: 'Gulshan 1, Dhaka',
+        latitude: 23.79,
+        longitude: 90.41,
+        postCode: null,
+      });
     });
   });
 });

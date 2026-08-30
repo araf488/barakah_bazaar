@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ErrorMessages, formatMessage } from '../../common/constants/error-messages.constants';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
@@ -18,6 +18,8 @@ import {
   GeoUnitDto,
 } from './dto/geo-response.dto';
 import { GeoMessages } from './geo.constants';
+import { GeoReverseQueryDto, GeoSearchQueryDto, GeocodedPlaceDto } from './dto/geocoding.dto';
+import { GeoTokens, GeocodedPlace, GeocodingProvider } from './ports/geocoding.port';
 
 /**
  * Bangladesh geography, served from a vendored dataset merged from four sources.
@@ -33,7 +35,10 @@ import { GeoMessages } from './geo.constants';
  */
 @Injectable()
 export class GeoService {
-  constructor(@InjectPinoLogger(GeoService.name) private readonly logger: PinoLogger) {}
+  constructor(
+    @Inject(GeoTokens.GeocodingProvider) private readonly geocoder: GeocodingProvider,
+    @InjectPinoLogger(GeoService.name) private readonly logger: PinoLogger,
+  ) {}
 
   listDivisions(): ServiceResponse<GeoDivisionDto[]> {
     try {
@@ -223,6 +228,66 @@ export class GeoService {
       postCode: area.postCode,
       latitude: area.latitude,
       longitude: area.longitude,
+    };
+  }
+
+  /**
+   * Free-text place search, proxied to the configured provider.
+   *
+   * Async unlike the rest of this service — these two are the only methods that do I/O.
+   * A `null` from the provider is a failure (503), an empty array is a genuine miss (200).
+   */
+  async searchPlaces(query: GeoSearchQueryDto): Promise<ServiceResponse<GeocodedPlaceDto[]>> {
+    try {
+      if (!this.geocoder.isConfigured) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, GeoMessages.GeocodingDisabled);
+      }
+
+      const places = await this.geocoder.search(query.q, query.limit);
+
+      if (places === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, GeoMessages.GeocodingUnavailable);
+      }
+
+      return serviceOk(places.map((place) => GeoService.toPlaceDto(place)));
+    } catch (error) {
+      this.logger.error(
+        { err: error, provider: this.geocoder.name },
+        'Exception occurred in GeoService.searchPlaces',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /** Reverse-geocodes a dropped pin so the customer can confirm what they selected. */
+  async reverseGeocode(query: GeoReverseQueryDto): Promise<ServiceResponse<GeocodedPlaceDto>> {
+    try {
+      if (!this.geocoder.isConfigured) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, GeoMessages.GeocodingDisabled);
+      }
+
+      const place = await this.geocoder.reverse(query.lat, query.lng);
+
+      if (place === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, GeoMessages.GeocodingUnavailable);
+      }
+
+      return serviceOk(GeoService.toPlaceDto(place));
+    } catch (error) {
+      this.logger.error(
+        { err: error, provider: this.geocoder.name },
+        'Exception occurred in GeoService.reverseGeocode',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  private static toPlaceDto(place: GeocodedPlace): GeocodedPlaceDto {
+    return {
+      label: place.label,
+      latitude: place.latitude,
+      longitude: place.longitude,
+      postCode: place.postCode ?? null,
     };
   }
 }

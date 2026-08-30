@@ -65,6 +65,15 @@ const baseEnvSchema = z.object({
   SMS_API_URL: z.url().optional(),
   SMS_API_KEY: z.string().min(1).optional(),
   SMS_SENDER_ID: z.string().min(1).optional(),
+
+  // ── Geocoding (map search on the address form) ────────────────────────────
+  // Defaults to Photon: free, keyless, and the only provider tested against real
+  // Dhaka addresses. `noop` disables map search entirely, which is what the test
+  // suite uses so it never calls a third party.
+  GEOCODING_PROVIDER: z.enum(['noop', 'photon', 'geoapify']).default('photon'),
+  PHOTON_API_URL: z.url().default('https://photon.komoot.io'),
+  GEOAPIFY_API_URL: z.url().default('https://api.geoapify.com'),
+  GEOAPIFY_API_KEY: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof baseEnvSchema>;
