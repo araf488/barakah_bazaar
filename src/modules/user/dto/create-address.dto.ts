@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsLatitude,
   IsLongitude,
   IsNotEmpty,
@@ -113,4 +114,24 @@ export class CreateAddressDto {
   @Type(() => Number)
   @IsLongitude()
   longitude?: number;
+
+  /**
+   * Opts out of validating `unit` and `area` against the vendored dataset.
+   *
+   * Our geography is good but not complete — 726 entries have no English name, city
+   * coverage is thinner than rural, and new areas appear faster than any dataset. A customer
+   * whose area we simply do not list must still be able to order, so this lets them type it.
+   *
+   * `division` and `district` are ALWAYS validated regardless: those two levels are complete
+   * and authoritative (8 and 64), and they are what delivery routing actually needs. Only
+   * the two levels below them become free text.
+   */
+  @ApiPropertyOptional({
+    default: false,
+    description: 'Set when the area is not in our list and the customer typed it themselves',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  unlistedLocation?: boolean;
 }

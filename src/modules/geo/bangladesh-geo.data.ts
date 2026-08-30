@@ -1,5 +1,6 @@
 // GENERATED FILE — do not edit by hand.
-// Regenerate with: node scripts/build-geo-dataset.mjs <sources-dir>
+// Regenerate with: node scripts/build-geo-dataset.mjs <sources-dir> && npm run format
+// (prettier rewrites this file's quoting; skipping it leaves a 57k-line whitespace diff)
 //
 // Merged from four verified sources, none of them invented:
 //   1. github.com/nuhil/bangladesh-geocode @5622f68 — division/district/upazila/union, bilingual
@@ -9,7 +10,7 @@
 //   4. en.wikipedia.org "Dhaka Metropolitan Police" — the 50 Dhaka city thanas
 //
 // Captured: 2026-08-30
-// Contents: 8 divisions, 64 districts, 695 units, 6560 areas
+// Contents: 8 divisions, 64 districts, 690 units, 6505 areas
 //
 // Bengali names are NEVER transliterated. A name is Bengali only when a source supplied it or
 // it matched a verified English↔Bengali pair; otherwise nameBn is null and the UI falls back
@@ -545,29 +546,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Sarikkhali',
                 nameBn: 'শারিকখালি',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Sonakata',
-                nameBn: 'সোনাকাটা',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-            ],
-          },
-          {
-            nameEn: 'তালতলী উপজেলা',
-            nameBn: 'তালতলী উপজেলা',
-            kind: 'upazila',
-            areas: [
-              {
-                nameEn: 'Nishanbaria',
-                nameBn: 'নিশানবাড়িয়া',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -4630,8 +4608,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'ইন্দুরকানী উপজেলা',
-            nameBn: 'ইন্দুরকানী উপজেলা',
+            nameEn: 'ইন্দুরকানী',
+            nameBn: 'ইন্দুরকানী',
             kind: 'upazila',
             areas: [
               {
@@ -7725,14 +7703,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
-                nameEn: 'জলদী ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'জলদী ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
                 nameEn: 'শীলকূপ',
                 nameBn: 'শীলকূপ',
                 kind: 'union',
@@ -7860,14 +7830,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
-                nameEn: 'পূর্ব গোমদণ্ডী ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'পূর্ব গোমদণ্ডী ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
                 nameEn: 'শ্রীপুর খরণদ্বীপ',
                 nameBn: 'শ্রীপুর খরণদ্বীপ',
                 kind: 'union',
@@ -7963,24 +7925,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
-                nameEn: 'দোহাজারী ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'দোহাজারী ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
                 nameEn: 'ধোপাছড়ি',
                 nameBn: 'ধোপাছড়ি',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'হারলা ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'হারলা ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -8186,22 +8132,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
-                nameEn: 'দৌলতপুর ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'দৌলতপুর ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'ধুরুং ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'ধুরুং ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
                 nameEn: 'নারায়ণহাট',
                 nameBn: 'নারায়ণহাট',
                 kind: 'union',
@@ -8228,14 +8158,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'বাগানবাজার',
                 nameBn: 'বাগানবাজার',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'রাঙ্গামাটিয়া ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'রাঙ্গামাটিয়া ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -8419,14 +8341,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'শিকারপুর ইউনিয়ন বুড়িশ্চর',
                 nameBn: 'শিকারপুর ইউনিয়ন বুড়িশ্চর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'হাটহাজারী ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'হাটহাজারী ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -9218,14 +9132,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 latitude: null,
                 longitude: null,
               },
-              {
-                nameEn: 'সুলতানপুর ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'সুলতানপুর ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
             ],
           },
           {
@@ -9340,54 +9246,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Urirchar',
                 nameBn: 'উড়িরচর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'ইজ্জতপুর ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'ইজ্জতপুর ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'কাটগড় ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'কাটগড় ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'দীর্ঘাপাড় ইউনিয়ন (বিলুপ্তপ্রায়)',
-                nameBn: 'দীর্ঘাপাড় ইউনিয়ন (বিলুপ্তপ্রায়)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'নয়ামস্তি ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'নয়ামস্তি ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'বাটাজোড়া ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'বাটাজোড়া ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'হুদ্রাখালী ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'হুদ্রাখালী ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -9655,14 +9513,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 latitude: null,
                 longitude: null,
               },
-              {
-                nameEn: 'সীতাকুণ্ড ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'সীতাকুণ্ড ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
             ],
           },
         ],
@@ -9757,14 +9607,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
-                nameEn: 'Kaiyarbil',
-                nameBn: 'কৈয়ারবিল',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
                 nameEn: 'Kakhara',
                 nameBn: 'কাকারা',
                 kind: 'union',
@@ -9807,62 +9649,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Surajpur Manikpur',
                 nameBn: 'সুরজপুর মানিকপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'পূর্ব বড় ভেওলা',
-                nameBn: 'পূর্ব বড় ভেওলা',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'বমু বিলছড়ি',
-                nameBn: 'বমু বিলছড়ি',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'ভেওলা মানিকচর',
-                nameBn: 'ভেওলা মানিকচর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'লক্ষ্যারচর',
-                nameBn: 'লক্ষ্যারচর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'সাহারবিল',
-                nameBn: 'সাহারবিল',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'সুরাজপুর মানিকপুর',
-                nameBn: 'সুরাজপুর মানিকপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'হারবাং',
-                nameBn: 'হারবাং',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -11147,14 +10933,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
-                nameEn: 'চৌদ্দগ্রাম ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'চৌদ্দগ্রাম ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
                 nameEn: 'জগন্নাথদীঘি',
                 nameBn: 'জগন্নাথদীঘি',
                 kind: 'union',
@@ -11351,14 +11129,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             nameBn: 'দেবিদ্বার',
             kind: 'upazila',
             areas: [
-              {
-                nameEn: '৫নং দেবিদ্বার (বিলুপ্ত)',
-                nameBn: '৫নং দেবিদ্বার (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
               {
                 nameEn: 'Barkamta',
                 nameBn: 'বরকামতা',
@@ -12657,8 +12427,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'কুমিল্লা আদর্শ সদর উপজেলা',
-            nameBn: 'কুমিল্লা আদর্শ সদর উপজেলা',
+            nameEn: 'কুমিল্লা আদর্শ সদর',
+            nameBn: 'কুমিল্লা আদর্শ সদর',
             kind: 'upazila',
             areas: [
               {
@@ -12712,8 +12482,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'কুমিল্লা সদর দক্ষিণ উপজেলা',
-            nameBn: 'কুমিল্লা সদর দক্ষিণ উপজেলা',
+            nameEn: 'কুমিল্লা সদর দক্ষিণ',
+            nameBn: 'কুমিল্লা সদর দক্ষিণ',
             kind: 'upazila',
             areas: [
               {
@@ -12860,14 +12630,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Subhapur',
                 nameBn: 'শুভপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'ছাগলনাইয়া ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'ছাগলনাইয়া ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -13134,14 +12896,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 latitude: 22.93017093,
                 longitude: 91.36221798,
               },
-              {
-                nameEn: 'বরাহীপুর ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'বরাহীপুর ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
             ],
           },
           {
@@ -13231,14 +12985,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Mizanagar',
                 nameBn: 'মির্জানগর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'পরশুরাম ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'পরশুরাম ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -13466,6 +13212,14 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Merung',
                 nameBn: 'মেরুং',
+                kind: 'union',
+                postCode: null,
+                latitude: null,
+                longitude: null,
+              },
+              {
+                nameEn: 'দীঘিনালা',
+                nameBn: 'দীঘিনালা',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -13858,55 +13612,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'দীঘিনালা উপজেলা',
-            nameBn: 'দীঘিনালা উপজেলা',
-            kind: 'upazila',
-            areas: [
-              {
-                nameEn: 'Babuchara',
-                nameBn: 'বাবুছড়া',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Boalkhali',
-                nameBn: 'বোয়ালখালী',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Kabakhali',
-                nameBn: 'কবাখালী',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Merung',
-                nameBn: 'মেরুং',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'দীঘিনালা',
-                nameBn: 'দীঘিনালা',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-            ],
-          },
-          {
-            nameEn: 'লক্ষ্মীছড়ি উপজেলা',
-            nameBn: 'লক্ষ্মীছড়ি উপজেলা',
+            nameEn: 'লক্ষ্মীছড়ি',
+            nameBn: 'লক্ষ্মীছড়ি',
             kind: 'upazila',
             areas: [
               {
@@ -18178,8 +17885,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             areas: [],
           },
           {
-            nameEn: 'তেজগাঁও উন্নয়ন সার্কেল',
-            nameBn: 'তেজগাঁও উন্নয়ন সার্কেল',
+            nameEn: 'তেজগাঁও',
+            nameBn: 'তেজগাঁও',
             kind: 'circle',
             areas: [
               {
@@ -20621,8 +20328,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'টুঙ্গিপাড়া উপজেলা',
-            nameBn: 'টুঙ্গিপাড়া উপজেলা',
+            nameEn: 'টুঙ্গিপাড়া',
+            nameBn: 'টুঙ্গিপাড়া',
             kind: 'upazila',
             areas: [
               {
@@ -23452,8 +23159,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'সিঙ্গাইর উপজেলা',
-            nameBn: 'সিঙ্গাইর উপজেলা',
+            nameEn: 'সিঙ্গাইর',
+            nameBn: 'সিঙ্গাইর',
             kind: 'upazila',
             areas: [
               {
@@ -28471,8 +28178,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'ভূঞাপুর উপজেলা',
-            nameBn: 'ভূঞাপুর উপজেলা',
+            nameEn: 'ভূঞাপুর',
+            nameBn: 'ভূঞাপুর',
             kind: 'upazila',
             areas: [
               {
@@ -37499,14 +37206,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
-                nameEn: 'আকুয়া ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'আকুয়া ইউনিয়ন (বিলুপ্ত)',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
                 nameEn: 'চর নিলক্ষিয়া',
                 nameBn: 'চর নিলক্ষিয়া',
                 kind: 'union',
@@ -37517,14 +37216,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'পরাণগঞ্জ',
                 nameBn: 'পরাণগঞ্জ',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'বয়ড়া ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'বয়ড়া ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -38645,6 +38336,14 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 longitude: null,
               },
               {
+                nameEn: 'Nagor',
+                nameBn: 'নগর',
+                kind: 'union',
+                postCode: null,
+                latitude: null,
+                longitude: null,
+              },
+              {
                 nameEn: 'Nogor',
                 nameBn: 'নগর',
                 kind: 'union',
@@ -39148,61 +38847,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
                 postCode: '2420',
                 latitude: 24.87280569,
                 longitude: 90.72271955,
-              },
-            ],
-          },
-          {
-            nameEn: 'খালিয়াজুড়ি উপজেলা',
-            nameBn: 'খালিয়াজুড়ি উপজেলা',
-            kind: 'upazila',
-            areas: [
-              {
-                nameEn: 'Chakua',
-                nameBn: 'চাকুয়া',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Gazipur',
-                nameBn: 'গাজীপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Khaliajuri',
-                nameBn: 'খালিয়াজুরী',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Krishnapur',
-                nameBn: 'কৃষ্ণপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Mendipur',
-                nameBn: 'মেন্দিপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Nagor',
-                nameBn: 'নগর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
               },
             ],
           },
@@ -39912,6 +39556,14 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Shantahar',
                 nameBn: 'সান্তাহার',
+                kind: 'union',
+                postCode: null,
+                latitude: null,
+                longitude: null,
+              },
+              {
+                nameEn: 'আদমদীঘি',
+                nameBn: 'আদমদীঘি',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -40916,61 +40568,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               },
             ],
           },
-          {
-            nameEn: 'আদমদীঘি উপজেলা',
-            nameBn: 'আদমদীঘি উপজেলা',
-            kind: 'upazila',
-            areas: [
-              {
-                nameEn: 'Chapapur',
-                nameBn: 'চাঁপাপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Chhatiangram',
-                nameBn: 'ছাতিয়ানগ্রাম',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Kundagram',
-                nameBn: 'কুন্দগ্রাম',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Nasaratpur',
-                nameBn: 'নশরতপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Shantahar',
-                nameBn: 'সান্তাহার',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'আদমদীঘি',
-                nameBn: 'আদমদীঘি',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-            ],
-          },
         ],
       },
       {
@@ -41829,14 +41426,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
               {
                 nameEn: 'Tulshiganga',
                 nameBn: 'তুলশীগংগা',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'ক্ষেতলাল ইউনিয়ন (বিলুপ্ত)',
-                nameBn: 'ক্ষেতলাল ইউনিয়ন (বিলুপ্ত)',
                 kind: 'union',
                 postCode: null,
                 latitude: null,
@@ -52764,7 +52353,7 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
           },
           {
             nameEn: 'Ruhea',
-            nameBn: 'রুহিয়া উপজেলা',
+            nameBn: 'রুহিয়া',
             kind: 'upazila',
             areas: [
               {
@@ -53041,8 +52630,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'ভূল্লী উপজেলা',
-            nameBn: 'ভূল্লী উপজেলা',
+            nameEn: 'ভূল্লী',
+            nameBn: 'ভূল্লী',
             kind: 'upazila',
             areas: [
               {
@@ -53947,7 +53536,7 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
           },
           {
             nameEn: 'Shayestaganj',
-            nameBn: 'শায়েস্তাগঞ্জ উপজেলা',
+            nameBn: 'শায়েস্তাগঞ্জ',
             kind: 'upazila',
             areas: [
               {
@@ -54828,69 +54417,6 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
         nameEn: 'Sunamganj',
         nameBn: 'সুনামগঞ্জ',
         units: [
-          {
-            nameEn: '| তাহিরপুর উপজেলা',
-            nameBn: '| তাহিরপুর উপজেলা',
-            kind: 'upazila',
-            areas: [
-              {
-                nameEn: 'Badaghat',
-                nameBn: 'বাদাঘাট',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Bordal North',
-                nameBn: 'বড়দল উত্তর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Bordal South',
-                nameBn: 'বড়দল দক্ষিণ',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Sreepur North',
-                nameBn: 'শ্রীপুর উত্তর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Sreepur South',
-                nameBn: 'শ্রীপুর দক্ষিণ',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'Tahirpur',
-                nameBn: 'তাহিরপুর',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-              {
-                nameEn: 'বালিজুরি',
-                nameBn: 'বালিজুরি',
-                kind: 'union',
-                postCode: null,
-                latitude: null,
-                longitude: null,
-              },
-            ],
-          },
           {
             nameEn: 'Bishamsarpur',
             nameBn: null,
@@ -56067,8 +55593,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'শান্তিগঞ্জ উপজেলা',
-            nameBn: 'শান্তিগঞ্জ উপজেলা',
+            nameEn: 'শান্তিগঞ্জ',
+            nameBn: 'শান্তিগঞ্জ',
             kind: 'upazila',
             areas: [
               {
@@ -57745,8 +57271,8 @@ export const BANGLADESH_DIVISIONS: readonly GeoDivisionData[] = [
             ],
           },
           {
-            nameEn: 'ফেঞ্জগঞ্জ উপজেলা',
-            nameBn: 'ফেঞ্জগঞ্জ উপজেলা',
+            nameEn: 'ফেঞ্জগঞ্জ',
+            nameBn: 'ফেঞ্জগঞ্জ',
             kind: 'upazila',
             areas: [
               {

@@ -7,6 +7,7 @@ import { NoopGeocodingGateway } from './gateways/noop-geocoding.gateway';
 import { PhotonGeocodingGateway } from './gateways/photon-geocoding.gateway';
 import { GeoController } from './geo.controller';
 import { GeoService } from './geo.service';
+import { resolveRedirect } from './gateways/json-fetcher';
 import { GeoTokens, GeocodingProvider } from './ports/geocoding.port';
 
 /**
@@ -53,6 +54,7 @@ export const createGeocodingProvider = (
       inject: [ConfigService, PinoLogger],
       useFactory: createGeocodingProvider,
     },
+    { provide: GeoTokens.UrlResolver, useValue: resolveRedirect },
   ],
   exports: [GeoService],
 })

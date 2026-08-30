@@ -7,6 +7,10 @@ export const GeoConstants = {
   SearchMaxLength: 120,
   SearchDefaultLimit: 10,
   SearchMaxLimit: 25,
+  /** A pasted map link; Google's place URLs are long. */
+  PastedLinkMaxLength: 2048,
+  /** Throttler bucket name for the outbound geocoding proxies. */
+  GeocodingThrottler: 'geocoding',
 } as const;
 
 /**
@@ -30,6 +34,11 @@ export const GeoMessages = {
   GeocodingDisabled: 'Map search is not available right now.',
   /** Returned when the geocoding provider could not be reached. */
   GeocodingUnavailable: 'Map search is temporarily unavailable. Please try again shortly.',
+  /** Returned when a client exceeds the geocoding proxy rate limit. */
+  GeocodingRateLimited: 'Too many map searches. Please wait a moment and try again.',
+  /** Returned when a pasted link carries no usable Bangladeshi coordinates. */
+  UnreadableMapLink:
+    'That does not look like a Google Maps location in Bangladesh. Paste the link from the Maps share button, or drop a pin instead.',
   /** Resource label for a reverse-geocode miss. */
   LocationResourceName: 'Location',
 } as const;

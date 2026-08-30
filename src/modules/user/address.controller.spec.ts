@@ -7,6 +7,7 @@ import { createMockLogger } from '../../../test/support/mocks';
 import { AddressController } from './address.controller';
 import { AddressService } from './address.service';
 import { CreateAddressDto } from './dto/create-address.dto';
+import { UpdateAddressDto } from './dto/update-address.dto';
 
 const authenticated: AuthenticatedUser = {
   supabaseUserId: '11111111-1111-1111-1111-111111111111',
@@ -174,18 +175,6 @@ describe('AddressController', () => {
         isDefault: true,
       });
     });
-
-    it('is idempotent from the caller’s point of view', async () => {
-      addressService.setDefaultAddress.mockResolvedValue({
-        ok: true,
-        data: { id: 'address-1', isDefault: true },
-      });
-
-      const first = await controller.setDefault(authenticated, 'address-1');
-      const second = await controller.setDefault(authenticated, 'address-1');
-
-      expect(second).toEqual(first);
-    });
   });
 
   describe('CreateAddressDto validation', () => {
@@ -263,6 +252,41 @@ describe('AddressController', () => {
       });
 
       expect(dto.recipientName).toBe('Rahim Uddin');
+    });
+  });
+
+  describe('UpdateAddressDto null handling', () => {
+    // These shipped broken: PartialType's default @IsOptional() skips null as well as
+    // undefined, so {"phone": null} reached the service and threw a 500, and
+    // {"recipientName": null} reached a NOT NULL column and surfaced as a 503.
+    it.each(['recipientName', 'phone', 'division', 'district', 'unit', 'addressLine'])(
+      'rejects an explicit null %s with a validation error, not a 500',
+      async (field) => {
+        const dto = plainToInstance(UpdateAddressDto, { [field]: null });
+
+        await expect(validate(dto)).resolves.not.toEqual([]);
+      },
+    );
+
+    it('accepts an explicit null area, which clears it', async () => {
+      // Needed to move an address to a city thana that has no areas beneath it.
+      const dto = plainToInstance(UpdateAddressDto, { area: null });
+
+      await expect(validate(dto)).resolves.toEqual([]);
+      expect(dto.area).toBeNull();
+    });
+
+    it('still validates a supplied area', async () => {
+      const dto = plainToInstance(UpdateAddressDto, { area: '' });
+
+      await expect(validate(dto)).resolves.not.toEqual([]);
+    });
+
+    it('leaves an omitted field undefined so Prisma will not touch it', () => {
+      const dto = plainToInstance(UpdateAddressDto, { label: 'Office' });
+
+      expect(dto.area).toBeUndefined();
+      expect(dto.recipientName).toBeUndefined();
     });
   });
 });

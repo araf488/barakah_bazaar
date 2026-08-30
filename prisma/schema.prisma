@@ -109,6 +109,10 @@ model Address {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // `userId` alone is a redundant prefix of the composite below, so every address write
+  // maintains two indexes where one would do. Left in place deliberately: dropping it means
+  // a migration, and the applied database already has both. Fold it into the next migration
+  // that touches this table rather than spending one on it alone.
   @@index([userId])
   @@index([userId, deletedAt])
   @@map("addresses")

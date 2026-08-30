@@ -74,6 +74,8 @@ const baseEnvSchema = z.object({
   PHOTON_API_URL: z.url().default('https://photon.komoot.io'),
   GEOAPIFY_API_URL: z.url().default('https://api.geoapify.com'),
   GEOAPIFY_API_KEY: z.string().min(1).optional(),
+  /** Requests per minute, per IP, allowed against the outbound geocoding proxies. */
+  GEOCODING_RATE_LIMIT: z.coerce.number().int().positive().default(30),
 });
 
 export type Env = z.infer<typeof baseEnvSchema>;

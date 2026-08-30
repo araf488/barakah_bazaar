@@ -101,19 +101,44 @@ export class AddressRepository {
    */
   async create(userId: string, data: AddressCreateData): Promise<Address | null> {
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const existing = await tx.address.count({
-          where: AddressRepository.ownedAndLive(userId),
-        });
-
-        return await tx.address.create({
-          data: { ...data, userId, isDefault: existing === 0 },
-        });
-      });
+      return await this.insert(userId, data);
     } catch (error) {
+      // Two concurrent first addresses can both count zero under READ COMMITTED; the second
+      // insert then violates `addresses_one_default_per_user`. The customer's address is
+      // perfectly valid, so retry once as a non-default rather than answering 503.
+      if (AddressRepository.isDuplicateDefault(error)) {
+        try {
+          return await this.prisma.address.create({ data: { ...data, userId, isDefault: false } });
+        } catch (retryError) {
+          this.logger.error(
+            { err: retryError, userId },
+            'Exception occurred in AddressRepository.create retry',
+          );
+          return null;
+        }
+      }
+
       this.logger.error({ err: error, userId }, 'Exception occurred in AddressRepository.create');
       return null;
     }
+  }
+
+  private async insert(userId: string, data: AddressCreateData): Promise<Address> {
+    return await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.address.count({
+        where: AddressRepository.ownedAndLive(userId),
+      });
+
+      return await tx.address.create({
+        data: { ...data, userId, isDefault: existing === 0 },
+      });
+    });
+  }
+
+  /** Postgres 23505 raised by the partial unique index on the default flag. */
+  private static isDuplicateDefault(error: unknown): boolean {
+    const code = (error as { code?: unknown } | null)?.code;
+    return code === 'P2002' || code === '23505';
   }
 
   async updateForUser(userId: string, id: string, data: AddressUpdateData): Promise<AddressResult> {

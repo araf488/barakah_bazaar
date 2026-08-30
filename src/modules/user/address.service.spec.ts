@@ -43,7 +43,7 @@ describe('AddressService', () => {
     promoteDefault: jest.Mock;
   };
   let authService: { resolveActiveUserId: jest.Mock };
-  let geoService: { validateChain: jest.Mock };
+  let geoService: { validateChain: jest.Mock; validateDistrict: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: AddressService;
 
@@ -60,7 +60,10 @@ describe('AddressService', () => {
     authService = {
       resolveActiveUserId: jest.fn().mockResolvedValue({ ok: true, data: 'user-1' }),
     };
-    geoService = { validateChain: jest.fn().mockReturnValue({ ok: true, data: undefined }) };
+    geoService = {
+      validateChain: jest.fn().mockReturnValue({ ok: true, data: undefined }),
+      validateDistrict: jest.fn().mockReturnValue({ ok: true, data: undefined }),
+    };
     logger = createMockLogger();
     service = new AddressService(
       repository as unknown as AddressRepository,
@@ -335,6 +338,24 @@ describe('AddressService', () => {
 
       expect(!result.ok && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
     });
+
+    it('validates the NEW area when an explicit null clears it', async () => {
+      // `??` used to re-validate the stored area here, so moving to a thana with no areas
+      // was impossible: the old area was checked against the new unit and always failed.
+      await service.updateAddress(
+        authenticated,
+        'address-1',
+        updateDto({ unit: 'Banani', area: null }),
+      );
+
+      expect(geoService.validateChain).toHaveBeenCalledWith('Dhaka', 'Dhaka', 'Banani', null);
+    });
+
+    it('writes the cleared area rather than silently keeping the old one', async () => {
+      await service.updateAddress(authenticated, 'address-1', updateDto({ area: null }));
+
+      expect(repository.updateForUser.mock.calls[0][2].area).toBeNull();
+    });
   });
 
   describe('deleteAddress', () => {
@@ -406,6 +427,73 @@ describe('AddressService', () => {
       const result = await service.setDefaultAddress(authenticated, 'address-1');
 
       expect(!result.ok && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+  });
+
+  describe('unlisted locations', () => {
+    beforeEach(() => {
+      repository.countForUser.mockResolvedValue(0);
+      repository.create.mockResolvedValue(addressFixture());
+    });
+
+    it('validates only division and district when the customer typed their own area', async () => {
+      // Our geography is good but not complete; a customer whose area we do not list must
+      // still be able to order.
+      await service.createAddress(
+        authenticated,
+        createDto({ unit: 'Some New Township', area: 'Block C', unlistedLocation: true }),
+      );
+
+      expect(geoService.validateDistrict).toHaveBeenCalledWith('Dhaka', 'Dhaka');
+      expect(geoService.validateChain).not.toHaveBeenCalled();
+    });
+
+    it('still stores what the customer typed', async () => {
+      await service.createAddress(
+        authenticated,
+        createDto({ unit: 'Some New Township', area: 'Block C', unlistedLocation: true }),
+      );
+
+      const data = repository.create.mock.calls[0][1];
+      expect(data.upazila).toBe('Some New Township');
+      expect(data.area).toBe('Block C');
+    });
+
+    it('still rejects an invented district — routing needs that level', async () => {
+      geoService.validateDistrict.mockReturnValue({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Atlantis is not a district of Bangladesh.',
+      });
+
+      const result = await service.createAddress(
+        authenticated,
+        createDto({ district: 'Atlantis', unlistedLocation: true }),
+      );
+
+      expect(!result.ok && result.status).toBe(HttpStatus.BAD_REQUEST);
+      expect(repository.create).not.toHaveBeenCalled();
+    });
+
+    it('uses full chain validation by default', async () => {
+      await service.createAddress(authenticated, createDto());
+
+      expect(geoService.validateChain).toHaveBeenCalled();
+      expect(geoService.validateDistrict).not.toHaveBeenCalled();
+    });
+
+    it('honours the opt-out on a patch too', async () => {
+      repository.findOneForUser.mockResolvedValue(addressFixture());
+      repository.updateForUser.mockResolvedValue(addressFixture());
+
+      await service.updateAddress(
+        authenticated,
+        'address-1',
+        updateDto({ area: 'Block C', unlistedLocation: true }),
+      );
+
+      expect(geoService.validateDistrict).toHaveBeenCalled();
+      expect(geoService.validateChain).not.toHaveBeenCalled();
     });
   });
 });

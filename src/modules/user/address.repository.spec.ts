@@ -161,6 +161,27 @@ describe('AddressRepository', () => {
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     });
 
+    it('retries as a non-default when a concurrent create won the default', async () => {
+      // Two first addresses can both count zero; the loser must still get its address saved.
+      address.count.mockResolvedValue(0);
+      address.create
+        .mockRejectedValueOnce(Object.assign(new Error('unique violation'), { code: 'P2002' }))
+        .mockResolvedValueOnce(addressFixture({ isDefault: false }));
+
+      const result = await repository.create('user-1', createData);
+
+      expect(result).toEqual(addressFixture({ isDefault: false }));
+      expect(address.create.mock.calls[1][0].data.isDefault).toBe(false);
+    });
+
+    it('does not retry a failure that is not a duplicate default', async () => {
+      address.count.mockResolvedValue(0);
+      address.create.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.create('user-1', createData)).resolves.toBeNull();
+      expect(address.create).toHaveBeenCalledTimes(1);
+    });
+
     it('returns null when the insert failed', async () => {
       address.count.mockResolvedValue(0);
       address.create.mockRejectedValue(new Error('connection refused'));

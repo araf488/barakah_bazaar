@@ -1,10 +1,17 @@
-import { Controller, Get, HttpStatus, Param, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Public } from '../../common/decorators/public.decorator';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { GeoAreaListDto, GeoDistrictDto, GeoDivisionDto, GeoUnitDto } from './dto/geo-response.dto';
-import { GeoReverseQueryDto, GeoSearchQueryDto, GeocodedPlaceDto } from './dto/geocoding.dto';
+import {
+  GeoResolveLinkDto,
+  GeoReverseQueryDto,
+  GeoSearchQueryDto,
+  GeocodedPlaceDto,
+  ResolvedLocationDto,
+} from './dto/geocoding.dto';
 import { GeoConstants } from './geo.constants';
 import { GeoService } from './geo.service';
 
@@ -19,6 +26,9 @@ import { GeoService } from './geo.service';
  * Synchronous, because GeoService reads an in-memory dataset.
  */
 @ApiTags('Geo')
+// The dataset routes below read an in-memory constant and cost nothing; only the outbound
+// proxies opt back in via @Throttle.
+@SkipThrottle()
 @Controller(GeoConstants.RouteBase)
 export class GeoController {
   constructor(
@@ -88,6 +98,8 @@ export class GeoController {
   }
 
   @Public()
+  @SkipThrottle({ geocoding: false })
+  @Throttle({ geocoding: {} })
   @Get('search')
   @ApiOperation({ summary: 'Search places for the map pin' })
   @ApiResponse({ status: HttpStatus.OK, type: [GeocodedPlaceDto] })
@@ -105,6 +117,8 @@ export class GeoController {
   }
 
   @Public()
+  @SkipThrottle({ geocoding: false })
+  @Throttle({ geocoding: {} })
   @Get('reverse')
   @ApiOperation({ summary: 'Reverse-geocode a dropped pin' })
   @ApiResponse({ status: HttpStatus.OK, type: GeocodedPlaceDto })
@@ -114,6 +128,30 @@ export class GeoController {
       return unwrapOrThrow(await this.geoService.reverseGeocode(query));
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in GeoController.reverse');
+      throw error;
+    }
+  }
+
+  /**
+   * POST rather than GET: a pasted Google URL is long and full of characters that do not
+   * survive a query string cleanly. It has no side effects.
+   */
+  @Public()
+  @SkipThrottle({ geocoding: false })
+  @Throttle({ geocoding: {} })
+  @Post('resolve-link')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Resolve a pasted Google Maps link to coordinates' })
+  @ApiResponse({ status: HttpStatus.OK, type: ResolvedLocationDto })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Not a readable Bangladeshi location',
+  })
+  async resolveLink(@Body() dto: GeoResolveLinkDto): Promise<ResolvedLocationDto> {
+    try {
+      return unwrapOrThrow(await this.geoService.resolveMapLink(dto));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in GeoController.resolveLink');
       throw error;
     }
   }

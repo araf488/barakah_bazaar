@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -44,6 +45,19 @@ import { UserModule } from './modules/user/user.module';
         }),
     }),
 
+    // Outbound-proxy rate limiting. Only routes that carry @Throttle are limited; the
+    // dataset endpoints read memory and stay unmetered.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Env, true>) => [
+        {
+          name: 'geocoding',
+          ttl: 60_000,
+          limit: config.get('GEOCODING_RATE_LIMIT', { infer: true }),
+        },
+      ],
+    }),
+
     // Infrastructure
     PrismaModule,
     SupabaseModule,
@@ -57,6 +71,9 @@ import { UserModule } from './modules/user/user.module';
     UserModule,
   ],
   providers: [
+    // Ahead of authentication: an unauthenticated flood should be rejected before it costs
+    // a token verification, and the geocoding proxies are @Public().
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

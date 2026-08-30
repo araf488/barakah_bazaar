@@ -20,6 +20,22 @@ if (!dir) throw new Error('usage: node scripts/build-geo-dataset.mjs <sources-di
 const norm = (s) => String(s ?? '').normalize('NFC').replace(/[‌‍]/g, '').replace(/\s+/g, ' ').trim();
 const SUFFIX = /\s*(ইউনিয়ন|উপজেলা|উন্নয়ন সার্কেল|সার্কেল|থানা|পৌরসভা)\s*$/;
 const bnKey = (s) => norm(norm(s).replace(SUFFIX, ''));
+
+/**
+ * Match-only key collapsing the ONE Bengali variation two sources routinely disagree on:
+ * vowel length (ি/ী, ু/ূ) and the nukta. Used only to decide whether two rows are the same
+ * place; the displayed name always keeps its source spelling. Without it, আদমদিঘি and
+ * আদমদীঘি score 0.75 and ship as two separate upazilas.
+ *
+ * Deliberately NOT collapsing the nasal (ণ/ন) or sibilant (শ/ষ/স) sets: that made
+ * genuinely different places in different districts collide and merge.
+ */
+const bnFuzzy = (s) =>
+  bnKey(s)
+    .replace(/[\u09BF\u09C0]/g, '\u09BF')
+    .replace(/[\u09C1\u09C2]/g, '\u09C1')
+    .replace(/\u09BC/g, '');
+
 const enKey = (s) => {
   const n = norm(s).toLowerCase().replace(/\s+(thana|upazila|union|model|sadar)$/i, '');
   const latin = n.replace(/[^a-z0-9]/g, '');
@@ -64,7 +80,10 @@ for (const rows of [divisionRows, districtRows, upazilaRows, unionRows]) {
 // resident) rather than transliterated. Keyed by the Bengali name without its label suffix.
 const USER_VERIFIED_EN = new Map([['দনিয়া', 'Donia']]);
 
-const stats = { wikiUnits: 0, wikiAreas: 0, dmpThanas: 0, postcodeUnits: 0, postcodeAreas: 0, noEn: 0, noBn: 0, dupAreas: 0, mergedUnits: 0 };
+/** A wiki cell that leaked table markup, or names an abolished unit, is not a place. */
+const isJunkName = (value) => /[|{}\[\]]/.test(value) || /বিলুপ্ত/.test(value);
+
+const stats = { wikiUnits: 0, wikiAreas: 0, dmpThanas: 0, postcodeUnits: 0, postcodeAreas: 0, noEn: 0, noBn: 0, dupAreas: 0, mergedUnits: 0, junkSkipped: 0 };
 
 // ── Level 1-2: divisions and districts from the verified source ─────────────
 const districtsById = new Map();
@@ -114,9 +133,16 @@ for (const [distBn, units] of Object.entries(wiki)) {
   const district = districtByBn.get(bnKey(distBn));
   if (!district) continue;
   for (const { unit, unions } of units) {
-    const unitBn = norm(unit);
-    const unitEn = bnToEn.get(bnKey(unitBn)) ?? USER_VERIFIED_EN.get(bnKey(unitBn)) ?? null;
-    const kind = /সার্কেল/.test(unitBn) ? 'circle' : /থানা/.test(unitBn) ? 'thana' : 'upazila';
+    if (isJunkName(unit)) {
+      stats.junkSkipped++;
+      continue;
+    }
+    // Kind comes from the RAW string: the label is exactly what identifies a circle or a
+    // thana, so it must be read before the next line strips it.
+    const kind = /সার্কেল/.test(unit) ? 'circle' : /থানা/.test(unit) ? 'thana' : 'upazila';
+    // Strip the label ("আদমদীঘি উপজেলা" = "Adamdighi upazila"); the name is the part before it.
+    const unitBn = bnKey(unit);
+    const unitEn = bnToEn.get(unitBn) ?? USER_VERIFIED_EN.get(unitBn) ?? null;
     let rec = district.units.find((u) => bnKey(u.nameBn ?? '') === bnKey(unitBn))
            ?? (unitEn ? findUnit(district, unitEn) : undefined);
     if (!rec) {
@@ -127,6 +153,10 @@ for (const [distBn, units] of Object.entries(wiki)) {
     }
     for (const u of unions) {
       // Wikipedia appends a label ("দনিয়া ইউনিয়ন" = "Donia union"); the name is the part before it.
+      if (isJunkName(u)) {
+        stats.junkSkipped++;
+        continue;
+      }
       const bn = bnKey(u);
       const en = bnToEn.get(bn) ?? USER_VERIFIED_EN.get(bn) ?? null;
       if (!en) stats.noEn++;
@@ -148,7 +178,12 @@ for (const t of dmp) {
 // ── Source 3: post office areas — postcode + coordinates ───────────────────
 const csv = readFileSync(join(dir, 'postcodes.csv'), 'utf8').trim().split(/\r?\n/);
 const head = csv[0].split(',');
-const col = (n) => head.indexOf(n);
+const col = (n) => {
+  const index = head.indexOf(n);
+  // The JSON sources throw on an unexpected shape; this one used to yield NaN forever.
+  if (index === -1) throw new Error(`postcodes.csv is missing the '${n}' column`);
+  return index;
+};
 for (const line of csv.slice(1)) {
   const c = line.split(',');
   const district = districtByEn.get(enKey(c[col('district')]));
@@ -210,11 +245,18 @@ for (const dv of divisions) for (const ds of dv.districts) {
   const keep = [];
   for (const unit of ordered) {
     const target = keep.find((k) => {
-      if (TRUST[k._src] >= TRUST[unit._src] && k._src !== unit._src) return false;
+      // `keep` is filled in ascending trust order, so anything already kept is at least as
+      // trusted as `unit`; a same-source pair is never merged, since two distinct units of
+      // one source with similar names are two real places.
+      if (k._src === unit._src) return false;
+      // A development circle is its own thing and never folds into an upazila or thana.
+      // Upazila-vs-thana is NOT a blocker: the post-office source labels every unit a
+      // "thana", Savar included, so its kind carries no information.
+      if ((k.kind === 'circle') !== (unit.kind === 'circle')) return false;
       // English side, when both actually have Latin names
       if (!isBn(k.nameEn) && !isBn(unit.nameEn) && similarity(k.nameEn, unit.nameEn) >= MERGE_THRESHOLD) return true;
       // Bengali side, which is how a Wikipedia-only unit finds its geocode twin
-      if (k.nameBn && unit.nameBn && similarity(bnKey(k.nameBn), bnKey(unit.nameBn)) >= MERGE_THRESHOLD) return true;
+      if (k.nameBn && unit.nameBn && similarity(bnFuzzy(k.nameBn), bnFuzzy(unit.nameBn)) >= MERGE_THRESHOLD) return true;
       return false;
     });
     if (!target) { keep.push(unit); continue; }
@@ -249,7 +291,8 @@ const units = count((ds) => ds.units.length);
 const areas = count((ds) => ds.units.reduce((s, u) => s + u.areas.length, 0));
 
 const header = `// GENERATED FILE — do not edit by hand.
-// Regenerate with: node scripts/build-geo-dataset.mjs <sources-dir>
+// Regenerate with: node scripts/build-geo-dataset.mjs <sources-dir> && npm run format
+// (prettier rewrites this file's quoting; skipping it leaves a 57k-line whitespace diff)
 //
 // Merged from four verified sources, none of them invented:
 //   1. github.com/nuhil/bangladesh-geocode @5622f68 — division/district/upazila/union, bilingual
@@ -309,5 +352,5 @@ writeFileSync('src/modules/geo/bangladesh-geo.data.ts', `${header}${JSON.stringi
 
 console.log(`divisions=${divisions.length} districts=${count(() => 1)} units=${units} areas=${areas}`);
 console.log(`added: wiki units=${stats.wikiUnits} wiki areas=${stats.wikiAreas} dmp thanas=${stats.dmpThanas} postcode units=${stats.postcodeUnits} postcode areas=${stats.postcodeAreas}`);
-console.log(`merged spelling-variant units: ${stats.mergedUnits}`);
+console.log(`merged spelling-variant units: ${stats.mergedUnits}, junk/abolished skipped: ${stats.junkSkipped}`);
 console.log(`gaps: no english=${stats.noEn} no bengali=${stats.noBn} duplicate areas skipped=${stats.dupAreas}`);

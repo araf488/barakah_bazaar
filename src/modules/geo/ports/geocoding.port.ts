@@ -1,6 +1,9 @@
 /** Injection token for the configured geocoding provider. */
 export const GeoTokens = {
   GeocodingProvider: Symbol('BARAKAH_GEOCODING_PROVIDER'),
+  /** Follows a shortened map link. A token, not a default parameter: Nest cannot resolve a
+   *  defaulted constructor argument and fails at boot trying to inject it. */
+  UrlResolver: Symbol('BARAKAH_URL_RESOLVER'),
 } as const;
 
 /** One place a geocoder returned. Only the coordinates are ever persisted. */

@@ -22,3 +22,21 @@ export const fetchJson: JsonFetcher = async (url: string): Promise<unknown> => {
 
   return await response.json();
 };
+
+/** Follows a redirect and returns the final URL. Used only for Google short links. */
+export type UrlResolver = (url: string) => Promise<string>;
+
+/**
+ * Resolves a short link by following redirects.
+ *
+ * The caller MUST have checked the host against the allowlist first — this issues a request
+ * to a customer-supplied URL, which is an SSRF vector without that gate.
+ */
+export const resolveRedirect: UrlResolver = async (url: string): Promise<string> => {
+  const response = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(GEOCODING_TIMEOUT_MS),
+  });
+
+  return response.url;
+};

@@ -62,3 +62,28 @@ export class GeocodedPlaceDto {
   @ApiProperty({ example: 90.4078 }) longitude!: number;
   @ApiPropertyOptional({ nullable: true, example: '1212' }) postCode?: string | null;
 }
+
+/** A pasted Google Maps link, or a bare "lat, lng" pair. */
+export class GeoResolveLinkDto {
+  @ApiProperty({
+    example: 'https://maps.app.goo.gl/abc123',
+    description: 'A Google Maps URL, a share link, or "23.7925, 90.4078"',
+  })
+  @TrimString()
+  @IsString()
+  @MinLength(GeoConstants.SearchMinLength)
+  @MaxLength(GeoConstants.PastedLinkMaxLength)
+  link!: string;
+}
+
+/** What a pasted link resolved to. */
+export class ResolvedLocationDto {
+  @ApiProperty({ example: 23.7925 }) latitude!: number;
+  @ApiProperty({ example: 90.4078 }) longitude!: number;
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Reverse-geocoded description, when a provider is configured',
+  })
+  label!: string | null;
+  @ApiPropertyOptional({ nullable: true }) postCode!: string | null;
+}

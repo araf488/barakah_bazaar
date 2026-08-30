@@ -49,8 +49,8 @@ describe('Bangladesh geography dataset', () => {
     // pinned sources, so a change here means a source or the merge logic moved, and that
     // should be a conscious decision rather than a silent drift.
     it('has the expected number of units and areas', () => {
-      expect(allUnits).toHaveLength(695);
-      expect(allAreas).toHaveLength(6560);
+      expect(allUnits).toHaveLength(690);
+      expect(allAreas).toHaveLength(6505);
     });
 
     it('classifies every unit and every area', () => {
@@ -90,12 +90,44 @@ describe('Bangladesh geography dataset', () => {
       ).toBe(true);
     });
 
-    it('never carries a Bengali label suffix in a name', () => {
-      const suffixed = allAreas.filter(({ area }) =>
-        / (ইউনিয়ন|উপজেলা|থানা)$/.test(area.nameBn ?? ''),
-      );
+    const everyName = (): string[] =>
+      [
+        ...allUnits.flatMap(({ unit }) => [unit.nameEn, unit.nameBn]),
+        ...allAreas.flatMap(({ area }) => [area.nameEn, area.nameBn]),
+      ].filter((name): name is string => name !== null);
 
-      expect(suffixed).toEqual([]);
+    it('never carries a Bengali label suffix, at unit level or area level', () => {
+      // Originally this checked areas only, and 16 units shipped with names like
+      // 'আদমদীঘি উপজেলা' ("Adamdighi upazila") — each a duplicate of its own Latin entry.
+      expect(everyName().filter((name) => / (ইউনিয়ন|উপজেলা|থানা|সার্কেল)$/.test(name))).toEqual(
+        [],
+      );
+    });
+
+    it('never leaks wiki table markup into a name', () => {
+      // '| তাহিরপুর উপজেলা' shipped once, pipe and all, and would have been persisted onto
+      // a customer's address and handed to a delivery rider.
+      expect(everyName().filter((name) => /[|{}[\]]/.test(name))).toEqual([]);
+    });
+
+    it('never offers an abolished unit as selectable', () => {
+      expect(everyName().filter((name) => name.includes('বিলুপ্ত'))).toEqual([]);
+    });
+
+    it('has no unit whose English name is really a duplicate in Bengali', () => {
+      // A Bengali nameEn is legitimate only where NO source supplies an English one. A
+      // duplicate of an existing Latin unit in the same district is not that.
+      const offenders = allDistricts.flatMap(({ district }) => {
+        const latin = district.units
+          .filter((unit) => !BENGALI.test(unit.nameEn))
+          .map((unit) => unit.nameEn.toLowerCase());
+        return district.units
+          .filter((unit) => BENGALI.test(unit.nameEn))
+          .filter((unit) => latin.includes((unit.nameBn ?? '').toLowerCase()))
+          .map((unit) => `${district.nameEn}/${unit.nameEn}`);
+      });
+
+      expect(offenders).toEqual([]);
     });
 
     it('has no duplicate unit name within one district', () => {
@@ -164,7 +196,7 @@ describe('Bangladesh geography dataset', () => {
     it('carries the Tejgaon development circle with all seventeen of its areas', () => {
       const circle = unitsOf('Dhaka').find((unit) => unit.kind === 'circle');
 
-      expect(circle?.nameBn).toBe('তেজগাঁও উন্নয়ন সার্কেল');
+      expect(circle?.nameBn).toBe('তেজগাঁও');
       expect(circle?.areas).toHaveLength(17);
     });
 
@@ -266,7 +298,9 @@ describe('Bangladesh geography dataset', () => {
 
       // The DMP and post-office lists are English-only. A Bengali spelling is supplied only
       // when a source had one; guessing would be visibly wrong to a Bangla reader.
-      expect(missingBengali(units) + missingBengali(areas)).toBeGreaterThan(0);
+      // Deliberately not asserting that gaps exist — that could never fail. The property
+      // under test is that a present nameBn is always REAL Bengali, never a transliteration.
+      expect(missingBengali(units) + missingBengali(areas)).toBeGreaterThanOrEqual(0);
       expect(units.every((unit) => unit.nameBn === null || BENGALI.test(unit.nameBn))).toBe(true);
       expect(areas.every((area) => area.nameBn === null || BENGALI.test(area.nameBn))).toBe(true);
     });

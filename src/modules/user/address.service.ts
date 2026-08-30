@@ -99,11 +99,12 @@ export class AddressService {
         return owner;
       }
 
-      const geography = this.geoService.validateChain(
+      const geography = this.validateGeography(
         dto.division,
         dto.district,
         dto.unit,
-        dto.area,
+        dto.area ?? null,
+        dto.unlistedLocation === true,
       );
 
       if (!geography.ok) {
@@ -271,12 +272,38 @@ export class AddressService {
       return serviceOk<void>(undefined);
     }
 
-    return this.geoService.validateChain(
+    // `??` would treat an explicit null as "not supplied" and re-validate the OLD area,
+    // making it impossible to clear one — and validating a value different from the one
+    // about to be written. Only `undefined` means "unchanged".
+    return this.validateGeography(
       dto.division ?? existing.division,
       dto.district ?? existing.district,
       dto.unit ?? existing.upazila,
-      dto.area ?? existing.area,
+      dto.area !== undefined ? dto.area : existing.area,
+      dto.unlistedLocation === true,
     );
+  }
+
+  /**
+   * Validates the chain, or — when the customer says their area is not in our list — only
+   * the division and district.
+   *
+   * Those top two levels stay mandatory even for an unlisted location: they are complete and
+   * authoritative, and they are what delivery routing needs. Letting a customer invent a
+   * district would produce an address no courier could act on, which helps nobody.
+   */
+  private validateGeography(
+    division: string,
+    district: string,
+    unit: string,
+    area: string | null,
+    unlisted: boolean,
+  ): ServiceResponse<void> {
+    if (!unlisted) {
+      return this.geoService.validateChain(division, district, unit, area);
+    }
+
+    return this.geoService.validateDistrict(division, district);
   }
 
   private static toCreateData(dto: CreateAddressDto): AddressCreateData {

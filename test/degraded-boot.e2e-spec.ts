@@ -128,6 +128,25 @@ describe('Degraded boot (no Supabase, no database)', () => {
       expect(response.status).toBe(400);
     });
 
+    it('resolves a pasted Google Maps link without any provider configured', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/geo/resolve-link')
+        .send({ link: 'https://www.google.com/maps/@23.7925,90.4078,17z' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.latitude).toBeCloseTo(23.7925, 3);
+      // No geocoder in this suite, so there is no description — the paste still works.
+      expect(response.body.label).toBeNull();
+    });
+
+    it('refuses a pasted link that points outside Google — SSRF guard', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/geo/resolve-link')
+        .send({ link: 'http://169.254.169.254/latest/meta-data/' });
+
+      expect(response.status).toBe(400);
+    });
+
     it('answers 404 with the contract message for an unknown division', async () => {
       const response = await request(app.getHttpServer()).get(
         '/api/v1/geo/divisions/Narnia/districts',

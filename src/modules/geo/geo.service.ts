@@ -18,7 +18,15 @@ import {
   GeoUnitDto,
 } from './dto/geo-response.dto';
 import { GeoMessages } from './geo.constants';
-import { GeoReverseQueryDto, GeoSearchQueryDto, GeocodedPlaceDto } from './dto/geocoding.dto';
+import {
+  GeoResolveLinkDto,
+  GeoReverseQueryDto,
+  GeoSearchQueryDto,
+  GeocodedPlaceDto,
+  ResolvedLocationDto,
+} from './dto/geocoding.dto';
+import { GoogleMapsLink } from './google-maps-link';
+import { UrlResolver } from './gateways/json-fetcher';
 import { GeoTokens, GeocodedPlace, GeocodingProvider } from './ports/geocoding.port';
 
 /**
@@ -38,6 +46,8 @@ export class GeoService {
   constructor(
     @Inject(GeoTokens.GeocodingProvider) private readonly geocoder: GeocodingProvider,
     @InjectPinoLogger(GeoService.name) private readonly logger: PinoLogger,
+    /** Injected so tests never issue a real redirect request. */
+    @Inject(GeoTokens.UrlResolver) private readonly followRedirect: UrlResolver,
   ) {}
 
   listDivisions(): ServiceResponse<GeoDivisionDto[]> {
@@ -188,6 +198,43 @@ export class GeoService {
     }
   }
 
+  /**
+   * Validates only division → district.
+   *
+   * Used when a customer says their area is not in our list and typed it themselves. These
+   * two levels stay mandatory because they are complete and authoritative (8 and 64) and are
+   * what delivery routing needs; the levels below them are where our coverage runs out.
+   */
+  validateDistrict(division: string, district: string): ServiceResponse<void> {
+    try {
+      const foundDivision = DIVISION_BY_KEY.get(GeoService.key(division));
+
+      if (!foundDivision) {
+        return serviceFail(
+          HttpStatus.BAD_REQUEST,
+          formatMessage(GeoMessages.UnknownDivisionTemplate, division),
+        );
+      }
+
+      const located = DISTRICT_BY_KEY.get(GeoService.key(district));
+
+      if (!located || located.division.nameEn !== foundDivision.nameEn) {
+        return serviceFail(
+          HttpStatus.BAD_REQUEST,
+          formatMessage(GeoMessages.DistrictNotInDivisionTemplate, district, foundDivision.nameEn),
+        );
+      }
+
+      return serviceOk<void>(undefined);
+    } catch (error) {
+      this.logger.error(
+        { err: error, division, district },
+        'Exception occurred in GeoService.validateDistrict',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
   /** Extracted so `validateChain` stays well inside the complexity budget. */
   private static validateArea(unit: GeoUnitData, area?: string | null): ServiceResponse<void> {
     const wanted = area?.trim();
@@ -289,5 +336,64 @@ export class GeoService {
       longitude: place.longitude,
       postCode: place.postCode ?? null,
     };
+  }
+
+  /**
+   * Resolves a location a customer pasted from Google Maps.
+   *
+   * Many Bangladeshi buildings have no useful street address, so a shared map link is often
+   * the most precise thing a customer can give. Short links carry no coordinates until
+   * followed, so those are resolved first — and ONLY when the host passes the allowlist,
+   * because following a customer-supplied URL is otherwise an SSRF hole.
+   *
+   * Coordinates are all this returns. The administrative address still comes from the
+   * vendored dataset, so a pasted link can never write an unroutable address.
+   */
+  async resolveMapLink(dto: GeoResolveLinkDto): Promise<ServiceResponse<ResolvedLocationDto>> {
+    try {
+      const coordinates = await this.extractCoordinates(dto.link);
+
+      if (!coordinates) {
+        return serviceFail(HttpStatus.BAD_REQUEST, GeoMessages.UnreadableMapLink);
+      }
+
+      // Best-effort: a description is a nicety, so a geocoder outage must not fail the paste.
+      const described = this.geocoder.isConfigured
+        ? await this.geocoder.reverse(coordinates.latitude, coordinates.longitude)
+        : null;
+
+      return serviceOk({
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+        label: described?.label ?? null,
+        postCode: described?.postCode ?? null,
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in GeoService.resolveMapLink');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /** Parses directly, or follows one allowlisted short link and parses the destination. */
+  private async extractCoordinates(
+    link: string,
+  ): Promise<{ latitude: number; longitude: number } | null> {
+    const direct = GoogleMapsLink.parse(link);
+
+    if (direct) {
+      return direct;
+    }
+
+    if (!GoogleMapsLink.isShortLink(link) || !GoogleMapsLink.isFollowableUrl(link)) {
+      return null;
+    }
+
+    try {
+      return GoogleMapsLink.parse(await this.followRedirect(link));
+    } catch (error) {
+      // The pasted link is not logged: it points at the customer's home.
+      this.logger.warn({ err: error }, 'Could not follow a shortened map link');
+      return null;
+    }
   }
 }

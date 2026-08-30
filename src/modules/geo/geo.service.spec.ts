@@ -1,7 +1,7 @@
 import { HttpStatus } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
-import { GeoReverseQueryDto, GeoSearchQueryDto } from './dto/geocoding.dto';
+import { GeoResolveLinkDto, GeoReverseQueryDto, GeoSearchQueryDto } from './dto/geocoding.dto';
 import { NoopGeocodingGateway } from './gateways/noop-geocoding.gateway';
 import { GeoService } from './geo.service';
 
@@ -11,7 +11,7 @@ describe('GeoService', () => {
 
   beforeEach(() => {
     logger = createMockLogger();
-    service = new GeoService(new NoopGeocodingGateway(), logger);
+    service = new GeoService(new NoopGeocodingGateway(), logger, jest.fn());
   });
 
   /** Reads a real area name out of the dataset rather than hard-coding a second copy. */
@@ -236,6 +236,7 @@ describe('GeoService', () => {
           reverse: () => Promise.resolve(null),
         },
         logger,
+        jest.fn(),
       );
 
       const result = await failing.searchPlaces(
@@ -258,6 +259,7 @@ describe('GeoService', () => {
           reverse: () => Promise.resolve(null),
         },
         logger,
+        jest.fn(),
       );
 
       await expect(
@@ -275,6 +277,7 @@ describe('GeoService', () => {
           reverse: () => Promise.resolve(null),
         },
         logger,
+        jest.fn(),
       );
 
       const result = await stub.searchPlaces(
@@ -287,6 +290,118 @@ describe('GeoService', () => {
         longitude: 90.41,
         postCode: null,
       });
+    });
+  });
+
+  describe('validateDistrict', () => {
+    it('accepts a real division/district pair', () => {
+      expect(service.validateDistrict('Dhaka', 'Gazipur')).toEqual({ ok: true, data: undefined });
+    });
+
+    it('still rejects a district that sits in another division', () => {
+      // An unlisted AREA is allowed; an invented district is not — routing needs this level.
+      expect(service.validateDistrict('Sylhet', 'Gazipur')).toEqual({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Gazipur is not a district of Sylhet.',
+      });
+    });
+
+    it('rejects an unknown division', () => {
+      expect(service.validateDistrict('Narnia', 'Gazipur').ok).toBe(false);
+    });
+  });
+
+  describe('resolveMapLink', () => {
+    const link = (value: string): GeoResolveLinkDto =>
+      Object.assign(new GeoResolveLinkDto(), { link: value });
+
+    it('reads coordinates straight out of a pasted URL', async () => {
+      const result = await service.resolveMapLink(
+        link('https://www.google.com/maps/@23.7925,90.4078,17z'),
+      );
+
+      expect(result.ok && result.data.latitude).toBeCloseTo(23.7925, 3);
+      // No provider configured in this suite, so there is no description — but the paste
+      // still succeeds, because coordinates are the part that matters.
+      expect(result.ok && result.data.label).toBeNull();
+    });
+
+    it('accepts a bare coordinate pair', async () => {
+      const result = await service.resolveMapLink(link('23.7925, 90.4078'));
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('rejects something that is not a location', async () => {
+      const result = await service.resolveMapLink(link('my house near the big mosque'));
+
+      expect(!result.ok && result.status).toBe(HttpStatus.BAD_REQUEST);
+    });
+
+    it('rejects a pin outside Bangladesh', async () => {
+      const result = await service.resolveMapLink(
+        link('https://www.google.com/maps/@48.8566,2.3522,17z'),
+      );
+
+      expect(!result.ok && result.status).toBe(HttpStatus.BAD_REQUEST);
+    });
+
+    it('follows a Google short link and reads the destination', async () => {
+      const follow = jest
+        .fn()
+        .mockResolvedValue('https://www.google.com/maps/place/X/@23.7925,90.4078,17z');
+      const withFollow = new GeoService(new NoopGeocodingGateway(), logger, follow);
+
+      const result = await withFollow.resolveMapLink(link('https://maps.app.goo.gl/abc123'));
+
+      expect(result.ok && result.data.longitude).toBeCloseTo(90.4078, 3);
+      expect(follow).toHaveBeenCalledWith('https://maps.app.goo.gl/abc123');
+    });
+
+    it('never follows a non-Google URL — SSRF guard', async () => {
+      const follow = jest.fn();
+      const withFollow = new GeoService(new NoopGeocodingGateway(), logger, follow);
+
+      const result = await withFollow.resolveMapLink(
+        link('http://169.254.169.254/latest/meta-data/'),
+      );
+
+      expect(!result.ok && result.status).toBe(HttpStatus.BAD_REQUEST);
+      expect(follow).not.toHaveBeenCalled();
+    });
+
+    it('fails the paste gracefully when the short link cannot be followed', async () => {
+      const follow = jest.fn().mockRejectedValue(new Error('timeout'));
+      const withFollow = new GeoService(new NoopGeocodingGateway(), logger, follow);
+
+      const result = await withFollow.resolveMapLink(link('https://maps.app.goo.gl/abc123'));
+
+      expect(!result.ok && result.status).toBe(HttpStatus.BAD_REQUEST);
+    });
+
+    it('adds a description when a geocoder is configured, but does not require one', async () => {
+      const described = new GeoService(
+        {
+          name: 'stub',
+          isConfigured: true,
+          search: () => Promise.resolve([]),
+          reverse: () =>
+            Promise.resolve({
+              label: 'গুলশান ১, ঢাকা',
+              latitude: 23.79,
+              longitude: 90.41,
+              postCode: '1212',
+            }),
+        },
+        logger,
+        jest.fn(),
+      );
+
+      const result = await described.resolveMapLink(link('23.7925, 90.4078'));
+
+      expect(result.ok && result.data.label).toBe('গুলশান ১, ঢাকা');
+      expect(result.ok && result.data.postCode).toBe('1212');
     });
   });
 });
