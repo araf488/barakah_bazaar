@@ -52,7 +52,20 @@ global hook `main.ts` installs, so the service behaves identically outside the b
 - Every endpoint carries an explicit `@Roles(...)`. There is no default-allow for staff routes.
 - Every write appends to admin_audit_log: actor, entity, before/after, timestamp. Non-negotiable once money and stock are involved.
 - Role changes are written through the Supabase Admin API so `app_metadata.role` stays the source of truth; the local column mirrors it.
-- Bulk CSV product import belongs here — grocery SKU counts make one-by-one entry impractical.
+- Bulk CSV product import: `POST /admin/catalog/import`. One row is one VARIANT; rows sharing
+  a slug become one product, which is how a grocery catalog actually arrives (250g / 500g /
+  1kg of one item) and lets a buyer maintain the file in a spreadsheet.
+
+  **Create-only and all-or-nothing.** An existing slug is an error, not an update — editing
+  live prices through a spreadsheet upload is a different and much riskier feature, and
+  conflating them means a typo'd slug silently rewrites a real product. Every row must
+  validate before anything is written, because a partly-applied import is worse than a
+  rejected one: nobody can tell which half landed.
+
+  Send `dryRun: true` first. The report lists every problem with its line and column, so a
+  buyer fixes the whole spreadsheet in one pass. The route answers 200 even when rows were
+  rejected — the body IS the report, and a 4xx would make the portal treat a useful
+  validation result as a failure. Capped at 500 rows so the write fits one transaction.
 
 ## Before writing code here
 

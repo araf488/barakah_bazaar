@@ -17,6 +17,9 @@ export const AdminConstants = {
   MaxSkuLength: 64,
   MaxUnitLabelLength: 40,
   MaxBrandLength: 120,
+  /** Rows one import may carry. Bounded so the whole import fits in one transaction. */
+  MaxImportRows: 500,
+  MaxImportBytes: 1_000_000,
   /** Lowercase letters, digits and single hyphens. The storefront routes on this. */
   SlugPattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
 } as const;
@@ -32,6 +35,7 @@ export const AdminAuditActions = {
   CategoryUpdated: 'category.updated',
   CategoryDeactivated: 'category.deactivated',
   ProductCreated: 'product.created',
+  ProductsImported: 'product.imported',
   ProductUpdated: 'product.updated',
   ProductPublished: 'product.published',
   ProductUnpublished: 'product.unpublished',
@@ -68,6 +72,14 @@ export const AdminMessages = {
   /** Supabase accepted the role but the local record failed — needs an operator. */
   RoleChangePartial:
     'The role was changed in the identity provider but could not be recorded locally. Contact an administrator before making further changes.',
+  /** The file had no usable rows. */
+  ImportEmpty: 'The file contains no product rows.',
+  /** {0} = the row cap. */
+  ImportTooLargeTemplate:
+    'An import may contain at most {0} rows. Split the file and upload it in parts.',
+  /** Nothing was written because at least one row was rejected. */
+  ImportRejected:
+    'Nothing was imported. Every row must be valid — fix the rows listed below and upload again.',
   /** {0} = the slug already taken. */
   SlugTakenTemplate: 'The slug "{0}" is already in use. Slugs must be unique.',
   /** {0} = the SKU already taken. */

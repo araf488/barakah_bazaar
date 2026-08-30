@@ -18,6 +18,8 @@ import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { Category, Product, ProductVariant, UserRole } from '../../infra/prisma/prisma-client';
 import { AdminCatalogService } from './admin-catalog.service';
+import { AdminImportService } from './admin-import.service';
+import { ImportProductsDto, ImportReportDto } from './dto/import.dto';
 import { AdminConstants } from './admin.constants';
 import {
   CreateCategoryDto,
@@ -43,6 +45,7 @@ import {
 export class AdminCatalogController {
   constructor(
     private readonly catalogService: AdminCatalogService,
+    private readonly importService: AdminImportService,
     @InjectPinoLogger(AdminCatalogController.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -239,6 +242,39 @@ export class AdminCatalogController {
       this.logger.error(
         { err: error, variantId: id },
         'Exception occurred in AdminCatalogController.updateVariant',
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Bulk product import.
+   *
+   * Create-only and all-or-nothing: every row must validate before anything is written, and
+   * an existing slug is an error rather than an update. Send `dryRun` first — the report
+   * lists every problem with its line and column, so a buyer can fix the spreadsheet in one
+   * pass instead of discovering faults one upload at a time.
+   *
+   * Answers 200 even when rows were rejected: the body IS the report, and a 4xx would make
+   * the admin portal treat a perfectly useful validation result as a failure.
+   */
+  @Post('import')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk-import products from CSV' })
+  @ApiResponse({ status: HttpStatus.OK, type: ImportReportDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Empty or oversized file' })
+  async importProducts(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Body() dto: ImportProductsDto,
+  ): Promise<ImportReportDto> {
+    try {
+      return unwrapOrThrow(
+        await this.importService.importProducts(AdminCatalogController.require(user), dto),
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'Exception occurred in AdminCatalogController.importProducts',
       );
       throw error;
     }

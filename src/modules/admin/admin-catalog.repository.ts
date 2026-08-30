@@ -9,6 +9,12 @@ export type CategoryResult = Category | null | undefined;
 export type ProductResult = Product | null | undefined;
 export type VariantResult = ProductVariant | null | undefined;
 
+/** One product and its variants, already validated, ready to insert. */
+export interface ImportProductPlan {
+  readonly product: Prisma.ProductCreateInput;
+  readonly variants: readonly Omit<Prisma.ProductVariantCreateInput, 'product' | 'isDefault'>[];
+}
+
 /**
  * Write-side catalog persistence for staff.
  *
@@ -316,6 +322,53 @@ export class AdminCatalogRepository {
       this.logger.error(
         { err: error, productId, variantId },
         'Exception occurred in AdminCatalogRepository.promoteDefaultVariant',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Writes a whole validated import in ONE transaction, with an audit row per product.
+   *
+   * All-or-nothing: a partly-imported catalog is worse than a rejected file, because nobody
+   * can tell which half landed. The row cap exists so this transaction stays bounded.
+   */
+  async importProducts(
+    plan: readonly ImportProductPlan[],
+    audit: (created: Product, variants: readonly ProductVariant[]) => AuditLogWriteData,
+  ): Promise<{ products: number; variants: number } | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        let variants = 0;
+
+        for (const entry of plan) {
+          const product = await tx.product.create({ data: entry.product });
+          const created: ProductVariant[] = [];
+
+          for (const [index, variant] of entry.variants.entries()) {
+            created.push(
+              await tx.productVariant.create({
+                data: {
+                  ...variant,
+                  product: { connect: { id: product.id } },
+                  // The first variant of each product becomes its default, matching what
+                  // createVariant does for a single addition.
+                  isDefault: index === 0,
+                },
+              }),
+            );
+          }
+
+          variants += created.length;
+          await this.auditLog.appendWithin(tx, audit(product, created));
+        }
+
+        return { products: plan.length, variants };
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, products: plan.length },
+        'Exception occurred in AdminCatalogRepository.importProducts',
       );
       return null;
     }

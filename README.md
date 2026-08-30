@@ -29,7 +29,7 @@ other module copies.
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API, **Geo** reference geography, **User** profile + address book | Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
 
-704 tests pass (678 unit across 43 suites + 26 end-to-end). The end-to-end suite boots the whole
+765 tests pass (739 unit across 46 suites + 26 end-to-end). The end-to-end suite boots the whole
 app with **no** Supabase project, **no** database and **no** Redis, and asserts
 it still serves probes, keeps public routes public and protected routes
 protected — so `git clone && npm install && npm start` works on day one.
@@ -580,7 +580,16 @@ machine and is never published — deliberate, since this repository is public.
 ## Contributing
 
 Conventional Commits, enforced by commitlint. `lint-staged` runs ESLint and
-Prettier on staged files. Before opening a PR:
+Prettier on staged files.
+
+**Committing from an IDE or a GUI git client?** Those launch git without a login
+shell, so `node` is not on `PATH` and every hook fails with
+`npx: command not found (code 127)` — while the identical commit works from a
+terminal, which is what makes it confusing. `.husky/path.sh` prepends the usual
+install locations and honours nvm/fnm; both hooks source it first. If your node
+lives somewhere unusual, add it there rather than deleting the hook.
+
+Before opening a PR:
 
 ```bash
 npm run lint && npm test && npm run test:e2e && npm run build

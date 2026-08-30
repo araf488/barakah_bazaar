@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AdminCatalogController } from './admin-catalog.controller';
 import { AdminCatalogRepository } from './admin-catalog.repository';
 import { AdminCatalogService } from './admin-catalog.service';
+import { AdminImportService } from './admin-import.service';
 import { AdminUserController } from './admin-user.controller';
 import { AdminUserRepository } from './admin-user.repository';
 import { AdminUserService } from './admin-user.service';
@@ -24,6 +25,7 @@ import { AuditLogService } from './audit-log.service';
     AuditLogRepository,
     AdminCatalogService,
     AdminCatalogRepository,
+    AdminImportService,
     AdminUserService,
     AdminUserRepository,
   ],
