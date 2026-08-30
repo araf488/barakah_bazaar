@@ -140,6 +140,25 @@ describe('Degraded boot (no Supabase, no database)', () => {
       );
     });
 
+    it('refuses the address book with no token', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/users/me/addresses');
+
+      expect(response.status).toBe(503);
+      expect(response.body.message).toBe(
+        'Authentication is temporarily unavailable. Please try again later.',
+      );
+    });
+
+    it('routes the default-promotion endpoint rather than 404ing it', async () => {
+      const response = await request(app.getHttpServer()).put(
+        '/api/v1/users/me/addresses/11111111-1111-1111-1111-111111111111/default',
+      );
+
+      // A 404 here would mean the route was never registered; 503 means it was registered
+      // and the auth guard rejected the request first.
+      expect(response.status).toBe(503);
+    });
+
     it('refuses /auth/me with a bearer token it cannot verify', async () => {
       const response = await request(app.getHttpServer())
         .get('/api/v1/auth/me')

@@ -25,11 +25,11 @@ This is a **walking skeleton**: the cross-cutting machinery is built and tested,
 and one feature module (Catalog) is implemented end to end as the pattern every
 other module copies.
 
-| Built                                                                                                                                                                                                                                                                     | Planned                                                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API | User, Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
+| Built                                                                                                                                                                                                                                                                                                                                   | Planned                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API, **Geo** reference geography, **User** profile + address book | Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
 
-254 tests pass (242 unit across 20 suites + 12 end-to-end). The end-to-end suite boots the whole
+497 tests pass (479 unit across 33 suites + 18 end-to-end). The end-to-end suite boots the whole
 app with **no** Supabase project, **no** database and **no** Redis, and asserts
 it still serves probes, keeps public routes public and protected routes
 protected — so `git clone && npm install && npm start` works on day one.
@@ -244,7 +244,9 @@ src/
     health/       ✅  liveness + readiness with per-dependency detail
     auth/         ✅  local user mirror, GET /auth/me, SMS/OTP ports
     catalog/      ✅  reference vertical slice — copy this one
-    user/ inventory/ cart/ order/ payment/ delivery/
+    geo/          ✅  vendored Bangladesh geography, chain validation
+    user/         ✅  profile + delivery address book
+    inventory/ cart/ order/ payment/ delivery/
     promotion/ notification/ review/ admin/ search/ storage/
                   🚧  folder + README (responsibility, owned tables, phase)
   generated/prisma/          Prisma output — untracked, rebuilt on install
@@ -259,14 +261,25 @@ test/
 
 ### API surface today
 
-| Method | Route                            | Auth   | Notes                                       |
-| ------ | -------------------------------- | ------ | ------------------------------------------- |
-| `GET`  | `/api/v1/health`                 | public | Always 200 while the process lives          |
-| `GET`  | `/api/v1/health/ready`           | public | 503 when the database is unreachable        |
-| `GET`  | `/api/v1/auth/me`                | Bearer | Provisions the local user row on first call |
-| `GET`  | `/api/v1/catalog/categories`     | public | Category tree                               |
-| `GET`  | `/api/v1/catalog/products`       | public | Paged, filterable, searchable               |
-| `GET`  | `/api/v1/catalog/products/:slug` | public | Product detail                              |
+| Method   | Route                                               | Auth   | Notes                                       |
+| -------- | --------------------------------------------------- | ------ | ------------------------------------------- |
+| `GET`    | `/api/v1/health`                                    | public | Always 200 while the process lives          |
+| `GET`    | `/api/v1/health/ready`                              | public | 503 when the database is unreachable        |
+| `GET`    | `/api/v1/auth/me`                                   | Bearer | Provisions the local user row on first call |
+| `GET`    | `/api/v1/catalog/categories`                        | public | Category tree                               |
+| `GET`    | `/api/v1/catalog/products`                          | public | Paged, filterable, searchable               |
+| `GET`    | `/api/v1/catalog/products/:slug`                    | public | Product detail                              |
+| `GET`    | `/api/v1/geo/divisions`                             | public | All eight divisions, bilingual              |
+| `GET`    | `/api/v1/geo/divisions/:division/districts`         | public | Districts of one division                   |
+| `GET`    | `/api/v1/geo/districts/:district/units`             | public | Upazilas, city thanas and circles           |
+| `GET`    | `/api/v1/geo/districts/:district/units/:unit/areas` | public | Unions and post-office areas                |
+| `PATCH`  | `/api/v1/users/me`                                  | Bearer | Update the display name                     |
+| `GET`    | `/api/v1/users/me/addresses`                        | Bearer | List addresses, default first               |
+| `POST`   | `/api/v1/users/me/addresses`                        | Bearer | Save an address (max 20)                    |
+| `GET`    | `/api/v1/users/me/addresses/:id`                    | Bearer | One address                                 |
+| `PATCH`  | `/api/v1/users/me/addresses/:id`                    | Bearer | Edit an address                             |
+| `DELETE` | `/api/v1/users/me/addresses/:id`                    | Bearer | Soft-delete an address                      |
+| `PUT`    | `/api/v1/users/me/addresses/:id/default`            | Bearer | Promote to default (idempotent)             |
 
 ---
 

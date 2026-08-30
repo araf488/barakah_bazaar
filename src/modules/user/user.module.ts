@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { AddressController } from './address.controller';
+import { AddressRepository } from './address.repository';
+import { AddressService } from './address.service';
 import { AuthModule } from '../auth/auth.module';
 import { GeoModule } from '../geo/geo.module';
 import { UserController } from './user.controller';
@@ -16,7 +19,7 @@ import { UserService } from './user.service';
  */
 @Module({
   imports: [AuthModule, GeoModule],
-  controllers: [UserController],
-  providers: [UserService, UserRepository],
+  controllers: [UserController, AddressController],
+  providers: [UserService, UserRepository, AddressService, AddressRepository],
 })
 export class UserModule {}

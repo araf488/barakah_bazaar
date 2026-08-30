@@ -1,8 +1,15 @@
 # User module
 
-**Status:** planned — Phase 1
+**Status:** implemented — profile and address book (Phase 1)
 
-Profiles, address book, saved payment-method references.
+Profiles, address book. Saved payment-method references remain out of scope until the
+Payment module exists — they depend on its gateway abstraction.
+
+Geography is validated as a chain (division → district → unit → area) by `GeoService`, which
+owns the vendored dataset. `unit` is an upazila, a city thana (Gulshan, Motijheel) or a
+development circle (Tejgaon); it is stored in the `upazila` column, whose name predates city
+coverage. Map-pin `latitude`/`longitude` are stored as supplied but never determine the
+administrative address.
 
 ## Owned tables
 
