@@ -8,3 +8,6 @@ coverage
 *.log
 test
 docs
+
+# ad-hoc SQL scratch — gitignored, and must not reach a published image either
+prisma/sql/local

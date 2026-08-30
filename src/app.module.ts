@@ -12,6 +12,7 @@ import { QueueModule } from './infra/redis/queue.module';
 import { SupabaseModule } from './infra/supabase/supabase.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
 
 /**
@@ -51,6 +52,7 @@ import { HealthModule } from './modules/health/health.module';
     HealthModule,
     AuthModule,
     CatalogModule,
+    GeoModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },

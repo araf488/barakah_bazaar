@@ -34,6 +34,16 @@ coverage/
 supabase/.branches/
 supabase/.temp/
 
+# prisma migrations are DELIBERATELY tracked — do not ignore them. CI applies
+# them with `prisma migrate deploy` (.github/workflows/ci.yml), which reads the
+# committed migration.sql files; ignoring them silently turns every deploy into
+# a no-op. prisma/rls/*.sql is likewise part of the schema contract.
+#
+# Ad-hoc SQL that is NOT part of that history — scratch queries, one-off
+# backfills, local experiments — goes here instead and stays out of the repo.
+/prisma/sql/local/*
+!/prisma/sql/local/.gitkeep
+
 # documentation and local planning artefacts (specs, plans, product plan) — kept
 # out of the public repo entirely
 /docs/

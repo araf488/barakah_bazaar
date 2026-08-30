@@ -86,6 +86,35 @@ describe('Degraded boot (no Supabase, no database)', () => {
         'The service is temporarily unavailable. Please try again shortly.',
       );
     });
+
+    it('serves the geography lookups without a token and without a database', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/divisions');
+
+      // 200, not 503: the dataset is vendored, so the address form works even with no
+      // Supabase project and no Postgres.
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveLength(8);
+    });
+
+    it('serves the Dhaka city thanas the address form needs', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/districts/Dhaka/units');
+
+      expect(response.status).toBe(200);
+      const units = response.body as { nameEn: string }[];
+
+      expect(units.map((unit) => unit.nameEn)).toEqual(
+        expect.arrayContaining(['Gulshan', 'Motijheel', 'Savar']),
+      );
+    });
+
+    it('answers 404 with the contract message for an unknown division', async () => {
+      const response = await request(app.getHttpServer()).get(
+        '/api/v1/geo/divisions/Narnia/districts',
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.body.message).toBe('Narnia is not a division of Bangladesh.');
+    });
   });
 
   describe('protected routes stay protected', () => {
