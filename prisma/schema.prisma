@@ -88,24 +88,54 @@ enum PaymentStatus {
   FAILED
 }
 
+/// Which language a customer is written to in. Bengali is the default because the storefront
+/// serves Bangladesh; the column exists so a notification is never guessed at send time.
+enum Language {
+  BN
+  EN
+}
+
+/// How a notification reaches the customer. Only SMS is wired today — EMAIL and PUSH are here
+/// so adopting one is an adapter, not a migration of every existing row.
+enum NotificationChannel {
+  SMS
+  EMAIL
+  PUSH
+}
+
+/// Delivery state of one notification.
+///
+/// FAILED is retryable and ABANDONED is not: the retry sweep moves a notification to ABANDONED
+/// once it has burned its attempts, so a permanently bad number stops costing work every tick.
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  ABANDONED
+}
+
 /// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
 /// user's first authenticated request — see AuthService.resolveUser().
 model User {
-  id             String    @id @default(uuid()) @db.Uuid
-  supabaseUserId String    @unique @map("supabase_user_id") @db.Uuid
-  email          String?   @unique
-  phone          String?   @unique
-  fullName       String?   @map("full_name")
-  role           UserRole  @default(CUSTOMER)
-  isActive       Boolean   @default(true) @map("is_active")
-  lastSeenAt     DateTime? @map("last_seen_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  id                String    @id @default(uuid()) @db.Uuid
+  supabaseUserId    String    @unique @map("supabase_user_id") @db.Uuid
+  email             String?   @unique
+  phone             String?   @unique
+  fullName          String?   @map("full_name")
+  role              UserRole  @default(CUSTOMER)
+  /// Which language transactional messages are written in. Not a display preference for the
+  /// storefront — the app picks that itself; this is what the customer is *messaged* in.
+  preferredLanguage Language  @default(BN) @map("preferred_language")
+  isActive          Boolean   @default(true) @map("is_active")
+  lastSeenAt        DateTime? @map("last_seen_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  addresses Address[]
-  auditLog  AdminAuditLog[]
-  cart      Cart?
-  orders    Order[]
+  addresses     Address[]
+  auditLog      AdminAuditLog[]
+  cart          Cart?
+  notifications Notification[]
+  orders        Order[]
 
   @@index([role])
   @@map("users")
@@ -591,4 +621,44 @@ model OrderEvent {
 
   @@index([orderId, createdAt])
   @@map("order_events")
+}
+
+/// One transactional message, recorded before it is attempted.
+///
+/// The row is written first and updated with the outcome, deliberately: a send that crashes
+/// mid-flight leaves a PENDING row the retry sweep can find, whereas recording only on success
+/// would lose it silently. A failed notification must never fail the business action that
+/// triggered it, so nothing here is written inside the order transaction.
+///
+/// The rendered body is NOT stored. Bodies carry OTPs and delivery addresses; the template id
+/// plus the reference is enough to reconstruct what was said without keeping a credential in
+/// the database.
+model Notification {
+  id            String              @id @default(uuid()) @db.Uuid
+  userId        String?             @map("user_id") @db.Uuid
+  channel       NotificationChannel
+  /// Key into NOTIFICATION_TEMPLATES, not free text — the body is rendered from it at send.
+  templateId    String              @map("template_id")
+  language      Language
+  /// Phone or email as addressed at send time. Snapshotted: a customer who later changes
+  /// their number must not rewrite where a past message actually went.
+  recipient     String
+  status        NotificationStatus  @default(PENDING)
+  attempts      Int                 @default(0)
+  /// Gateway failure text from the last attempt. Never a body, never a credential.
+  lastError     String?             @map("last_error")
+  /// What the message was about, e.g. "Order" + the order id.
+  referenceType String?             @map("reference_type")
+  referenceId   String?             @map("reference_id") @db.Uuid
+  sentAt        DateTime?           @map("sent_at")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// The retry sweep index: everything still owed a delivery attempt.
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+  @@index([referenceType, referenceId])
+  @@map("notifications")
 }

@@ -8,8 +8,22 @@ export const OrderConstants = {
   OrderNumberPrefix: 'BB',
   MaxCustomerNoteLength: 500,
   MaxStaffNoteLength: 500,
-  /** How long a checkout hold survives before the sweep releases it. */
-  ReservationMinutes: 30,
+  /**
+   * How long stock is held for an order awaiting PREPAYMENT before the sweep gives it back.
+   * Short, because the customer is sitting at a payment screen.
+   */
+  PrepaymentHoldMinutes: 30,
+  /**
+   * How long stock is held for a CASH ON DELIVERY order.
+   *
+   * Deliberately long. A COD order has no payment step — it is placed and then waits for
+   * staff to confirm it, which can easily take a day. Applying the prepayment window here
+   * would release stock for perfectly good orders after half an hour and then oversell it.
+   * This is a backstop against an order nobody ever actions, not a payment timeout.
+   */
+  CodHoldHours: 168,
+  /** How often the sweep looks for holds that have outlived their order. */
+  SweepIntervalMinutes: 5,
 } as const;
 
 /**
@@ -51,6 +65,9 @@ export const OrderMessages = {
   NoWarehouse: 'We cannot deliver to that address right now.',
   /** {0} = from, {1} = to. */
   IllegalTransitionTemplate: 'An order cannot go from {0} to {1}.',
+  /** The sweep cancelled an order nobody acted on. */
+  AbandonedBySweep:
+    'Cancelled automatically: the order was not confirmed in time and the stock was returned.',
   /** A customer tried to cancel an order that has already left. */
   TooLateToCancel:
     'This order has already been dispatched and can no longer be cancelled. Contact support.',

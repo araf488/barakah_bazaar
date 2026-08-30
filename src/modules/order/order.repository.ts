@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { Order, OrderStatus, Prisma, StockMovementReason } from '../../infra/prisma/prisma-client';
+import {
+  Order,
+  OrderStatus,
+  PaymentMethod,
+  Prisma,
+  StockMovementReason,
+} from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { OrderConstants } from './order.constants';
 
@@ -90,7 +96,12 @@ export class OrderRepository {
         });
 
         // The hold, and the mirrored counter the stock screens read. Both, or neither.
-        const expiresAt = new Date(Date.now() + OrderConstants.ReservationMinutes * 60_000);
+        //
+        // The window depends on what we are waiting for. A prepaid order is waiting on a
+        // customer at a payment screen, so minutes. A COD order is waiting on staff to
+        // confirm it, which can take a day — applying the payment window there would return
+        // stock for a perfectly good order and then sell it twice.
+        const expiresAt = OrderRepository.holdExpiry(data.paymentMethod);
 
         for (const item of data.items) {
           await tx.stockReservation.create({
@@ -138,6 +149,16 @@ export class OrderRepository {
       );
       return null;
     }
+  }
+
+  /** How long this order's stock stays held, by what the order is waiting for. */
+  private static holdExpiry(paymentMethod: PlaceOrderData['paymentMethod']): Date {
+    const minutes =
+      paymentMethod === PaymentMethod.CASH_ON_DELIVERY
+        ? OrderConstants.CodHoldHours * 60
+        : OrderConstants.PrepaymentHoldMinutes;
+
+    return new Date(Date.now() + minutes * 60_000);
   }
 
   /**
@@ -336,5 +357,38 @@ export class OrderRepository {
       where: { referenceType: 'Order', referenceId: order.id, releasedAt: null },
       data: { releasedAt: new Date() },
     });
+  }
+
+  /**
+   * Orders whose stock hold has outlived its window while the order is still open.
+   *
+   * Only PLACED and CONFIRMED qualify: once an order is PICKING or beyond, staff are working
+   * it and the hold is doing its job however long it has been. Terminal orders have already
+   * released their stock.
+   */
+  async findExpiredHolds(): Promise<OrderWithDetail[] | null> {
+    try {
+      const holds = await this.prisma.stockReservation.findMany({
+        where: { releasedAt: null, expiresAt: { lt: new Date() }, referenceType: 'Order' },
+        select: { referenceId: true },
+        distinct: ['referenceId'],
+        take: 100,
+      });
+
+      if (holds.length === 0) {
+        return [];
+      }
+
+      return await this.prisma.order.findMany({
+        where: {
+          id: { in: holds.map((hold) => hold.referenceId) },
+          status: { in: [OrderStatus.PLACED, OrderStatus.CONFIRMED] },
+        },
+        include: orderInclude,
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in OrderRepository.findExpiredHolds');
+      return null;
+    }
   }
 }

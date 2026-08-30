@@ -11,9 +11,7 @@ import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
 import { OrderStatus, PaymentMethod, Prisma } from '../../infra/prisma/prisma-client';
 import { AuthService } from '../auth/auth.service';
-import { AddressRepository } from '../user/address.repository';
-import { CartRepository, CartWithItems } from '../cart/cart.repository';
-import { InventoryRepository } from '../inventory/inventory.repository';
+import { CartWithItems } from '../cart/cart.repository';
 import {
   AdminOrderQueryDto,
   CancelOrderDto,
@@ -28,6 +26,8 @@ import {
   OrderConstants,
   OrderMessages,
 } from './order.constants';
+import { NotificationService } from '../notification/notification.service';
+import { CheckoutSources } from './checkout-sources';
 import { OrderRepository, OrderWithDetail, PlaceOrderData } from './order.repository';
 
 /**
@@ -46,10 +46,9 @@ import { OrderRepository, OrderWithDetail, PlaceOrderData } from './order.reposi
 export class OrderService {
   constructor(
     private readonly repository: OrderRepository,
-    private readonly cartRepository: CartRepository,
-    private readonly addressRepository: AddressRepository,
-    private readonly inventoryRepository: InventoryRepository,
+    private readonly sources: CheckoutSources,
     private readonly authService: AuthService,
+    private readonly notifications: NotificationService,
     @InjectPinoLogger(OrderService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -63,7 +62,7 @@ export class OrderService {
         return owner;
       }
 
-      const cart = await this.cartRepository.findOrCreate(owner.data);
+      const cart = await this.sources.carts.findOrCreate(owner.data);
       if (cart === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
@@ -74,7 +73,7 @@ export class OrderService {
 
       // The address is re-proved to be the caller's here, not trusted from the request: the
       // id is the only thing a client controls, and it names somebody's home.
-      const address = await this.addressRepository.findOneForUser(owner.data, dto.addressId);
+      const address = await this.sources.addresses.findOneForUser(owner.data, dto.addressId);
 
       if (address === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
@@ -101,6 +100,11 @@ export class OrderService {
       if (order === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
+
+      // Outside the transaction, and deliberately not awaited for its result: the order is
+      // already committed, and a gateway that is slow or down must not hold the customer at
+      // the checkout screen or undo a sale.
+      await this.announce(order);
 
       return serviceOk(OrderService.toDto(order, true));
     } catch (error) {
@@ -247,7 +251,44 @@ export class OrderService {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
 
+    await this.announce(moved);
+
     return serviceOk(OrderService.toDto(moved, true));
+  }
+
+  /**
+   * Tells the customer where their order got to.
+   *
+   * Never throws and never reports failure upward: the status change has already committed,
+   * and an order that moved but could not be announced is a message to retry, not a
+   * transition to undo. NotificationService records the attempt and its sweep retries it.
+   */
+  private async announce(order: OrderWithDetail): Promise<void> {
+    try {
+      await this.notifyStatus(order);
+    } catch (error) {
+      // The catch that makes the guarantee real. NotificationService already swallows its own
+      // failures, but this method is called from inside placeOrder's try block: without this,
+      // anything thrown here would be caught there and turned into a 500 for an order that
+      // has already committed and taken the customer's stock.
+      this.logger.error(
+        { err: error, orderId: order.id, status: order.status },
+        'Order committed but could not be announced',
+      );
+    }
+  }
+
+  private async notifyStatus(order: OrderWithDetail): Promise<void> {
+    await this.notifications.notifyOrderStatus(order.status, {
+      userId: order.userId,
+      // The phone snapshotted onto the order, not the account's: the customer chose who
+      // receives this delivery, and that is who should hear about it.
+      phone: order.phone,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      recipientName: order.recipientName,
+      totalPoysha: order.totalPoysha,
+    });
   }
 
   private async page(
@@ -303,7 +344,7 @@ export class OrderService {
    * rather than half-shipped.
    */
   private async resolveWarehouse(cart: CartWithItems): Promise<ServiceResponse<string>> {
-    const warehouses = await this.inventoryRepository.listWarehouses(false);
+    const warehouses = await this.sources.inventory.listWarehouses(false);
 
     if (warehouses === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
@@ -330,7 +371,7 @@ export class OrderService {
     cart: CartWithItems,
   ): Promise<string | null | undefined> {
     for (const item of cart.items) {
-      const stock = await this.inventoryRepository.findStock(warehouseId, item.variantId);
+      const stock = await this.sources.inventory.findStock(warehouseId, item.variantId);
 
       if (stock === null) {
         return null;

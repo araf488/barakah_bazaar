@@ -40,6 +40,7 @@ ALTER TABLE public.cart_items         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.orders             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_items        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_events       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications      ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -73,6 +74,7 @@ ALTER TABLE public.cart_items FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.orders       FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.order_items  FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.order_events FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -189,6 +191,22 @@ CREATE POLICY order_items_read_own
       WHERE o.id = order_items.order_id AND u.supabase_user_id = auth.uid()
     )
   );
+
+DROP POLICY IF EXISTS notifications_read_own ON public.notifications;
+CREATE POLICY notifications_read_own
+  ON public.notifications FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.users u
+      WHERE u.id = notifications.user_id AND u.supabase_user_id = auth.uid()
+    )
+  );
+
+-- Note what this policy does NOT expose: last_error and attempts are readable columns on a
+-- row a customer owns. That is acceptable because neither carries a credential — the body is
+-- never stored — but the API withholds them anyway, so a direct PostgREST read is the only
+-- way to see them.
 
 -- order_events deliberately gets NO policy: it names the staff member who moved an order,
 -- which is internal. Customers see status through this API, not the ledger behind it.

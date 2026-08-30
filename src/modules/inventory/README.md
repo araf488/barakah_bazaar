@@ -1,6 +1,6 @@
 # Inventory module
 
-**Status:** stock, receipts, adjustments and the ledger are live. Reservations are modelled but not yet taken — that lands with Cart/Checkout (Phase 1)
+**Status:** stock, receipts, adjustments and the ledger are live. Reservations are taken at checkout by the order module and released by its sweep (Phase 1)
 
 Stock per hub, batch and expiry tracking, low-stock and expiring-batch alerts.
 

@@ -9,6 +9,8 @@ import { CartRepository } from '../cart/cart.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { AddressRepository } from '../user/address.repository';
 import { OrderQueryDto, PlaceOrderDto } from './dto/order.dto';
+import { NotificationService } from '../notification/notification.service';
+import { CheckoutSources } from './checkout-sources';
 import { OrderRepository } from './order.repository';
 import { OrderService } from './order.service';
 
@@ -36,6 +38,7 @@ const cart = (items: unknown[] = [cartLine()]) => ({ id: 'cart-1', items });
 
 const order = (overrides = {}) => ({
   id: 'ord-1',
+  userId: 'user-1',
   orderNumber: 'BB-20260830-000001',
   status: OrderStatus.PLACED,
   paymentMethod: PaymentMethod.CASH_ON_DELIVERY,
@@ -70,6 +73,7 @@ describe('OrderService', () => {
   let addressRepository: Record<string, jest.Mock>;
   let inventoryRepository: Record<string, jest.Mock>;
   let authService: { resolveActiveUserId: jest.Mock };
+  let notifications: { notifyOrderStatus: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: OrderService;
 
@@ -91,12 +95,17 @@ describe('OrderService', () => {
       resolveActiveUserId: jest.fn().mockResolvedValue({ ok: true, data: 'user-1' }),
     };
     logger = createMockLogger();
+    notifications = { notifyOrderStatus: jest.fn().mockResolvedValue(undefined) };
+
     service = new OrderService(
       repository as unknown as OrderRepository,
-      cartRepository as unknown as CartRepository,
-      addressRepository as unknown as AddressRepository,
-      inventoryRepository as unknown as InventoryRepository,
+      new CheckoutSources(
+        cartRepository as unknown as CartRepository,
+        addressRepository as unknown as AddressRepository,
+        inventoryRepository as unknown as InventoryRepository,
+      ),
       authService as unknown as AuthService,
+      notifications as unknown as NotificationService,
       logger,
     );
   });
@@ -293,6 +302,70 @@ describe('OrderService', () => {
         'user-1',
         'Stock checked',
       );
+    });
+  });
+
+  describe('notifying the customer', () => {
+    it('announces a placed order, from the phone snapshotted onto it', async () => {
+      await service.placeOrder(customer, placeDto());
+
+      expect(notifications.notifyOrderStatus).toHaveBeenCalledWith(OrderStatus.PLACED, {
+        userId: 'user-1',
+        phone: '+8801712345678',
+        orderId: 'ord-1',
+        orderNumber: 'BB-20260830-000001',
+        recipientName: 'Rahim',
+        totalPoysha: 250000n,
+      });
+    });
+
+    it('announces the status the order actually reached, not the one requested', async () => {
+      repository.findById.mockResolvedValue(order({ status: OrderStatus.PICKING }));
+      repository.transition.mockResolvedValue(order({ status: OrderStatus.DISPATCHED }));
+
+      await service.transitionOrder(staff, 'ord-1', { status: OrderStatus.DISPATCHED });
+
+      expect(notifications.notifyOrderStatus).toHaveBeenCalledWith(
+        OrderStatus.DISPATCHED,
+        expect.objectContaining({ orderId: 'ord-1' }),
+      );
+    });
+
+    it('still places the order when the notification throws', async () => {
+      // The whole point of the seam: the sale is committed, and a dead SMS gateway is not
+      // allowed to turn a successful checkout into an error the customer sees.
+      notifications.notifyOrderStatus.mockRejectedValue(new Error('gateway exploded'));
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('still reports a transition that succeeded when the notification throws', async () => {
+      notifications.notifyOrderStatus.mockRejectedValue(new Error('gateway exploded'));
+      repository.findById.mockResolvedValue(order({ status: OrderStatus.PICKING }));
+      repository.transition.mockResolvedValue(order({ status: OrderStatus.DISPATCHED }));
+
+      const result = await service.transitionOrder(staff, 'ord-1', {
+        status: OrderStatus.DISPATCHED,
+      });
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('says nothing when the order was refused', async () => {
+      repository.place.mockResolvedValue(null);
+
+      await service.placeOrder(customer, placeDto());
+
+      expect(notifications.notifyOrderStatus).not.toHaveBeenCalled();
+    });
+
+    it('says nothing when a transition was refused as illegal', async () => {
+      await service.transitionOrder(staff, 'ord-1', { status: OrderStatus.DELIVERED });
+
+      expect(notifications.notifyOrderStatus).not.toHaveBeenCalled();
     });
   });
 

@@ -1,7 +1,7 @@
 import { HttpStatus } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
-import { User, UserRole } from '../../infra/prisma/prisma-client';
+import { Language, User, UserRole } from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
@@ -19,6 +19,7 @@ const persistedUser = (overrides: Partial<User> = {}): User => ({
   phone: '+8801711111111',
   fullName: 'Test Customer',
   role: UserRole.CUSTOMER,
+  preferredLanguage: Language.BN,
   isActive: true,
   lastSeenAt: new Date('2026-01-01T00:00:00.000Z'),
   createdAt: new Date('2025-12-01T00:00:00.000Z'),

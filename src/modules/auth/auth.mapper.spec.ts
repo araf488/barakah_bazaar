@@ -1,4 +1,4 @@
-import { User, UserRole } from '../../infra/prisma/prisma-client';
+import { Language, User, UserRole } from '../../infra/prisma/prisma-client';
 import { AuthMapper } from './auth.mapper';
 
 const userRow = (overrides: Partial<User> = {}): User => ({
@@ -8,6 +8,7 @@ const userRow = (overrides: Partial<User> = {}): User => ({
   phone: '+8801711111111',
   fullName: 'Rahim Uddin',
   role: UserRole.CUSTOMER,
+  preferredLanguage: Language.BN,
   isActive: true,
   lastSeenAt: new Date('2026-08-29T00:00:00.000Z'),
   createdAt: new Date('2026-01-01T00:00:00.000Z'),

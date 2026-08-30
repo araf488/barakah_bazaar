@@ -1,4 +1,4 @@
-import { Address, User, UserRole } from '../../src/infra/prisma/prisma-client';
+import { Address, Language, User, UserRole } from '../../src/infra/prisma/prisma-client';
 
 export const userFixture = (overrides: Partial<User> = {}): User => ({
   id: 'user-1',
@@ -7,6 +7,7 @@ export const userFixture = (overrides: Partial<User> = {}): User => ({
   phone: '+8801711111111',
   fullName: 'Rahim Uddin',
   role: UserRole.CUSTOMER,
+  preferredLanguage: Language.BN,
   isActive: true,
   lastSeenAt: new Date('2026-08-29T00:00:00.000Z'),
   createdAt: new Date('2026-01-01T00:00:00.000Z'),

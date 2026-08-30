@@ -6,7 +6,10 @@ import { UserModule } from '../user/user.module';
 import { AdminOrderController } from './admin-order.controller';
 import { OrderController } from './order.controller';
 import { OrderRepository } from './order.repository';
+import { NotificationModule } from '../notification/notification.module';
+import { CheckoutSources } from './checkout-sources';
 import { OrderService } from './order.service';
+import { ReservationSweeper } from './reservation-sweeper.service';
 
 /**
  * Checkout and order lifecycle.
@@ -16,9 +19,9 @@ import { OrderService } from './order.service';
  * anything is written.
  */
 @Module({
-  imports: [AuthModule, CartModule, UserModule, InventoryModule],
+  imports: [AuthModule, CartModule, UserModule, InventoryModule, NotificationModule],
   controllers: [OrderController, AdminOrderController],
-  providers: [OrderService, OrderRepository],
+  providers: [OrderService, OrderRepository, CheckoutSources, ReservationSweeper],
   exports: [OrderService],
 })
 export class OrderModule {}
