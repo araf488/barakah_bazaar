@@ -31,6 +31,6 @@ import { AuditLogService } from './audit-log.service';
     AdminUserService,
     AdminUserRepository,
   ],
-  exports: [AuditLogService, AdminCatalogRepository],
+  exports: [AuditLogService, AuditLogRepository, AdminCatalogRepository],
 })
 export class AdminModule {}

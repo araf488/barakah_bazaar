@@ -7,6 +7,7 @@ import { createMockLogger } from '../../../test/support/mocks';
 import { AdjustStockDto, ReceiveStockDto, StockQueryDto } from './dto/inventory.dto';
 import { InventoryController } from './inventory.controller';
 import { InventoryService } from './inventory.service';
+import { WarehouseService } from './warehouse.service';
 
 const staff: AuthenticatedUser = {
   supabaseUserId: '11111111-1111-1111-1111-111111111111',
@@ -24,6 +25,7 @@ const validAdjust = {
 
 describe('InventoryController', () => {
   let inventoryService: Record<string, jest.Mock>;
+  let warehouseService: Record<string, jest.Mock>;
   let controller: InventoryController;
 
   beforeEach(() => {
@@ -33,8 +35,15 @@ describe('InventoryController', () => {
       adjustStock: jest.fn().mockResolvedValue({ ok: true, data: { variantId: 'var-1' } }),
       listMovements: jest.fn().mockResolvedValue({ ok: true, data: [] }),
     };
+    warehouseService = {
+      listWarehouses: jest.fn().mockResolvedValue({ ok: true, data: [] }),
+      createWarehouse: jest.fn().mockResolvedValue({ ok: true, data: { id: 'wh-1' } }),
+      updateWarehouse: jest.fn().mockResolvedValue({ ok: true, data: { id: 'wh-1' } }),
+      deactivateWarehouse: jest.fn().mockResolvedValue({ ok: true, data: { id: 'wh-1' } }),
+    };
     controller = new InventoryController(
       inventoryService as unknown as InventoryService,
+      warehouseService as unknown as WarehouseService,
       createMockLogger(),
     );
   });

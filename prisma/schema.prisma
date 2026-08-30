@@ -78,6 +78,7 @@ model User {
 
   addresses Address[]
   auditLog  AdminAuditLog[]
+  cart      Cart?
 
   @@index([role])
   @@map("users")
@@ -209,6 +210,7 @@ model ProductVariant {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   product      Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems    CartItem[]
   inventory    Inventory[]
   batches      InventoryBatch[]
   movements    StockMovement[]
@@ -418,4 +420,47 @@ model StockReservation {
   @@index([referenceType, referenceId])
   @@index([warehouseId, variantId])
   @@map("stock_reservations")
+}
+
+/// A customer's basket. One per customer — a second live cart would mean the storefront and
+/// the app disagree about what is in it.
+///
+/// Signed-in only: a cart hangs off a user row, so there is no anonymous owner to merge or
+/// sweep. A grocery customer needs an address and a phone before they can check out anyway.
+model Cart {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+/// One line of a basket.
+///
+/// `unitPricePoyshaAtAdd` is what the price WAS when the customer added it. It is not
+/// silently honoured and it is not silently ignored: the cart is displayed at the live price,
+/// and checkout shows the customer what changed before they pay. Storing only the live price
+/// would make a change invisible; honouring the stored one would bill last week's price for
+/// perishables whose cost moves weekly.
+model CartItem {
+  id                   String   @id @default(uuid()) @db.Uuid
+  cartId               String   @map("cart_id") @db.Uuid
+  variantId            String   @map("variant_id") @db.Uuid
+  quantity             Int
+  unitPricePoyshaAtAdd BigInt   @map("unit_price_poysha_at_add")
+  addedAt              DateTime @default(now()) @map("added_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  cart    Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  /// One line per variant: adding the same item twice raises the quantity, it does not
+  /// create a second line the customer would have to reconcile by hand.
+  @@unique([cartId, variantId])
+  @@index([variantId])
+  @@map("cart_items")
 }

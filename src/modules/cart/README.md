@@ -1,6 +1,6 @@
 # Cart module
 
-**Status:** planned — Phase 1
+**Status:** implemented — Phase 1
 
 Persistent cart for guests and signed-in users, with server-side price computation.
 

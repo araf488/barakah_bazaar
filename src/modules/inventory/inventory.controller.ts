@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   UnauthorizedException,
@@ -28,6 +29,13 @@ import {
 } from './dto/inventory.dto';
 import { InventoryConstants } from './inventory.constants';
 import { InventoryService } from './inventory.service';
+import { WarehouseService } from './warehouse.service';
+import {
+  CreateWarehouseDto,
+  UpdateWarehouseDto,
+  WarehouseDto,
+  WarehouseQueryDto,
+} from './dto/warehouse.dto';
 
 /**
  * Warehouse stock.
@@ -43,6 +51,7 @@ import { InventoryService } from './inventory.service';
 export class InventoryController {
   constructor(
     private readonly inventoryService: InventoryService,
+    private readonly warehouseService: WarehouseService,
     @InjectPinoLogger(InventoryController.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -111,6 +120,92 @@ export class InventoryController {
       this.logger.error(
         { err: error, warehouseId, variantId },
         'Exception occurred in InventoryController.movements',
+      );
+      throw error;
+    }
+  }
+
+  // ── Warehouses ────────────────────────────────────────────────────────────
+
+  @Get('warehouses')
+  @ApiOperation({ summary: 'Hubs stock can sit in' })
+  @ApiResponse({ status: HttpStatus.OK, type: [WarehouseDto] })
+  async listWarehouses(@Query() query: WarehouseQueryDto): Promise<WarehouseDto[]> {
+    try {
+      return unwrapOrThrow(await this.warehouseService.listWarehouses(query));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in InventoryController.listWarehouses');
+      throw error;
+    }
+  }
+
+  /**
+   * SUPER_ADMIN only. Opening a hub is a structural decision about where the business
+   * operates — WAREHOUSE staff work the shelves of hubs that already exist.
+   */
+  @Post('warehouses')
+  @Roles(UserRole.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Open a warehouse' })
+  @ApiResponse({ status: HttpStatus.CREATED, type: WarehouseDto })
+  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'Code already in use' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Address is not a real place' })
+  async createWarehouse(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Body() dto: CreateWarehouseDto,
+  ): Promise<WarehouseDto> {
+    try {
+      return unwrapOrThrow(
+        await this.warehouseService.createWarehouse(InventoryController.require(user), dto),
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'Exception occurred in InventoryController.createWarehouse',
+      );
+      throw error;
+    }
+  }
+
+  @Patch('warehouses/:id')
+  @Roles(UserRole.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Edit a warehouse' })
+  @ApiResponse({ status: HttpStatus.OK, type: WarehouseDto })
+  async updateWarehouse(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateWarehouseDto,
+  ): Promise<WarehouseDto> {
+    try {
+      return unwrapOrThrow(
+        await this.warehouseService.updateWarehouse(InventoryController.require(user), id, dto),
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error, warehouseId: id },
+        'Exception occurred in InventoryController.updateWarehouse',
+      );
+      throw error;
+    }
+  }
+
+  @Patch('warehouses/:id/deactivate')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Take a hub out of service' })
+  @ApiResponse({ status: HttpStatus.OK, type: WarehouseDto })
+  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'Still holds stock' })
+  async deactivateWarehouse(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<WarehouseDto> {
+    try {
+      return unwrapOrThrow(
+        await this.warehouseService.deactivateWarehouse(InventoryController.require(user), id),
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error, warehouseId: id },
+        'Exception occurred in InventoryController.deactivateWarehouse',
       );
       throw error;
     }

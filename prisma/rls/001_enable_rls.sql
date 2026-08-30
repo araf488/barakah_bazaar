@@ -35,6 +35,8 @@ ALTER TABLE public.inventory          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.inventory_batches  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.stock_movements    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.stock_reservations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.carts              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cart_items         ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -56,6 +58,12 @@ ALTER TABLE public.inventory          FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.inventory_batches  FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.stock_movements    FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.stock_reservations FORCE ROW LEVEL SECURITY;
+
+-- A basket is the customer's own, so it is forced like their profile and addresses. It gets
+-- an owner-scoped READ policy below; writes stay with this API so pricing and availability
+-- are checked on every change.
+ALTER TABLE public.carts      FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.cart_items FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -121,6 +129,31 @@ CREATE POLICY addresses_read_own
     AND EXISTS (
       SELECT 1 FROM public.users u
       WHERE u.id = addresses.user_id
+        AND u.supabase_user_id = auth.uid()
+    )
+  );
+
+DROP POLICY IF EXISTS carts_read_own ON public.carts;
+CREATE POLICY carts_read_own
+  ON public.carts FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.users u
+      WHERE u.id = carts.user_id
+        AND u.supabase_user_id = auth.uid()
+    )
+  );
+
+DROP POLICY IF EXISTS cart_items_read_own ON public.cart_items;
+CREATE POLICY cart_items_read_own
+  ON public.cart_items FOR SELECT
+  TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.carts c
+      JOIN public.users u ON u.id = c.user_id
+      WHERE c.id = cart_items.cart_id
         AND u.supabase_user_id = auth.uid()
     )
   );

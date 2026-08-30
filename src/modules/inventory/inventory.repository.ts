@@ -6,12 +6,15 @@ import {
   Prisma,
   StockMovement,
   StockMovementReason,
+  Warehouse,
 } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuditLogRepository, AuditLogWriteData } from '../admin/audit-log.repository';
 import { StockQueryDto } from './dto/inventory.dto';
 
 /** `undefined` = no such row; `null` = the query failed. */
 export type StockResult = Inventory | null | undefined;
+export type WarehouseResult = Warehouse | null | undefined;
 
 const stockInclude = {
   warehouse: { select: { id: true, code: true } },
@@ -60,8 +63,112 @@ export interface AdjustmentData {
 export class InventoryRepository {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogRepository,
     @InjectPinoLogger(InventoryRepository.name) private readonly logger: PinoLogger,
   ) {}
+
+  // ── Warehouses ────────────────────────────────────────────────────────────
+
+  async findWarehouseById(id: string): Promise<WarehouseResult> {
+    try {
+      return (await this.prisma.warehouse.findUnique({ where: { id } })) ?? undefined;
+    } catch (error) {
+      this.logger.error(
+        { err: error, warehouseId: id },
+        'Exception occurred in InventoryRepository.findWarehouseById',
+      );
+      return null;
+    }
+  }
+
+  async findWarehouseByCode(code: string): Promise<WarehouseResult> {
+    try {
+      return (await this.prisma.warehouse.findUnique({ where: { code } })) ?? undefined;
+    } catch (error) {
+      this.logger.error(
+        { err: error, code },
+        'Exception occurred in InventoryRepository.findWarehouseByCode',
+      );
+      return null;
+    }
+  }
+
+  async listWarehouses(includeInactive: boolean): Promise<Warehouse[] | null> {
+    try {
+      return await this.prisma.warehouse.findMany({
+        where: includeInactive ? {} : { isActive: true },
+        orderBy: { code: 'asc' },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in InventoryRepository.listWarehouses');
+      return null;
+    }
+  }
+
+  /** Units of stock still sitting in a warehouse, across every variant. */
+  async countStockInWarehouse(warehouseId: string): Promise<number | null> {
+    try {
+      const result = await this.prisma.inventory.aggregate({
+        where: { warehouseId },
+        _sum: { quantityOnHand: true },
+      });
+
+      return result._sum.quantityOnHand ?? 0;
+    } catch (error) {
+      this.logger.error(
+        { err: error, warehouseId },
+        'Exception occurred in InventoryRepository.countStockInWarehouse',
+      );
+      return null;
+    }
+  }
+
+  /** Writes a warehouse change and its audit row together. Structural edits get a trail. */
+  async writeWarehouse(
+    write: (tx: Prisma.TransactionClient) => Promise<Warehouse>,
+    audit: (result: Warehouse) => AuditLogWriteData,
+    context: Record<string, unknown>,
+    method: string,
+  ): Promise<Warehouse | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const result = await write(tx);
+        await this.auditLog.appendWithin(tx, audit(result));
+        return result;
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, ...context },
+        `Exception occurred in InventoryRepository.${method}`,
+      );
+      return null;
+    }
+  }
+
+  async createWarehouse(
+    data: Prisma.WarehouseCreateInput,
+    audit: (created: Warehouse) => AuditLogWriteData,
+  ): Promise<Warehouse | null> {
+    return await this.writeWarehouse(
+      (tx) => tx.warehouse.create({ data }),
+      audit,
+      { code: data.code },
+      'createWarehouse',
+    );
+  }
+
+  async updateWarehouse(
+    id: string,
+    data: Prisma.WarehouseUpdateInput,
+    audit: (updated: Warehouse) => AuditLogWriteData,
+  ): Promise<Warehouse | null> {
+    return await this.writeWarehouse(
+      (tx) => tx.warehouse.update({ where: { id }, data }),
+      audit,
+      { warehouseId: id },
+      'updateWarehouse',
+    );
+  }
 
   static key(warehouseId: string, variantId: string): string {
     return `${warehouseId}:${variantId}`;

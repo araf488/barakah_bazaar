@@ -13,6 +13,14 @@ export const InventoryConstants = {
   DefaultExpiryHorizonDays: 7,
 } as const;
 
+export const InventoryAuditActions = {
+  WarehouseCreated: 'warehouse.created',
+  WarehouseUpdated: 'warehouse.updated',
+  WarehouseDeactivated: 'warehouse.deactivated',
+  StockReceived: 'stock.received',
+  StockAdjusted: 'stock.adjusted',
+} as const;
+
 export const InventoryMessages = {
   /** {0} = warehouse code. */
   WarehouseCodeTakenTemplate: 'A warehouse with the code "{0}" already exists.',
@@ -28,6 +36,9 @@ export const InventoryMessages = {
   ExpiryRequired: 'This product is perishable, so a receipt must include the batch expiry date.',
   /** An expiry already in the past cannot be received as sellable stock. */
   ExpiryInPast: 'The expiry date has already passed. Receive it as a write-off instead.',
+  /** Refusing to deactivate a warehouse that still holds stock. */
+  WarehouseHoldsStock:
+    'This warehouse still holds stock. Transfer or write it off before deactivating.',
   /** No stock line exists yet for this warehouse and variant. */
   NoStockLine: 'No stock has ever been received for this variant at this warehouse.',
 } as const;
