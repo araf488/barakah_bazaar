@@ -27,6 +27,7 @@ import {
   OrderMessages,
 } from './order.constants';
 import { DeliveryService } from '../delivery/delivery.service';
+import { AppliedDiscount, DiscountBasis, PromotionService } from '../promotion/promotion.service';
 import { NotificationService } from '../notification/notification.service';
 import { CheckoutSources } from './checkout-sources';
 import { OrderRepository, OrderWithDetail, PlaceOrderData } from './order.repository';
@@ -51,6 +52,7 @@ export class OrderService {
     private readonly authService: AuthService,
     private readonly notifications: NotificationService,
     private readonly delivery: DeliveryService,
+    private readonly promotions: PromotionService,
     @InjectPinoLogger(OrderService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -106,15 +108,24 @@ export class OrderService {
         return delivery;
       }
 
+      // Priced after delivery, because FREE_DELIVERY discounts the fee that was just
+      // resolved. Server-side for the same reason the fee is: a discount the client can
+      // name is a discount the client will name as the whole basket.
+      const discount = await this.resolveDiscount(dto, {
+        subtotalPoysha: OrderService.subtotalOf(cart),
+        deliveryFeePoysha: delivery.data.feePoysha,
+        userId: owner.data,
+      });
+
+      if (!discount.ok) {
+        return discount;
+      }
+
       const order = await this.repository.place(
-        OrderService.toPlaceData(
-          owner.data,
-          cart,
-          address,
-          warehouse.data,
-          dto,
-          delivery.data.feePoysha,
-        ),
+        OrderService.toPlaceData(owner.data, cart, address, warehouse.data, dto, {
+          deliveryFee: delivery.data.feePoysha,
+          discount: discount.data,
+        }),
       );
 
       if (order === null) {
@@ -407,6 +418,32 @@ export class OrderService {
     return undefined;
   }
 
+  /**
+   * The promo code, if one was given.
+   *
+   * A bad code fails the checkout rather than being ignored: silently dropping it charges the
+   * customer full price for an order they believed was discounted, which they discover on the
+   * receipt.
+   */
+  private async resolveDiscount(
+    dto: PlaceOrderDto,
+    basis: DiscountBasis,
+  ): Promise<ServiceResponse<AppliedDiscount | null>> {
+    if (!dto.promotionCode) {
+      return serviceOk<AppliedDiscount | null>(null);
+    }
+
+    const applied = await this.promotions.apply(dto.promotionCode, basis);
+
+    return applied.ok ? serviceOk<AppliedDiscount | null>(applied.data) : applied;
+  }
+
+  /** What the customer actually owes, never below zero. */
+  private static chargeable(subtotal: bigint, deliveryFee: bigint, discount: bigint): bigint {
+    const total = subtotal + deliveryFee - discount;
+    return total > 0n ? total : 0n;
+  }
+
   /** The basket's value at live prices. One definition, used for the fee and for the order. */
   private static subtotalOf(cart: CartWithItems): bigint {
     return cart.items.reduce(
@@ -432,7 +469,7 @@ export class OrderService {
     },
     warehouseId: string,
     dto: PlaceOrderDto,
-    deliveryFee: bigint,
+    money: { deliveryFee: bigint; discount: AppliedDiscount | null },
   ): PlaceOrderData {
     const items = cart.items.map((item) => ({
       variantId: item.variantId,
@@ -465,8 +502,18 @@ export class OrderService {
       },
       customerNote: dto.customerNote ?? null,
       subtotalPoysha: subtotal,
-      deliveryFeePoysha: deliveryFee,
-      totalPoysha: subtotal + deliveryFee,
+      deliveryFeePoysha: money.deliveryFee,
+      discountPoysha: money.discount?.discountPoysha ?? 0n,
+      // Floored at zero. A discount larger than the bill would be money owed to the customer,
+      // which no promo code is allowed to create.
+      totalPoysha: OrderService.chargeable(
+        subtotal,
+        money.deliveryFee,
+        money.discount?.discountPoysha ?? 0n,
+      ),
+      promotion: money.discount
+        ? { id: money.discount.promotion.id, discountPoysha: money.discount.discountPoysha }
+        : null,
       items,
       cartId: cart.id,
     };

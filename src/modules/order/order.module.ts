@@ -8,6 +8,7 @@ import { OrderController } from './order.controller';
 import { OrderRepository } from './order.repository';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { NotificationModule } from '../notification/notification.module';
+import { PromotionModule } from '../promotion/promotion.module';
 import { CheckoutSources } from './checkout-sources';
 import { OrderService } from './order.service';
 import { ReservationSweeper } from './reservation-sweeper.service';
@@ -27,6 +28,7 @@ import { ReservationSweeper } from './reservation-sweeper.service';
     InventoryModule,
     NotificationModule,
     DeliveryModule,
+    PromotionModule,
   ],
   controllers: [OrderController, AdminOrderController],
   providers: [OrderService, OrderRepository, CheckoutSources, ReservationSweeper],

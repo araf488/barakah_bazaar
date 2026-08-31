@@ -24,7 +24,9 @@ const placement = (overrides: Partial<PlaceOrderData> = {}): PlaceOrderData => (
   customerNote: null,
   subtotalPoysha: 250000n,
   deliveryFeePoysha: 0n,
+  discountPoysha: 0n,
   totalPoysha: 250000n,
+  promotion: null,
   items: [
     {
       variantId: 'var-1',
@@ -44,6 +46,7 @@ describe('OrderRepository', () => {
   let tx: {
     order: { create: jest.Mock };
     stockReservation: { create: jest.Mock; findMany: jest.Mock };
+    promotionRedemption: { create: jest.Mock };
     inventory: { update: jest.Mock };
     stockMovement: { create: jest.Mock };
     cartItem: { deleteMany: jest.Mock };
@@ -62,6 +65,7 @@ describe('OrderRepository', () => {
     tx = {
       order: { create: jest.fn().mockResolvedValue({ id: 'ord-1' }) },
       stockReservation: { create: jest.fn(), findMany: jest.fn() },
+      promotionRedemption: { create: jest.fn() },
       inventory: { update: jest.fn() },
       stockMovement: { create: jest.fn() },
       cartItem: { deleteMany: jest.fn() },
@@ -113,6 +117,34 @@ describe('OrderRepository', () => {
       );
 
       expect(first).toEqual(second);
+    });
+  });
+
+  describe('place — recording a redemption', () => {
+    it('writes the redemption inside the order transaction', async () => {
+      await repository.place(placement({ promotion: { id: 'promo-1', discountPoysha: 25000n } }));
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.promotionRedemption.create).toHaveBeenCalledWith({
+        data: {
+          promotionId: 'promo-1',
+          orderId: 'ord-1',
+          userId: 'user-1',
+          discountPoysha: 25000n,
+        },
+      });
+    });
+
+    it('records nothing when no promo code was used', async () => {
+      await repository.place(placement());
+
+      expect(tx.promotionRedemption.create).not.toHaveBeenCalled();
+    });
+
+    it('snapshots what the redemption was worth, not the promotion terms', async () => {
+      await repository.place(placement({ promotion: { id: 'promo-1', discountPoysha: 12345n } }));
+
+      expect(tx.promotionRedemption.create.mock.calls[0][0].data.discountPoysha).toBe(12345n);
     });
   });
 

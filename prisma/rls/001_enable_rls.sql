@@ -45,6 +45,8 @@ ALTER TABLE public.payment_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.staff_invitations    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_zones        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_zone_rules   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.promotions             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.promotion_redemptions  ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -83,6 +85,8 @@ ALTER TABLE public.payment_transactions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.staff_invitations FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_zones FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_zone_rules FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.promotions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.promotion_redemptions FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -215,6 +219,15 @@ CREATE POLICY notifications_read_own
 -- row a customer owns. That is acceptable because neither carries a credential — the body is
 -- never stored — but the API withholds them anyway, so a direct PostgREST read is the only
 -- way to see them.
+
+-- promotions gets no policy. A readable table hands every customer the whole code list,
+-- including unlaunched campaigns and codes meant for one segment. Codes are checked one at a
+-- time through the preview endpoint, which is also what enforces the per-customer limit.
+--
+-- promotion_redemptions gets no policy either, and this one is load-bearing rather than
+-- merely private: the row count IS the usage limit, so a client that could insert here could
+-- exhaust a rival's allowance, and one that could delete could redeem a single-use code
+-- forever.
 
 -- delivery_zones and delivery_zone_rules get no policy either. Pricing is readable through
 -- the quote endpoint, which resolves ONE fee for ONE address; exposing the table would let a

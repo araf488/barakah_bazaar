@@ -17,6 +17,13 @@ export class PlaceOrderDto {
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;
 
+  @ApiPropertyOptional({ description: 'Promo code to apply. Validated and priced server-side.' })
+  @IsOptional()
+  @TrimString()
+  @IsString()
+  @MaxLength(32)
+  promotionCode?: string | null;
+
   @ApiPropertyOptional({ maxLength: OrderConstants.MaxCustomerNoteLength })
   @IsOptional()
   @TrimString()

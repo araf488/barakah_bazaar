@@ -145,6 +145,17 @@ enum StaffInvitationStatus {
   REVOKED
 }
 
+/// How a promotion reduces what the customer pays.
+///
+/// FREE_DELIVERY is its own type rather than a 100% discount, because it must reduce the
+/// delivery fee specifically and never the goods — a percentage that happened to equal the
+/// fee would discount the basket instead the moment either number moved.
+enum PromotionType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  FREE_DELIVERY
+}
+
 /// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
 /// user's first authenticated request — see AuthService.resolveUser().
 model User {
@@ -164,8 +175,9 @@ model User {
 
   addresses           Address[]
   auditLog            AdminAuditLog[]
-  invitationsSent     StaffInvitation[] @relation("StaffInvitationsSent")
-  invitationsAccepted StaffInvitation[] @relation("StaffInvitationsAccepted")
+  redemptions         PromotionRedemption[]
+  invitationsSent     StaffInvitation[]     @relation("StaffInvitationsSent")
+  invitationsAccepted StaffInvitation[]     @relation("StaffInvitationsAccepted")
   cart                Cart?
   notifications       Notification[]
   orders              Order[]
@@ -601,11 +613,12 @@ model Order {
   cancelledAt  DateTime? @map("cancelled_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  user      User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
-  warehouse Warehouse            @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  items     OrderItem[]
-  events    OrderEvent[]
-  payments  PaymentTransaction[]
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  items       OrderItem[]
+  events      OrderEvent[]
+  payments    PaymentTransaction[]
+  redemptions PromotionRedemption[]
 
   @@index([userId, placedAt])
   @@index([status, placedAt])
@@ -820,4 +833,64 @@ model DeliveryZoneRule {
   @@unique([division, district, unit])
   @@index([zoneId])
   @@map("delivery_zone_rules")
+}
+
+/// A discount a customer can claim by code.
+///
+/// Limits are counted from `promotion_redemptions`, never from a column on this row. A
+/// `timesUsed` counter is the classic way to oversell a coupon: two checkouts read the same
+/// value, both find room, and both increment it to the same number.
+model Promotion {
+  id                String        @id @default(uuid()) @db.Uuid
+  /// Uppercased at write time and unique, so EID25 and eid25 cannot both exist.
+  code              String        @unique
+  nameEn            String        @map("name_en")
+  nameBn            String?       @map("name_bn")
+  type              PromotionType
+  /// Percent (1–100) for PERCENTAGE, poysha for FIXED_AMOUNT, ignored for FREE_DELIVERY.
+  value             BigInt
+  /// Basket value required before this code applies at all. Zero means no minimum.
+  minSubtotalPoysha BigInt        @default(0) @map("min_subtotal_poysha")
+  /// Ceiling on a PERCENTAGE discount. Null means uncapped — dangerous on a large basket.
+  maxDiscountPoysha BigInt?       @map("max_discount_poysha")
+  startsAt          DateTime      @map("starts_at")
+  /// Null means it runs until deactivated.
+  endsAt            DateTime?     @map("ends_at")
+  /// Total redemptions allowed across all customers. Null means unlimited.
+  usageLimit        Int?          @map("usage_limit")
+  /// Redemptions allowed per customer. Null means unlimited.
+  perCustomerLimit  Int?          @map("per_customer_limit")
+  isActive          Boolean       @default(true) @map("is_active")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  redemptions PromotionRedemption[]
+
+  @@index([isActive, startsAt, endsAt])
+  @@map("promotions")
+}
+
+/// One use of one promotion on one order.
+///
+/// This table IS the usage limit: counting rows here is the only count that cannot drift from
+/// what was actually granted. Written inside the order transaction, so a redemption without an
+/// order — or an order that claimed a discount without recording it — cannot exist.
+model PromotionRedemption {
+  id             String   @id @default(uuid()) @db.Uuid
+  promotionId    String   @map("promotion_id") @db.Uuid
+  /// One promotion per order. The unique index is what stops a retry double-counting.
+  orderId        String   @unique @map("order_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  /// What this redemption was actually worth, in poysha. Snapshotted: the promotion's terms
+  /// may be edited later, and what the customer received must not change with them.
+  discountPoysha BigInt   @map("discount_poysha")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Restrict)
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// Counting one customer's uses of one code, which is the per-customer limit check.
+  @@index([promotionId, userId])
+  @@map("promotion_redemptions")
 }

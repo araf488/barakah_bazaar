@@ -44,7 +44,10 @@ export interface PlaceOrderData {
   customerNote: string | null;
   subtotalPoysha: bigint;
   deliveryFeePoysha: bigint;
+  discountPoysha: bigint;
   totalPoysha: bigint;
+  /** The promotion redeemed, if any. Recorded in the same transaction as the order. */
+  promotion: { id: string; discountPoysha: bigint } | null;
   items: {
     variantId: string;
     sku: string;
@@ -88,6 +91,7 @@ export class OrderRepository {
             customerNote: data.customerNote,
             subtotalPoysha: data.subtotalPoysha,
             deliveryFeePoysha: data.deliveryFeePoysha,
+            discountPoysha: data.discountPoysha,
             totalPoysha: data.totalPoysha,
             items: { create: data.items },
             events: { create: { toStatus: OrderStatus.PLACED } },
@@ -134,6 +138,20 @@ export class OrderRepository {
               note: `Reserved for order ${orderNumber}`,
               referenceType: 'Order',
               referenceId: order.id,
+            },
+          });
+        }
+
+        if (data.promotion) {
+          // In the order transaction on purpose. A redemption row is what enforces the usage
+          // limit, so one written separately could be lost while the discount was still
+          // granted — or counted against a customer whose order then failed to write.
+          await tx.promotionRedemption.create({
+            data: {
+              promotionId: data.promotion.id,
+              orderId: order.id,
+              userId: data.userId,
+              discountPoysha: data.promotion.discountPoysha,
             },
           });
         }

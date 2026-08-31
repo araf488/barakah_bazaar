@@ -10,6 +10,7 @@ import { InventoryRepository } from '../inventory/inventory.repository';
 import { AddressRepository } from '../user/address.repository';
 import { OrderQueryDto, PlaceOrderDto } from './dto/order.dto';
 import { DeliveryService } from '../delivery/delivery.service';
+import { PromotionService } from '../promotion/promotion.service';
 import { NotificationService } from '../notification/notification.service';
 import { CheckoutSources } from './checkout-sources';
 import { OrderRepository } from './order.repository';
@@ -76,6 +77,7 @@ describe('OrderService', () => {
   let authService: { resolveActiveUserId: jest.Mock };
   let notifications: { notifyOrderStatus: jest.Mock };
   let delivery: { resolveFee: jest.Mock };
+  let promotions: { apply: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: OrderService;
 
@@ -98,6 +100,7 @@ describe('OrderService', () => {
     };
     logger = createMockLogger();
     notifications = { notifyOrderStatus: jest.fn().mockResolvedValue(undefined) };
+    promotions = { apply: jest.fn() };
     delivery = {
       resolveFee: jest.fn().mockResolvedValue({
         ok: true,
@@ -115,6 +118,7 @@ describe('OrderService', () => {
       authService as unknown as AuthService,
       notifications as unknown as NotificationService,
       delivery as unknown as DeliveryService,
+      promotions as unknown as PromotionService,
       logger,
     );
   });
@@ -369,6 +373,101 @@ describe('OrderService', () => {
 
       expect(result.ok).toBe(false);
       expect(repository.place).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('promo codes', () => {
+    it('applies no discount when no code was given', async () => {
+      await service.placeOrder(customer, placeDto());
+
+      expect(promotions.apply).not.toHaveBeenCalled();
+      const data = repository.place.mock.calls[0][0] as {
+        discountPoysha: bigint;
+        promotion: unknown;
+      };
+      expect(data.discountPoysha).toBe(0n);
+      expect(data.promotion).toBeNull();
+    });
+
+    it('prices the code against the live subtotal and the resolved delivery fee', async () => {
+      promotions.apply.mockResolvedValue({
+        ok: true,
+        data: { promotion: { id: 'promo-1' }, discountPoysha: 25000n },
+      });
+
+      await service.placeOrder(customer, placeDto({ promotionCode: 'EID25' }));
+
+      expect(promotions.apply).toHaveBeenCalledWith('EID25', {
+        subtotalPoysha: 250000n,
+        deliveryFeePoysha: 6000n,
+        userId: 'user-1',
+      });
+    });
+
+    it('subtracts the discount and records the redemption with the order', async () => {
+      promotions.apply.mockResolvedValue({
+        ok: true,
+        data: { promotion: { id: 'promo-1' }, discountPoysha: 25000n },
+      });
+
+      await service.placeOrder(customer, placeDto({ promotionCode: 'EID25' }));
+
+      const data = repository.place.mock.calls[0][0] as {
+        subtotalPoysha: bigint;
+        deliveryFeePoysha: bigint;
+        discountPoysha: bigint;
+        totalPoysha: bigint;
+        promotion: { id: string; discountPoysha: bigint };
+      };
+
+      expect(data.discountPoysha).toBe(25000n);
+      // 250000 goods + 6000 delivery - 25000 discount
+      expect(data.totalPoysha).toBe(231000n);
+      expect(data.promotion).toEqual({ id: 'promo-1', discountPoysha: 25000n });
+    });
+
+    it('never lets a discount push the total below zero', async () => {
+      promotions.apply.mockResolvedValue({
+        ok: true,
+        data: { promotion: { id: 'promo-1' }, discountPoysha: 999999n },
+      });
+
+      await service.placeOrder(customer, placeDto({ promotionCode: 'EID25' }));
+
+      const data = repository.place.mock.calls[0][0] as { totalPoysha: bigint };
+
+      expect(data.totalPoysha).toBe(0n);
+    });
+
+    it('fails the checkout on a bad code rather than silently charging full price', async () => {
+      // Dropping the code quietly means the customer discovers it on the receipt.
+      promotions.apply.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.NOT_FOUND,
+        message: 'That promo code is not valid.',
+      });
+
+      const result = await service.placeOrder(customer, placeDto({ promotionCode: 'NOPE' }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.NOT_FOUND,
+        message: 'That promo code is not valid.',
+      });
+      expect(repository.place).not.toHaveBeenCalled();
+    });
+
+    it('prices the code after delivery, so free-delivery codes see a fee to waive', async () => {
+      promotions.apply.mockResolvedValue({
+        ok: true,
+        data: { promotion: { id: 'promo-1' }, discountPoysha: 6000n },
+      });
+
+      await service.placeOrder(customer, placeDto({ promotionCode: 'FREESHIP' }));
+
+      expect(delivery.resolveFee.mock.invocationCallOrder[0]).toBeLessThan(
+        promotions.apply.mock.invocationCallOrder[0],
+      );
     });
   });
 
