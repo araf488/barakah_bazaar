@@ -9,6 +9,7 @@ import { CartRepository } from '../cart/cart.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { AddressRepository } from '../user/address.repository';
 import { OrderQueryDto, PlaceOrderDto } from './dto/order.dto';
+import { DeliveryService } from '../delivery/delivery.service';
 import { NotificationService } from '../notification/notification.service';
 import { CheckoutSources } from './checkout-sources';
 import { OrderRepository } from './order.repository';
@@ -74,6 +75,7 @@ describe('OrderService', () => {
   let inventoryRepository: Record<string, jest.Mock>;
   let authService: { resolveActiveUserId: jest.Mock };
   let notifications: { notifyOrderStatus: jest.Mock };
+  let delivery: { resolveFee: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: OrderService;
 
@@ -96,6 +98,12 @@ describe('OrderService', () => {
     };
     logger = createMockLogger();
     notifications = { notifyOrderStatus: jest.fn().mockResolvedValue(undefined) };
+    delivery = {
+      resolveFee: jest.fn().mockResolvedValue({
+        ok: true,
+        data: { feePoysha: 6000n, zone: { nameEn: 'Inside Dhaka' }, isFree: false },
+      }),
+    };
 
     service = new OrderService(
       repository as unknown as OrderRepository,
@@ -106,6 +114,7 @@ describe('OrderService', () => {
       ),
       authService as unknown as AuthService,
       notifications as unknown as NotificationService,
+      delivery as unknown as DeliveryService,
       logger,
     );
   });
@@ -121,7 +130,8 @@ describe('OrderService', () => {
       };
       expect(data.items[0].unitPricePoysha).toBe(125000n);
       expect(data.items[0].lineTotalPoysha).toBe(250000n);
-      expect(data.totalPoysha).toBe(250000n);
+      // Subtotal plus the resolved delivery fee.
+      expect(data.totalPoysha).toBe(256000n);
     });
 
     it('snapshots the address as text rather than referencing it', async () => {
@@ -190,9 +200,9 @@ describe('OrderService', () => {
       const result = await service.placeOrder(customer, placeDto({ acceptPriceChanges: true }));
 
       expect(result.ok).toBe(true);
-      // Charged at the LIVE price, not the one it was added at.
+      // Charged at the LIVE price, not the one it was added at, plus delivery.
       const data = repository.place.mock.calls[0][0] as { totalPoysha: bigint };
-      expect(data.totalPoysha).toBe(250000n);
+      expect(data.totalPoysha).toBe(256000n);
     });
 
     it('picks a hub that can cover the whole basket', async () => {
@@ -302,6 +312,63 @@ describe('OrderService', () => {
         'user-1',
         'Stock checked',
       );
+    });
+  });
+
+  describe('delivery pricing', () => {
+    it('resolves the fee from the destination and the live subtotal', async () => {
+      await service.placeOrder(customer, placeDto());
+
+      expect(delivery.resolveFee).toHaveBeenCalledWith(
+        { division: 'Dhaka', district: 'Dhaka', unit: 'Savar' },
+        250000n,
+      );
+    });
+
+    it('charges the fee the service resolved, never one from the request', async () => {
+      delivery.resolveFee.mockResolvedValue({
+        ok: true,
+        data: { feePoysha: 12000n, zone: { nameEn: 'Outside Dhaka' }, isFree: false },
+      });
+
+      await service.placeOrder(customer, placeDto());
+
+      const data = repository.place.mock.calls[0][0] as {
+        deliveryFeePoysha: bigint;
+        subtotalPoysha: bigint;
+        totalPoysha: bigint;
+      };
+
+      expect(data.deliveryFeePoysha).toBe(12000n);
+      expect(data.subtotalPoysha).toBe(250000n);
+      expect(data.totalPoysha).toBe(262000n);
+    });
+
+    it('charges nothing when the basket earned free delivery', async () => {
+      delivery.resolveFee.mockResolvedValue({
+        ok: true,
+        data: { feePoysha: 0n, zone: { nameEn: 'Inside Dhaka' }, isFree: true },
+      });
+
+      await service.placeOrder(customer, placeDto());
+
+      const data = repository.place.mock.calls[0][0] as { totalPoysha: bigint };
+
+      expect(data.totalPoysha).toBe(250000n);
+    });
+
+    it('refuses the order rather than shipping free when pricing is unconfigured', async () => {
+      // A silent zero here is a revenue leak nobody notices. Refusing is loud and gets fixed.
+      delivery.resolveFee.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+        message: 'Delivery is not available to that address yet. Please contact support.',
+      });
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(false);
+      expect(repository.place).not.toHaveBeenCalled();
     });
   });
 

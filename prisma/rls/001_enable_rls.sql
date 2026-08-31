@@ -43,6 +43,8 @@ ALTER TABLE public.order_events       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payment_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.staff_invitations    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zones        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zone_rules   ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -79,6 +81,8 @@ ALTER TABLE public.order_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.payment_transactions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.staff_invitations FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zones FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zone_rules FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -211,6 +215,11 @@ CREATE POLICY notifications_read_own
 -- row a customer owns. That is acceptable because neither carries a credential — the body is
 -- never stored — but the API withholds them anyway, so a direct PostgREST read is the only
 -- way to see them.
+
+-- delivery_zones and delivery_zone_rules get no policy either. Pricing is readable through
+-- the quote endpoint, which resolves ONE fee for ONE address; exposing the table would let a
+-- client read the whole fee schedule, and a writable one would let it set its own delivery
+-- charge to zero.
 
 -- staff_invitations deliberately gets NO policy. Every row is a pending permission grant,
 -- and token_hash is the stored half of a live credential: a client that could read this table

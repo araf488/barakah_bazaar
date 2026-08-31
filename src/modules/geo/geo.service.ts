@@ -199,6 +199,31 @@ export class GeoService {
   }
 
   /**
+   * Validates a division name on its own.
+   *
+   * The coarsest of the three validators, used where a rule legitimately covers a whole
+   * division — delivery pricing bands, which are written per region rather than per address.
+   */
+  validateDivision(division: string): ServiceResponse<void> {
+    try {
+      if (!DIVISION_BY_KEY.get(GeoService.key(division))) {
+        return serviceFail(
+          HttpStatus.BAD_REQUEST,
+          formatMessage(GeoMessages.UnknownDivisionTemplate, division),
+        );
+      }
+
+      return serviceOk<void>(undefined);
+    } catch (error) {
+      this.logger.error(
+        { err: error, division },
+        'Exception occurred in GeoService.validateDivision',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
    * Validates only division → district.
    *
    * Used when a customer says their area is not in our list and typed it themselves. These

@@ -767,3 +767,57 @@ model StaffInvitation {
   @@index([status, expiresAt])
   @@map("staff_invitations")
 }
+
+/// A delivery pricing band: one fee, and the places it applies to.
+///
+/// Zones are priced, not places. "Inside Dhaka city", "Dhaka suburbs", "rest of Bangladesh"
+/// are three fees, and each collects however many divisions, districts or units belong to it.
+/// Modelling it the other way round — a fee per district — makes a nationwide price change 64
+/// edits and guarantees they drift.
+model DeliveryZone {
+  id              String   @id @default(uuid()) @db.Uuid
+  nameEn          String   @map("name_en")
+  nameBn          String?  @map("name_bn")
+  /// Flat fee for this zone, in poysha.
+  feePoysha       BigInt   @map("fee_poysha")
+  /// Order subtotal at or above which delivery is free here. Null means never free.
+  freeAbovePoysha BigInt?  @map("free_above_poysha")
+  /// The zone used when no rule matches. Exactly one may be true — enforced by a partial
+  /// unique index, because two defaults means the fee depends on row order.
+  isDefault       Boolean  @default(false) @map("is_default")
+  isActive        Boolean  @default(true) @map("is_active")
+  sortOrder       Int      @default(0) @map("sort_order")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  rules DeliveryZoneRule[]
+
+  @@index([isActive, sortOrder])
+  @@map("delivery_zones")
+}
+
+/// One place, or family of places, that falls in a zone.
+///
+/// Specificity decides: a rule naming a unit beats one naming only its district, which beats
+/// one naming only the division. That is what lets "Dhaka division is 120 taka, except Dhaka
+/// district which is 80, except Gulshan which is 60" be three rows instead of a special case.
+///
+/// Names are the same strings the geo dataset and the address book use, validated against it
+/// on write — a typo'd district would silently never match and quietly overcharge.
+model DeliveryZoneRule {
+  id        String   @id @default(uuid()) @db.Uuid
+  zoneId    String   @map("zone_id") @db.Uuid
+  division  String
+  /// Null means the whole division.
+  district  String?
+  /// Null means the whole district. The UNIT level: upazila, city thana or circle.
+  unit      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  zone DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  /// One place belongs to one zone. Without this the same address matches two fees.
+  @@unique([division, district, unit])
+  @@index([zoneId])
+  @@map("delivery_zone_rules")
+}

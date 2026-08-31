@@ -90,6 +90,8 @@ export const AdminAuditActions = {
   StaffInvitationRevoked: 'staff.invitation_revoked',
   StaffInvitationAccepted: 'staff.invitation_accepted',
   StaffInvitationAcceptPartial: 'staff.invitation_accept_partial',
+  ZoneCreated: 'delivery_zone.created',
+  ZoneUpdated: 'delivery_zone.updated',
 } as const;
 
 export type AdminAuditAction = (typeof AdminAuditActions)[keyof typeof AdminAuditActions];
@@ -102,6 +104,7 @@ export const AdminAuditEntities = {
   ProductImage: 'ProductImage',
   User: 'User',
   StaffInvitation: 'StaffInvitation',
+  DeliveryZone: 'DeliveryZone',
 } as const;
 
 export const AdminMessages = {

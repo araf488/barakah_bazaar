@@ -26,6 +26,7 @@ import {
   OrderConstants,
   OrderMessages,
 } from './order.constants';
+import { DeliveryService } from '../delivery/delivery.service';
 import { NotificationService } from '../notification/notification.service';
 import { CheckoutSources } from './checkout-sources';
 import { OrderRepository, OrderWithDetail, PlaceOrderData } from './order.repository';
@@ -49,6 +50,7 @@ export class OrderService {
     private readonly sources: CheckoutSources,
     private readonly authService: AuthService,
     private readonly notifications: NotificationService,
+    private readonly delivery: DeliveryService,
     @InjectPinoLogger(OrderService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -93,8 +95,26 @@ export class OrderService {
         return warehouse;
       }
 
+      // Resolved server-side, never taken from the request: a delivery charge the customer
+      // can choose is a delivery charge the customer will choose to be zero.
+      const delivery = await this.delivery.resolveFee(
+        { division: address.division, district: address.district, unit: address.upazila },
+        OrderService.subtotalOf(cart),
+      );
+
+      if (!delivery.ok) {
+        return delivery;
+      }
+
       const order = await this.repository.place(
-        OrderService.toPlaceData(owner.data, cart, address, warehouse.data, dto),
+        OrderService.toPlaceData(
+          owner.data,
+          cart,
+          address,
+          warehouse.data,
+          dto,
+          delivery.data.feePoysha,
+        ),
       );
 
       if (order === null) {
@@ -387,6 +407,14 @@ export class OrderService {
     return undefined;
   }
 
+  /** The basket's value at live prices. One definition, used for the fee and for the order. */
+  private static subtotalOf(cart: CartWithItems): bigint {
+    return cart.items.reduce(
+      (total, item) => total + item.variant.pricePoysha * BigInt(item.quantity),
+      0n,
+    );
+  }
+
   private static toPlaceData(
     userId: string,
     cart: CartWithItems,
@@ -404,6 +432,7 @@ export class OrderService {
     },
     warehouseId: string,
     dto: PlaceOrderDto,
+    deliveryFee: bigint,
   ): PlaceOrderData {
     const items = cart.items.map((item) => ({
       variantId: item.variantId,
@@ -417,9 +446,6 @@ export class OrderService {
     }));
 
     const subtotal = items.reduce((total, item) => total + item.lineTotalPoysha, 0n);
-    // Delivery pricing is a Phase 4 concern; the column exists so adding it later is not a
-    // migration of every historical order.
-    const deliveryFee = 0n;
 
     return {
       userId,

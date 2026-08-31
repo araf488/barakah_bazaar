@@ -6,6 +6,7 @@ import { UserModule } from '../user/user.module';
 import { AdminOrderController } from './admin-order.controller';
 import { OrderController } from './order.controller';
 import { OrderRepository } from './order.repository';
+import { DeliveryModule } from '../delivery/delivery.module';
 import { NotificationModule } from '../notification/notification.module';
 import { CheckoutSources } from './checkout-sources';
 import { OrderService } from './order.service';
@@ -19,7 +20,14 @@ import { ReservationSweeper } from './reservation-sweeper.service';
  * anything is written.
  */
 @Module({
-  imports: [AuthModule, CartModule, UserModule, InventoryModule, NotificationModule],
+  imports: [
+    AuthModule,
+    CartModule,
+    UserModule,
+    InventoryModule,
+    NotificationModule,
+    DeliveryModule,
+  ],
   controllers: [OrderController, AdminOrderController],
   providers: [OrderService, OrderRepository, CheckoutSources, ReservationSweeper],
   exports: [OrderService],
