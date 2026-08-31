@@ -40,6 +40,10 @@ const SORT_ORDER_BY: Record<ProductSort, Prisma.ProductOrderByWithRelationInput[
   // `productInclude` and the list is ordered by name for a stable page.
   [ProductSortOption.PriceAscending]: [{ nameEn: 'asc' }],
   [ProductSortOption.PriceDescending]: [{ nameEn: 'desc' }],
+  // Relevance never reaches Prisma's orderBy: a ranked search resolves its own id order in
+  // SQL and this list is re-sorted to match. Mapped to name so the type stays total and a
+  // relevance sort with no search term still produces a stable page.
+  [ProductSortOption.Relevance]: [{ nameEn: 'asc' }],
 };
 
 /**
@@ -136,5 +140,74 @@ export class CatalogRepository {
     }
 
     return where;
+  }
+
+  /**
+   * Product ids matching a search term, best match first.
+   *
+   * Raw SQL because the ranking cannot be expressed in Prisma: `ts_rank` over a `tsvector`,
+   * unioned with a trigram similarity pass so a typo still finds the product. Two strategies
+   * rather than one, because they fail in opposite directions — full-text handles word forms
+   * and multi-word queries but not misspellings, and trigrams handle misspellings but rank a
+   * long description poorly.
+   *
+   * Bengali is indexed with the `simple` configuration. Postgres ships no Bengali stemmer, and
+   * `english` would mangle Bengali tokens; `simple` just lowercases and splits, which is
+   * exactly right for a language it does not understand.
+   *
+   * Returns ids only. Hydration stays in Prisma so the include, the mapper and the published
+   * filter have one definition each.
+   */
+  async searchProductIds(term: string): Promise<string[] | null> {
+    try {
+      const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT p.id
+        FROM products p
+        WHERE p.is_active = true
+          AND p.published_at IS NOT NULL
+          AND p.published_at <= now()
+          AND (
+            p.search_vector @@ websearch_to_tsquery('simple', ${term})
+            OR similarity(p.name_en, ${term}) >= ${CatalogConstants.TrigramThreshold}
+            OR similarity(coalesce(p.brand, ''), ${term}) >= ${CatalogConstants.TrigramThreshold}
+          )
+        ORDER BY
+          -- Exact full-text rank first, then fuzzy closeness. A product whose NAME matches
+          -- outranks one that merely mentions the word in its description, because the
+          -- vector is weighted A for names and C for descriptions.
+          ts_rank(p.search_vector, websearch_to_tsquery('simple', ${term})) DESC,
+          GREATEST(
+            similarity(p.name_en, ${term}),
+            similarity(coalesce(p.brand, ''), ${term})
+          ) DESC,
+          p.published_at DESC
+        LIMIT ${CatalogConstants.MaxSearchCandidates}
+      `;
+
+      return rows.map((row) => row.id);
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in CatalogRepository.searchProductIds');
+      return null;
+    }
+  }
+
+  /** Published products by id, in whatever order Prisma returns them. */
+  async findPublishedByIds(ids: string[]): Promise<ProductWithRelations[] | null> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    try {
+      return await this.prisma.product.findMany({
+        where: { ...publishedProductWhere(), id: { in: ids } },
+        include: productInclude,
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'Exception occurred in CatalogRepository.findPublishedByIds',
+      );
+      return null;
+    }
   }
 }

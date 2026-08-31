@@ -8,6 +8,7 @@ import {
   StockMovementReason,
 } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { consumeFefo } from '../inventory/batch-consumption';
 import { OrderConstants } from './order.constants';
 
 export type OrderResult = Order | null | undefined;
@@ -311,17 +312,26 @@ export class OrderRepository {
         },
       });
 
-      await tx.stockMovement.create({
-        data: {
-          warehouse: { connect: { id: order.warehouseId } },
-          variant: { connect: { id: item.variantId } },
-          delta: -item.quantity,
-          reason: StockMovementReason.SALE,
-          note: `Dispatched on order ${order.orderNumber}`,
-          referenceType: 'Order',
-          referenceId: order.id,
-        },
-      });
+      // The batches must fall with the aggregate. Decrementing only quantity_on_hand leaves
+      // inventory_batches claiming stock that has been sold, and expiry picking then keeps
+      // choosing batches that are already empty.
+      const takes = await consumeFefo(tx, order.warehouseId, item.variantId, item.quantity);
+
+      // One movement per batch, so a recall can answer which orders received a given batch.
+      for (const take of takes) {
+        await tx.stockMovement.create({
+          data: {
+            warehouse: { connect: { id: order.warehouseId } },
+            variant: { connect: { id: item.variantId } },
+            ...(take.batchId ? { batch: { connect: { id: take.batchId } } } : {}),
+            delta: -take.quantity,
+            reason: StockMovementReason.SALE,
+            note: `Dispatched on order ${order.orderNumber}`,
+            referenceType: 'Order',
+            referenceId: order.id,
+          },
+        });
+      }
     }
 
     await tx.stockReservation.updateMany({

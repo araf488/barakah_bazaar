@@ -51,6 +51,15 @@ export class CatalogService {
     query: ProductQueryDto,
   ): Promise<ServiceResponse<PaginatedResponseDto<ProductListItemDto>>> {
     try {
+      const term = query.search?.trim();
+
+      // A search takes a different path entirely. Ranking lives in SQL, so the page is cut
+      // from an ordered id list rather than from a Prisma orderBy that has no notion of
+      // relevance — asking for "best match" and getting "newest" is worse than not offering it.
+      if (term && term.length >= CatalogConstants.MinSearchTermLength) {
+        return await this.searchProducts(term, query);
+      }
+
       const page = await this.repository.findPublishedProducts(query);
 
       if (page === null) {
@@ -66,6 +75,42 @@ export class CatalogService {
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
+  }
+
+  /**
+   * The ranked path: ids from SQL, rows from Prisma, order restored in memory.
+   *
+   * The re-sort is the load-bearing step. `WHERE id IN (...)` returns rows in whatever order
+   * Postgres finds convenient, so hydrating without restoring the rank would silently discard
+   * the ranking the search just computed.
+   */
+  private async searchProducts(
+    term: string,
+    query: ProductQueryDto,
+  ): Promise<ServiceResponse<PaginatedResponseDto<ProductListItemDto>>> {
+    const ranked = await this.repository.searchProductIds(term);
+
+    if (ranked === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+
+    const start = (query.page - 1) * query.limit;
+    const pageIds = ranked.slice(start, start + query.limit);
+
+    const products = await this.repository.findPublishedByIds(pageIds);
+
+    if (products === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+
+    const byId = new Map(products.map((product) => [product.id, product]));
+
+    const items = pageIds
+      .map((id) => byId.get(id))
+      .filter((product): product is NonNullable<typeof product> => product !== undefined)
+      .map((product) => CatalogMapper.toProductListItem(product));
+
+    return serviceOk(PaginatedResponseDto.of(items, ranked.length, query.page, query.limit));
   }
 
   async getProductBySlug(slug: string): Promise<ServiceResponse<ProductDetailDto>> {

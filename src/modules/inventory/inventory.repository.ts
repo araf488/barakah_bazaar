@@ -9,6 +9,7 @@ import {
   Warehouse,
 } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { consumeFefo } from './batch-consumption';
 import { AuditLogRepository, AuditLogWriteData } from '../admin/audit-log.repository';
 import { StockQueryDto } from './dto/inventory.dto';
 
@@ -316,9 +317,11 @@ export class InventoryRepository {
   async adjust(data: AdjustmentData): Promise<Inventory | null> {
     try {
       return await this.prisma.$transaction(async (tx) => {
-        if (data.delta < 0) {
-          await InventoryRepository.consumeBatches(tx, data);
-        }
+        // Consumed first, so the movements below can name the batches they came off.
+        const takes =
+          data.delta < 0
+            ? await consumeFefo(tx, data.warehouseId, data.variantId, Math.abs(data.delta))
+            : [{ batchId: null, quantity: data.delta }];
 
         const updated = await tx.inventory.update({
           where: {
@@ -330,16 +333,21 @@ export class InventoryRepository {
           data: { quantityOnHand: { increment: data.delta } },
         });
 
-        await tx.stockMovement.create({
-          data: {
-            warehouse: { connect: { id: data.warehouseId } },
-            variant: { connect: { id: data.variantId } },
-            delta: data.delta,
-            reason: data.reason,
-            note: data.note,
-            actorId: data.actorId,
-          },
-        });
+        // One movement per batch. The rows still sum to `data.delta`, but each names where
+        // its units came from, which an aggregate row cannot.
+        for (const take of takes) {
+          await tx.stockMovement.create({
+            data: {
+              warehouse: { connect: { id: data.warehouseId } },
+              variant: { connect: { id: data.variantId } },
+              ...(take.batchId ? { batch: { connect: { id: take.batchId } } } : {}),
+              delta: data.delta < 0 ? -take.quantity : take.quantity,
+              reason: data.reason,
+              note: data.note,
+              actorId: data.actorId,
+            },
+          });
+        }
 
         return updated;
       });
@@ -349,34 +357,6 @@ export class InventoryRepository {
         'Exception occurred in InventoryRepository.adjust',
       );
       return null;
-    }
-  }
-
-  /** Draws `-delta` units off the earliest-expiring batches that still have stock. */
-  private static async consumeBatches(
-    tx: Prisma.TransactionClient,
-    data: AdjustmentData,
-  ): Promise<void> {
-    let remaining = Math.abs(data.delta);
-
-    const batches = await tx.inventoryBatch.findMany({
-      where: { warehouseId: data.warehouseId, variantId: data.variantId, quantity: { gt: 0 } },
-      // Nulls last: a batch with no expiry is non-perishable and can wait.
-      orderBy: [{ expiresAt: { sort: 'asc', nulls: 'last' } }, { receivedAt: 'asc' }],
-    });
-
-    for (const batch of batches) {
-      if (remaining <= 0) {
-        break;
-      }
-
-      const taken = Math.min(batch.quantity, remaining);
-      remaining -= taken;
-
-      await tx.inventoryBatch.update({
-        where: { id: batch.id },
-        data: { quantity: { decrement: taken } },
-      });
     }
   }
 

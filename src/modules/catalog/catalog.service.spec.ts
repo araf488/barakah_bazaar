@@ -14,6 +14,8 @@ describe('CatalogService', () => {
     findActiveCategories: jest.Mock;
     findPublishedProducts: jest.Mock;
     findPublishedProductBySlug: jest.Mock;
+    searchProductIds: jest.Mock;
+    findPublishedByIds: jest.Mock;
   };
   let logger: jest.Mocked<PinoLogger>;
   let service: CatalogService;
@@ -23,6 +25,8 @@ describe('CatalogService', () => {
       findActiveCategories: jest.fn(),
       findPublishedProducts: jest.fn(),
       findPublishedProductBySlug: jest.fn(),
+      searchProductIds: jest.fn().mockResolvedValue([]),
+      findPublishedByIds: jest.fn().mockResolvedValue([]),
     };
     logger = createMockLogger();
     service = new CatalogService(repository as unknown as CatalogRepository, logger);
@@ -112,7 +116,7 @@ describe('CatalogService', () => {
     });
 
     it('returns an empty page rather than a 404 when nothing matches', async () => {
-      repository.findPublishedProducts.mockResolvedValue({ items: [], total: 0 });
+      repository.searchProductIds.mockResolvedValue([]);
 
       const result = await service.listProducts(buildQuery({ search: 'nothing-matches' }));
 
@@ -148,6 +152,97 @@ describe('CatalogService', () => {
 
       expect(result.ok).toBe(false);
       expect(!result.ok && result.status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+    });
+  });
+
+  describe('ranked search', () => {
+    const ranked = (ids: string[]) => ids.map((id) => productFixture({ id, slug: `slug-${id}` }));
+
+    it('uses the ranked path once the term is long enough', async () => {
+      await service.listProducts(buildQuery({ search: 'almond' }));
+
+      expect(repository.searchProductIds).toHaveBeenCalledWith('almond');
+      expect(repository.findPublishedProducts).not.toHaveBeenCalled();
+    });
+
+    it('ignores a term below the minimum length', async () => {
+      repository.findPublishedProducts.mockResolvedValue({ items: [], total: 0 });
+
+      await service.listProducts(buildQuery({ search: 'a' }));
+
+      expect(repository.searchProductIds).not.toHaveBeenCalled();
+      expect(repository.findPublishedProducts).toHaveBeenCalled();
+    });
+
+    it('trims the term before searching', async () => {
+      await service.listProducts(buildQuery({ search: '  almond  ' }));
+
+      expect(repository.searchProductIds).toHaveBeenCalledWith('almond');
+    });
+
+    it('preserves the rank order the database computed', async () => {
+      // WHERE id IN (...) returns rows in whatever order Postgres finds convenient, so
+      // hydrating without restoring the rank silently discards the ranking.
+      repository.searchProductIds.mockResolvedValue(['p3', 'p1', 'p2']);
+      repository.findPublishedByIds.mockResolvedValue(ranked(['p1', 'p2', 'p3']));
+
+      const result = await service.listProducts(buildQuery({ search: 'almond' }));
+
+      expect(result.ok && result.data.items.map((item) => item.id)).toEqual(['p3', 'p1', 'p2']);
+    });
+
+    it('pages the ranked ids rather than the hydrated rows', async () => {
+      repository.searchProductIds.mockResolvedValue(['p1', 'p2', 'p3', 'p4', 'p5']);
+      repository.findPublishedByIds.mockResolvedValue(ranked(['p3', 'p4']));
+
+      await service.listProducts(buildQuery({ search: 'almond', page: 2, limit: 2 }));
+
+      expect(repository.findPublishedByIds).toHaveBeenCalledWith(['p3', 'p4']);
+    });
+
+    it('reports the total as the full match count, not the page size', async () => {
+      repository.searchProductIds.mockResolvedValue(['p1', 'p2', 'p3', 'p4', 'p5']);
+      repository.findPublishedByIds.mockResolvedValue(ranked(['p1', 'p2']));
+
+      const result = await service.listProducts(buildQuery({ search: 'almond', limit: 2 }));
+
+      expect(result.ok && result.data.meta.totalItems).toBe(5);
+      expect(result.ok && result.data.meta.hasNextPage).toBe(true);
+    });
+
+    it('drops an id that no longer hydrates rather than emitting a hole', async () => {
+      // A product unpublished between the ranking query and the fetch.
+      repository.searchProductIds.mockResolvedValue(['p1', 'gone', 'p2']);
+      repository.findPublishedByIds.mockResolvedValue(ranked(['p1', 'p2']));
+
+      const result = await service.listProducts(buildQuery({ search: 'almond' }));
+
+      expect(result.ok && result.data.items.map((item) => item.id)).toEqual(['p1', 'p2']);
+    });
+
+    it('reports 503 when the ranking query fails', async () => {
+      repository.searchProductIds.mockResolvedValue(null);
+
+      const result = await service.listProducts(buildQuery({ search: 'almond' }));
+
+      expect(result.ok).toBe(false);
+    });
+
+    it('reports 503 when hydration fails', async () => {
+      repository.searchProductIds.mockResolvedValue(['p1']);
+      repository.findPublishedByIds.mockResolvedValue(null);
+
+      const result = await service.listProducts(buildQuery({ search: 'almond' }));
+
+      expect(result.ok).toBe(false);
+    });
+
+    it('asks for nothing when the page is past the last result', async () => {
+      repository.searchProductIds.mockResolvedValue(['p1', 'p2']);
+
+      await service.listProducts(buildQuery({ search: 'almond', page: 9, limit: 20 }));
+
+      expect(repository.findPublishedByIds).toHaveBeenCalledWith([]);
     });
   });
 

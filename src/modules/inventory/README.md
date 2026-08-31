@@ -45,6 +45,28 @@ index exists so the sweep is cheap.
 - Batch expiry is the reason this module exists: doi and rosmalai are unsellable within hours, not days.
 - Never expose a write path to `anon`/`authenticated` — this table is service_role only.
 
+## Batches fall with the aggregate
+
+`inventory.quantity_on_hand` and the sum of `inventory_batches.quantity` for the same
+warehouse/variant must move together. `consumeFefo` in `batch-consumption.ts` is the one place
+that draws stock off batches, and **both** callers use it: manual adjustments and order
+dispatch.
+
+They did not always. Dispatch used to decrement only the aggregate, so every sale widened a
+gap between the two, and expiry picking kept selecting batches that had already been sold.
+`prisma/sql/local/check-batch-drift.sql` is a read-only diagnostic for that damage.
+
+## One movement per batch
+
+A stock movement names the batch its units came off (`batch_id`). That is what makes "which
+orders received batch X" answerable, which is the entire reason a grocery tracks expiry at
+all. A line spanning two batches writes two movements whose deltas still sum to the quantity
+that left.
+
+When no batch covers the quantity — a variant that is not batch-tracked, or batch records
+behind the shelf — the remainder is written as a movement with a null `batch_id` rather than
+dropped, so the ledger still sums to what actually moved.
+
 ## Before writing code here
 
 Copy the shape of `src/modules/catalog` — controller → service → repository,

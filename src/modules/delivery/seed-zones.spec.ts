@@ -9,11 +9,17 @@ import { GeoService } from '../geo/geo.service';
  *
  * A rule naming a district that does not exist matches no address and silently bills everyone
  * there the default rate — the failure is invisible in production and obvious here. This test
- * reads the actual SQL the operator runs, so a rename on either side breaks the build rather
- * than the pricing.
+ * reads the committed seed migration, so a rename on either side breaks the build rather than
+ * the pricing.
+ *
+ * The path must stay inside prisma/migrations: prisma/sql/local is gitignored, so a fixture read
+ * from there exists only on the author's machine and every CI checkout fails with ENOENT.
  */
 describe('seeded delivery zone rules', () => {
-  const sqlPath = join(__dirname, '../../../prisma/sql/local/apply-delivery-zones.sql');
+  const sqlPath = join(
+    __dirname,
+    '../../../prisma/migrations/20260831210000_seed_delivery_zones/migration.sql',
+  );
   let geo: GeoService;
   let logger: jest.Mocked<PinoLogger>;
 

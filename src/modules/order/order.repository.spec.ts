@@ -44,9 +44,10 @@ const placement = (overrides: Partial<PlaceOrderData> = {}): PlaceOrderData => (
 
 describe('OrderRepository', () => {
   let tx: {
-    order: { create: jest.Mock };
-    stockReservation: { create: jest.Mock; findMany: jest.Mock };
+    order: { create: jest.Mock; update: jest.Mock };
+    stockReservation: { create: jest.Mock; findMany: jest.Mock; updateMany: jest.Mock };
     promotionRedemption: { create: jest.Mock };
+    inventoryBatch: { findMany: jest.Mock; update: jest.Mock };
     inventory: { update: jest.Mock };
     stockMovement: { create: jest.Mock };
     cartItem: { deleteMany: jest.Mock };
@@ -63,9 +64,13 @@ describe('OrderRepository', () => {
 
   beforeEach(() => {
     tx = {
-      order: { create: jest.fn().mockResolvedValue({ id: 'ord-1' }) },
-      stockReservation: { create: jest.fn(), findMany: jest.fn() },
+      order: {
+        create: jest.fn().mockResolvedValue({ id: 'ord-1' }),
+        update: jest.fn(),
+      },
+      stockReservation: { create: jest.fn(), findMany: jest.fn(), updateMany: jest.fn() },
       promotionRedemption: { create: jest.fn() },
+      inventoryBatch: { findMany: jest.fn().mockResolvedValue([]), update: jest.fn() },
       inventory: { update: jest.fn() },
       stockMovement: { create: jest.fn() },
       cartItem: { deleteMany: jest.fn() },
@@ -145,6 +150,113 @@ describe('OrderRepository', () => {
       await repository.place(placement({ promotion: { id: 'promo-1', discountPoysha: 12345n } }));
 
       expect(tx.promotionRedemption.create.mock.calls[0][0].data.discountPoysha).toBe(12345n);
+    });
+  });
+
+  describe('transition to DISPATCHED — settling stock', () => {
+    const dispatched = (items = [{ variantId: 'var-1', quantity: 5 }]) => ({
+      id: 'ord-1',
+      orderNumber: 'BB-20260831-000001',
+      warehouseId: 'wh-1',
+      items,
+    });
+
+    beforeEach(() => {
+      tx.order.update.mockResolvedValue(dispatched());
+    });
+
+    it('decrements the batches, not only the aggregate on-hand', async () => {
+      // Without this the two diverge on every sale and expiry picking keeps choosing
+      // batches that have already been sold.
+      tx.inventoryBatch.findMany.mockResolvedValue([{ id: 'b1', quantity: 10 }]);
+
+      await repository.transition('ord-1', OrderStatus.PICKING, OrderStatus.DISPATCHED, null, null);
+
+      expect(tx.inventory.update).toHaveBeenCalled();
+      expect(tx.inventoryBatch.update).toHaveBeenCalledWith({
+        where: { id: 'b1' },
+        data: { quantity: { decrement: 5 } },
+      });
+    });
+
+    it('takes from the earliest-expiring batch first', async () => {
+      tx.inventoryBatch.findMany.mockResolvedValue([
+        { id: 'expiring-soon', quantity: 3 },
+        { id: 'expiring-later', quantity: 10 },
+      ]);
+
+      await repository.transition('ord-1', OrderStatus.PICKING, OrderStatus.DISPATCHED, null, null);
+
+      const updates = tx.inventoryBatch.update.mock.calls.map(
+        (call): unknown => call[0] as unknown,
+      );
+
+      expect(updates).toEqual([
+        { where: { id: 'expiring-soon' }, data: { quantity: { decrement: 3 } } },
+        { where: { id: 'expiring-later' }, data: { quantity: { decrement: 2 } } },
+      ]);
+    });
+
+    it('names the batch on every movement, so a recall can trace the order', async () => {
+      tx.inventoryBatch.findMany.mockResolvedValue([{ id: 'b1', quantity: 10 }]);
+
+      await repository.transition('ord-1', OrderStatus.PICKING, OrderStatus.DISPATCHED, null, null);
+
+      expect(tx.stockMovement.create.mock.calls[0][0].data).toMatchObject({
+        batch: { connect: { id: 'b1' } },
+        delta: -5,
+        referenceType: 'Order',
+        referenceId: 'ord-1',
+      });
+    });
+
+    it('writes one movement per batch when a line spans two', async () => {
+      tx.inventoryBatch.findMany.mockResolvedValue([
+        { id: 'b1', quantity: 3 },
+        { id: 'b2', quantity: 10 },
+      ]);
+
+      await repository.transition('ord-1', OrderStatus.PICKING, OrderStatus.DISPATCHED, null, null);
+
+      const deltas = tx.stockMovement.create.mock.calls.map(
+        (call) => (call[0].data as { delta: number }).delta,
+      );
+
+      // Still sums to the five units that left, but each row names its batch.
+      expect(deltas).toEqual([-3, -2]);
+      expect(deltas.reduce((total, delta) => total + delta, 0)).toBe(-5);
+    });
+
+    it('still records the movement for a variant with no batches', async () => {
+      tx.inventoryBatch.findMany.mockResolvedValue([]);
+
+      await repository.transition('ord-1', OrderStatus.PICKING, OrderStatus.DISPATCHED, null, null);
+
+      expect(tx.stockMovement.create).toHaveBeenCalledTimes(1);
+      expect(tx.stockMovement.create.mock.calls[0][0].data).not.toHaveProperty('batch');
+      expect(tx.stockMovement.create.mock.calls[0][0].data.delta).toBe(-5);
+    });
+
+    it('settles every line of a multi-line order', async () => {
+      tx.order.update.mockResolvedValue(
+        dispatched([
+          { variantId: 'var-1', quantity: 2 },
+          { variantId: 'var-2', quantity: 3 },
+        ]),
+      );
+
+      await repository.transition('ord-1', OrderStatus.PICKING, OrderStatus.DISPATCHED, null, null);
+
+      expect(tx.inventory.update).toHaveBeenCalledTimes(2);
+      expect(tx.inventoryBatch.findMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('does all of it inside the one transition transaction', async () => {
+      tx.inventoryBatch.findMany.mockResolvedValue([{ id: 'b1', quantity: 10 }]);
+
+      await repository.transition('ord-1', OrderStatus.PICKING, OrderStatus.DISPATCHED, null, null);
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     });
   });
 

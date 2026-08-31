@@ -281,6 +281,14 @@ model Product {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
+  /// Postgres full-text index over the names, brand and descriptions.
+  ///
+  /// GENERATED ALWAYS in the database, so it cannot drift from the columns it summarises —
+  /// there is no application code that could forget to update it. Declared Unsupported
+  /// because Prisma has no tsvector type; it is only ever read through raw SQL, and naming it
+  /// here stops a future migration from dropping a column Prisma does not recognise.
+  searchVector Unsupported("tsvector")? @map("search_vector")
+
   category Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   variants ProductVariant[]
   images   ProductImage[]
