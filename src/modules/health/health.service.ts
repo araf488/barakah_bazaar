@@ -44,12 +44,35 @@ export class HealthService {
           authentication: this.verifier.isEnabled ? 'up' : 'disabled',
           storage: this.supabase.isConfigured ? 'up' : 'disabled',
           queue: this.config.get('QUEUE_ENABLED', { infer: true }) ? 'up' : 'disabled',
+          // Third-party capabilities, each selected by a <THING>_PROVIDER env enum that
+          // defaults to noop. 'disabled' rather than 'down': nothing is broken, the capability
+          // is deliberately off, and a fresh clone boots with all four this way.
+          sms: HealthService.providerStatus(this.config.get('SMS_PROVIDER', { infer: true })),
+          email: HealthService.providerStatus(this.config.get('EMAIL_PROVIDER', { infer: true })),
+          payment: HealthService.providerStatus(
+            this.config.get('PAYMENT_PROVIDER', { infer: true }),
+          ),
+          geocoding: HealthService.providerStatus(
+            this.config.get('GEOCODING_PROVIDER', { infer: true }),
+          ),
         },
       };
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in HealthService.check');
       return HealthService.unknownReport(this.config.get('NODE_ENV', { infer: true }));
     }
+  }
+
+  /**
+   * A capability is 'disabled' when its provider is noop, 'up' otherwise.
+   *
+   * It reports what the operator asked for, not whether an adapter exists — a provider named
+   * without an adapter is a misconfiguration, and the boot-time error log is where that
+   * belongs. Health saying 'up' for a setting that does nothing would be the same silent lie
+   * this pattern exists to prevent, so the two are read together.
+   */
+  private static providerStatus(provider: string): ComponentStatus {
+    return provider === 'noop' ? 'disabled' : 'up';
   }
 
   /** True when this instance can serve requests that touch the database. */
@@ -72,6 +95,13 @@ export class HealthService {
         authentication: 'down',
         storage: 'down',
         queue: 'down',
+        // 'down' rather than 'disabled' here: this report is produced when the check itself
+        // threw, so nothing is known about any capability — claiming one is deliberately off
+        // would assert something this path cannot see.
+        sms: 'down',
+        email: 'down',
+        payment: 'down',
+        geocoding: 'down',
       },
     };
   }

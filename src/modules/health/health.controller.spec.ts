@@ -12,7 +12,16 @@ const reportWith = (database: 'up' | 'down'): HealthReport => ({
   environment: 'test',
   uptimeSeconds: 12,
   timestamp: new Date().toISOString(),
-  checks: { database, authentication: 'up', storage: 'up', queue: 'disabled' },
+  checks: {
+    database,
+    authentication: 'up',
+    storage: 'up',
+    queue: 'disabled',
+    sms: 'disabled',
+    email: 'disabled',
+    payment: 'disabled',
+    geocoding: 'up',
+  },
 });
 
 const createResponse = (): { response: Response; status: jest.Mock; json: jest.Mock } => {

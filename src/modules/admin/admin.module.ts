@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PinoLogger } from 'nestjs-pino';
 import { AuthModule } from '../auth/auth.module';
 import { AdminCatalogController } from './admin-catalog.controller';
 import { AdminCatalogRepository } from './admin-catalog.repository';
@@ -11,7 +13,7 @@ import { AdminUserService } from './admin-user.service';
 import { AdminController } from './admin.controller';
 import { AuditLogRepository } from './audit-log.repository';
 import { AuditLogService } from './audit-log.service';
-import { NoopEmailSender } from '../notification/gateways/noop-email.sender';
+import { createEmailSender } from '../notification/gateways/email-sender.factory';
 import { AdminTokens } from './admin.constants';
 import {
   StaffInvitationAcceptController,
@@ -50,7 +52,11 @@ import { StaffInvitationService } from './staff-invitation.service';
     AdminUserRepository,
     StaffInvitationService,
     StaffInvitationRepository,
-    { provide: AdminTokens.EmailSender, useClass: NoopEmailSender },
+    {
+      provide: AdminTokens.EmailSender,
+      inject: [ConfigService, PinoLogger],
+      useFactory: createEmailSender,
+    },
   ],
   exports: [AuditLogService, AuditLogRepository, AdminCatalogRepository],
 })

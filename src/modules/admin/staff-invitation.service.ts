@@ -15,6 +15,8 @@ import {
   User,
   UserRole,
 } from '../../infra/prisma/prisma-client';
+import { ConfigService } from '@nestjs/config';
+import { AppConfigService } from '../../config';
 import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
 import { AuthRepository } from '../auth/auth.repository';
 import { EmailSender } from '../notification/ports/email-sender.port';
@@ -66,6 +68,7 @@ export class StaffInvitationService {
     private readonly users: AuthRepository,
     private readonly supabaseAdmin: SupabaseAdminService,
     @Inject(AdminTokens.EmailSender) private readonly email: EmailSender,
+    @Inject(ConfigService) private readonly config: AppConfigService,
     @InjectPinoLogger(StaffInvitationService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -322,18 +325,25 @@ export class StaffInvitationService {
     return {
       invitation: StaffInvitationMapper.toDto(invitation),
       emailSent: sent,
-      token: this.email instanceof Object && this.isNoopSender() ? token : null,
+      token: this.isEmailDisabled() ? token : null,
     };
   }
 
   /**
-   * True when no real email provider is configured.
+   * True only when the operator has deliberately turned email off.
    *
-   * Checked by capability rather than by reading the env again, so the answer cannot drift
-   * from the adapter that is actually bound.
+   * Read from configuration rather than sniffed off the bound adapter's class name. The class
+   * check silently answered "yes" whenever the noop adapter happened to be bound — which, back
+   * when EMAIL_PROVIDER was declared but never read, was always. The raw token was therefore
+   * returned in the API response in every environment, including ones the operator had
+   * configured for real email.
+   *
+   * The safe direction: with a provider set, the token never leaves the email, even if that
+   * provider turns out to have no adapter and the send fails. An invitation nobody received is
+   * recoverable — a bearer credential in an API response is not.
    */
-  private isNoopSender(): boolean {
-    return this.email.constructor.name === 'NoopEmailSender';
+  private isEmailDisabled(): boolean {
+    return this.config.get('EMAIL_PROVIDER', { infer: true }) === 'noop';
   }
 
   /** Refuses an address that already has an account or an open invitation. */

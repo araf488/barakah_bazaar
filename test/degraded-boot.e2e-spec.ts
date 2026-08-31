@@ -68,6 +68,11 @@ describe('Degraded boot (no Supabase, no database)', () => {
       expect(response.body.checks.authentication).toBe('disabled');
       expect(response.body.checks.storage).toBe('disabled');
       expect(response.body.checks.queue).toBe('disabled');
+      // Every third-party capability defaults to noop, so a fresh clone reports all of them
+      // deliberately off rather than broken.
+      expect(response.body.checks.sms).toBe('disabled');
+      expect(response.body.checks.email).toBe('disabled');
+      expect(response.body.checks.payment).toBe('disabled');
     });
 
     it('fails the readiness probe, so a deploy gate would hold', async () => {

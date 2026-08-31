@@ -4,7 +4,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { StaffInvitationStatus, UserRole } from '../../infra/prisma/prisma-client';
 import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
-import { createMockLogger } from '../../../test/support/mocks';
+import { createMockConfig, createMockLogger } from '../../../test/support/mocks';
 import { userFixture } from '../../../test/support/user-fixtures';
 import { AuthRepository } from '../auth/auth.repository';
 import { EmailSender } from '../notification/ports/email-sender.port';
@@ -54,12 +54,13 @@ describe('StaffInvitationService', () => {
   let logger: jest.Mocked<PinoLogger>;
   let service: StaffInvitationService;
 
-  const build = (sender: EmailSender = email) =>
+  const build = (sender: EmailSender = email, provider = 'resend') =>
     new StaffInvitationService(
       repository as unknown as StaffInvitationRepository,
       users as unknown as AuthRepository,
       supabaseAdmin as unknown as SupabaseAdminService,
       sender,
+      createMockConfig({ EMAIL_PROVIDER: provider }),
       logger,
     );
 
@@ -127,17 +128,27 @@ describe('StaffInvitationService', () => {
       expect(result.ok && result.data.token).toBeNull();
     });
 
-    it('returns the token while the sender is the noop, so the flow works with no mailbox', async () => {
-      class NoopEmailSender implements EmailSender {
-        send = jest.fn().mockResolvedValue(true);
-      }
-      const noop = new NoopEmailSender();
-      const result = await build(noop).invite(superAdmin, {
+    it('returns the token only while EMAIL_PROVIDER is noop, so the flow works with no mailbox', async () => {
+      const result = await build(email, 'noop').invite(superAdmin, {
         email: 'a@b.com',
         role: UserRole.OPS,
       });
 
       expect(result.ok && result.data.token).toEqual(expect.any(String));
+    });
+
+    it('withholds the token whenever a provider is configured, even if the send fails', async () => {
+      // The safe direction. An invitation nobody received is recoverable; a bearer credential
+      // in an API response is not.
+      email.send.mockResolvedValue(false);
+
+      const result = await build(email, 'resend').invite(superAdmin, {
+        email: 'a@b.com',
+        role: UserRole.OPS,
+      });
+
+      expect(result.ok && result.data.token).toBeNull();
+      expect(result.ok && result.data.emailSent).toBe(false);
     });
 
     it('refuses an address that already has an account', async () => {

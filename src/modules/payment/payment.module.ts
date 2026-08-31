@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PinoLogger } from 'nestjs-pino';
 import { AuthModule } from '../auth/auth.module';
 import { OrderRepository } from '../order/order.repository';
 import { AdminPaymentController } from './admin-payment.controller';
-import { NoopPaymentGateway } from './gateways/noop-payment.gateway';
+import { createPaymentGateway } from './gateways/payment-gateway.factory';
 import { PaymentConstants, PaymentTokens } from './payment.constants';
 import { PaymentRepository } from './payment.repository';
 import { PaymentService } from './payment.service';
@@ -25,7 +27,11 @@ import { PaymentService } from './payment.service';
     PaymentService,
     PaymentRepository,
     OrderRepository,
-    { provide: PaymentTokens.PaymentGateway, useClass: NoopPaymentGateway },
+    {
+      provide: PaymentTokens.PaymentGateway,
+      inject: [ConfigService, PinoLogger],
+      useFactory: createPaymentGateway,
+    },
   ],
   exports: [PaymentService],
 })

@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PinoLogger } from 'nestjs-pino';
 import { AuthConstants, AuthTokens } from './auth.constants';
 import { AuthController } from './auth.controller';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
-import { NoopSmsGateway } from './gateways/noop-sms.gateway';
+import { createSmsGateway } from './gateways/sms-gateway.factory';
 
 /**
  * Token verification itself lives in SupabaseModule (the verifier is needed by
@@ -18,7 +20,11 @@ import { NoopSmsGateway } from './gateways/noop-sms.gateway';
   providers: [
     AuthService,
     AuthRepository,
-    { provide: AuthTokens.SmsGateway, useClass: NoopSmsGateway },
+    {
+      provide: AuthTokens.SmsGateway,
+      inject: [ConfigService, PinoLogger],
+      useFactory: createSmsGateway,
+    },
   ],
   // AuthRepository is exported because it owns the local user mirror, which the admin
   // module's invitation flow must read (by email, and by Supabase id). Re-providing it there

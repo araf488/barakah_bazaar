@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PinoLogger } from 'nestjs-pino';
 import { AuthModule } from '../auth/auth.module';
-import { NoopSmsGateway } from '../auth/gateways/noop-sms.gateway';
+import { createSmsGateway } from '../auth/gateways/sms-gateway.factory';
 import { OrderRepository } from '../order/order.repository';
 import { NotificationConstants, NotificationTokens } from './notification.constants';
 import { NotificationController } from './notification.controller';
@@ -27,7 +29,11 @@ import { NotificationService } from './notification.service';
     NotificationRepository,
     NotificationRetryService,
     OrderRepository,
-    { provide: NotificationTokens.SmsGateway, useClass: NoopSmsGateway },
+    {
+      provide: NotificationTokens.SmsGateway,
+      inject: [ConfigService, PinoLogger],
+      useFactory: createSmsGateway,
+    },
   ],
   exports: [NotificationService],
 })
