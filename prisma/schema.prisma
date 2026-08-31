@@ -114,6 +114,37 @@ enum NotificationStatus {
   ABANDONED
 }
 
+/// Which way money moved. A refund is not a negative charge: it is its own row with its own
+/// gateway reference, so the ledger shows both sides of a reversed sale rather than one
+/// mutated record.
+enum PaymentDirection {
+  CHARGE
+  REFUND
+}
+
+/// Outcome of one attempt to move money.
+///
+/// PENDING exists for gateways that answer asynchronously (bKash returns before the customer
+/// has finished authorising). Cash is never PENDING — it is CAPTURED at the doorstep or it
+/// did not happen.
+enum PaymentTransactionStatus {
+  PENDING
+  CAPTURED
+  FAILED
+  CANCELLED
+}
+
+/// Where a staff invitation stands.
+///
+/// Expiry is NOT a status: it is derived from `expires_at`, so a row cannot claim to be
+/// PENDING while its deadline has passed. Only a deliberate act — accepting or revoking —
+/// moves this column.
+enum StaffInvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
 /// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
 /// user's first authenticated request — see AuthService.resolveUser().
 model User {
@@ -131,11 +162,13 @@ model User {
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  addresses     Address[]
-  auditLog      AdminAuditLog[]
-  cart          Cart?
-  notifications Notification[]
-  orders        Order[]
+  addresses           Address[]
+  auditLog            AdminAuditLog[]
+  invitationsSent     StaffInvitation[] @relation("StaffInvitationsSent")
+  invitationsAccepted StaffInvitation[] @relation("StaffInvitationsAccepted")
+  cart                Cart?
+  notifications       Notification[]
+  orders              Order[]
 
   @@index([role])
   @@map("users")
@@ -568,10 +601,11 @@ model Order {
   cancelledAt  DateTime? @map("cancelled_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  user      User         @relation(fields: [userId], references: [id], onDelete: Restrict)
-  warehouse Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  warehouse Warehouse            @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   items     OrderItem[]
   events    OrderEvent[]
+  payments  PaymentTransaction[]
 
   @@index([userId, placedAt])
   @@index([status, placedAt])
@@ -661,4 +695,75 @@ model Notification {
   @@index([userId, createdAt])
   @@index([referenceType, referenceId])
   @@map("notifications")
+}
+
+/// Every movement of money against an order, charge and refund alike.
+///
+/// This table is the answer to "was this order actually paid, and by what". `orders.
+/// payment_status` is a summary of these rows, not a substitute for them: a status column
+/// alone cannot say when cash was handed over, who took it, or which gateway reference to
+/// quote in a dispute.
+///
+/// Rows are append-only in practice. A failed attempt stays FAILED and a second attempt is a
+/// second row, so the history of a difficult payment survives instead of being overwritten.
+model PaymentTransaction {
+  id               String                   @id @default(uuid()) @db.Uuid
+  orderId          String                   @map("order_id") @db.Uuid
+  method           PaymentMethod
+  direction        PaymentDirection         @default(CHARGE)
+  status           PaymentTransactionStatus @default(PENDING)
+  /// Always positive, in poysha. The direction says which way it went.
+  amountPoysha     BigInt                   @map("amount_poysha")
+  /// The gateway's own id for this movement, or null for cash. Unique when present, so a
+  /// replayed webhook cannot record the same payment twice.
+  gatewayReference String?                  @unique @map("gateway_reference")
+  /// Staff member who took the cash. Null for a gateway payment, which has no human.
+  collectedBy      String?                  @map("collected_by") @db.Uuid
+  /// Gateway failure text. Never a token, a PIN or a card number.
+  failureReason    String?                  @map("failure_reason")
+  capturedAt       DateTime?                @map("captured_at")
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+  @@index([status, createdAt])
+  @@map("payment_transactions")
+}
+
+/// An offer of a staff role to an email address that does not have one yet.
+///
+/// The raw token is NEVER stored. Only its SHA-256 hash is, exactly as a password reset would
+/// be handled: the token is a bearer credential that grants a permission, and a leaked table
+/// dump must not hand an attacker a working grant. The raw value exists once, in the email.
+///
+/// Accepting requires the signed-in user's email to match `email` on this row. Without that
+/// check the token alone would be enough, and a forwarded invitation email would let the wrong
+/// person take the role.
+model StaffInvitation {
+  id         String                @id @default(uuid()) @db.Uuid
+  /// Lowercased at write time, so one address cannot hold two open invitations by case.
+  email      String
+  role       UserRole
+  /// SHA-256 of the token that was emailed. Unique, so a lookup by hash is a single index hit.
+  tokenHash  String                @unique @map("token_hash")
+  status     StaffInvitationStatus @default(PENDING)
+  expiresAt  DateTime              @map("expires_at")
+  invitedBy  String                @map("invited_by") @db.Uuid
+  /// Set when the invitation was taken up. The account that took it, for the audit trail.
+  acceptedBy String?               @map("accepted_by") @db.Uuid
+  acceptedAt DateTime?             @map("accepted_at")
+  revokedBy  String?               @map("revoked_by") @db.Uuid
+  revokedAt  DateTime?             @map("revoked_at")
+  createdAt  DateTime              @default(now()) @map("created_at")
+  updatedAt  DateTime              @updatedAt @map("updated_at")
+
+  inviter  User  @relation("StaffInvitationsSent", fields: [invitedBy], references: [id], onDelete: Restrict)
+  acceptor User? @relation("StaffInvitationsAccepted", fields: [acceptedBy], references: [id], onDelete: SetNull)
+
+  /// Finding the open invitation for an address, which is what the uniqueness rule needs.
+  @@index([email, status])
+  @@index([status, expiresAt])
+  @@map("staff_invitations")
 }

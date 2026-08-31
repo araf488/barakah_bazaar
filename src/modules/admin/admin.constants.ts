@@ -1,4 +1,10 @@
 /** Admin-module constants. Cross-cutting values live in app.constants.ts. */
+/** DI tokens for the ports this module resolves at runtime. */
+export const AdminTokens = {
+  /** Where staff invitations are sent. Bound to the noop sender by default. */
+  EmailSender: 'ADMIN_EMAIL_SENDER',
+} as const;
+
 export const AdminConstants = {
   /** Route segment this module is mounted on, under the global API prefix. */
   RouteBase: 'admin',
@@ -7,6 +13,30 @@ export const AdminConstants = {
   /** Audit reads are heavy; cap a page lower than the app-wide maximum. */
   MaxAuditPageSize: 50,
   UserResourceName: 'User',
+  /** Resource label used in invitation not-found messages. */
+  InvitationResourceName: 'Invitation',
+  /**
+   * How long an invitation is good for.
+   *
+   * A week: long enough to survive a holiday, short enough that a forwarded or leaked email
+   * stops being a working permission grant reasonably soon.
+   */
+  InvitationValidDays: 7,
+  /** Bytes of entropy in the emailed token, before base64url encoding. */
+  InvitationTokenBytes: 32,
+  MaxInvitationPageSize: 50,
+  /** Subject line of the staff invitation email. */
+  InvitationEmailSubject: 'You have been invited to the Barakah Bazaar backoffice',
+  /**
+   * Body of the staff invitation email: role, token, validity in days.
+   *
+   * The token is the whole point of the message, so this template is the one place a raw
+   * token is allowed to appear. It must never be logged.
+   */
+  InvitationEmailTemplate:
+    'You have been invited to join the Barakah Bazaar backoffice as {0}.\n\n' +
+    'Sign in with this email address, then enter this invitation code:\n\n  {1}\n\n' +
+    'The invitation is valid for {2} days. If you were not expecting this, ignore it.',
   MaxUserSearchLength: 120,
   ImageResourceName: 'Product image',
   MaxImagesPerProduct: 10,
@@ -55,6 +85,11 @@ export const AdminAuditActions = {
   CustomerEnabled: 'customer.enabled',
   StaffRoleChanged: 'staff.role_changed',
   StaffRoleChangePartial: 'staff.role_change_partial',
+  StaffInvited: 'staff.invited',
+  StaffInvitationResent: 'staff.invitation_resent',
+  StaffInvitationRevoked: 'staff.invitation_revoked',
+  StaffInvitationAccepted: 'staff.invitation_accepted',
+  StaffInvitationAcceptPartial: 'staff.invitation_accept_partial',
 } as const;
 
 export type AdminAuditAction = (typeof AdminAuditActions)[keyof typeof AdminAuditActions];
@@ -66,9 +101,31 @@ export const AdminAuditEntities = {
   ProductVariant: 'ProductVariant',
   ProductImage: 'ProductImage',
   User: 'User',
+  StaffInvitation: 'StaffInvitation',
 } as const;
 
 export const AdminMessages = {
+  /** An invitation was sent to an address that already has an account. */
+  InviteeAlreadyExists:
+    'That email already has an account. Change its role instead of inviting it.',
+  /** A second invitation while one is still open for the same address. */
+  InvitationAlreadyOpen:
+    'That email already has an open invitation. Revoke it before sending another.',
+  /** The token did not match any invitation, or matched one no longer usable. */
+  InvitationInvalid: 'This invitation link is not valid. Ask for a new one.',
+  /** The invitation was valid but its deadline has passed. */
+  InvitationExpired: 'This invitation has expired. Ask for a new one.',
+  /** The signed-in account is not the address the invitation was sent to. */
+  InvitationEmailMismatch:
+    'This invitation was sent to a different email address. Sign in as that address to accept it.',
+  /** Acting on an invitation that is already accepted or revoked. */
+  InvitationNotPending: 'This invitation is no longer open.',
+  /** The identity provider refused the role that acceptance would grant. */
+  InvitationRoleRejected:
+    'Could not grant the role. The invitation is unchanged; please try again.',
+  /** Supabase took the role but the local record did not follow. */
+  InvitationAcceptPartial:
+    'The role was granted but the invitation could not be closed. Contact a super admin.',
   /** Refusing an action a staff member aimed at their own account. */
   CannotActOnSelf:
     'You cannot change your own account here. Ask another super admin to make this change.',

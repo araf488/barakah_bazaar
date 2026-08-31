@@ -60,6 +60,24 @@ const baseEnvSchema = z.object({
   REDIS_PASSWORD: z.string().min(1).optional(),
   REDIS_TLS: boolFlag('false'),
 
+  // ── Email sender ──────────────────────────────────────────────────────────
+  // Defaults to noop, which logs the recipient and reports success. While it is noop the
+  // staff-invitation endpoint returns the raw token in its response so the flow can be
+  // completed in development; with a real provider it never leaves the email.
+  EMAIL_PROVIDER: z.enum(['noop', 'resend', 'smtp']).default('noop'),
+  EMAIL_API_URL: z.url().optional(),
+  EMAIL_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().min(1).optional(),
+
+  // ── Payment gateway ───────────────────────────────────────────────────────
+  // Defaults to noop, which REFUSES every charge. Cash on delivery is unaffected: it never
+  // goes through a gateway. See gateways/noop-payment.gateway.ts for why money fails closed
+  // where SMS fails open.
+  PAYMENT_PROVIDER: z.enum(['noop', 'bkash']).default('noop'),
+  PAYMENT_API_URL: z.url().optional(),
+  PAYMENT_APP_KEY: z.string().min(1).optional(),
+  PAYMENT_APP_SECRET: z.string().min(1).optional(),
+
   // ── SMS gateway ───────────────────────────────────────────────────────────
   SMS_PROVIDER: z.enum(['noop', 'alpha-sms', 'ssl-wireless']).default('noop'),
   SMS_API_URL: z.url().optional(),

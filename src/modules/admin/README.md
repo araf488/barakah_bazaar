@@ -1,14 +1,13 @@
 # Admin / Backoffice module
 
-**Status:** in progress — audit trail, catalog write-side and account management done (Phase 2B)
+**Status:** Phase 2B complete — audit trail, catalog write-side, account management and staff invitations
 
 Order management, catalog and inventory CRUD, promotions, dispatch, reports, staff roles and the audit log.
 
 ## Owned tables
 
 - `admin_audit_log` ✅ — append-only; no update or delete exists anywhere in the codebase
-- `staff_invitations` — not yet built (invite flow deferred; roles are changed on existing
-  accounts for now)
+- `staff_invitations` ✅ — pending permission grants; no RLS policy at all, which is a deny
 
 ## Changing a role crosses two systems
 
@@ -27,6 +26,46 @@ against the database on every request.
 
 Two guards exist to prevent lockout rather than to enforce policy: nobody may act on their own
 account, and the last enabled super admin may not be demoted or disabled.
+
+## Staff invitations
+
+Inviting someone who does not have an account yet, as opposed to changing the role on one that
+does. Those are deliberately two endpoints: two paths to the same state invite drift, so an
+address that already has an account is refused with `InviteeAlreadyExists` and pointed at the
+role-change route.
+
+**The token is a bearer credential that grants a permission, and is handled like one.** 32
+bytes of entropy, only its SHA-256 stored, never logged, and never returned by any read
+endpoint — a compromised staff account must not be able to list pending invitations and accept
+one. The raw value exists once, in the email. While `EMAIL_PROVIDER=noop` the create response
+echoes it so the flow can be completed without a mailbox; with a real provider that field is
+null.
+
+**Possession of the token is not sufficient.** Acceptance also requires the signed-in
+account's email to match the invitation's, case-insensitively. Without that check a forwarded
+invitation email would let the wrong person take the role.
+
+An unknown token and a revoked one return the **same** 404, so the endpoint cannot be used to
+discover which tokens exist. An expired one returns 410, which is safe to distinguish because
+the caller already proved possession.
+
+`POST /staff/invitations/accept` carries **no `@Roles`**, and must not: the invitee has no
+staff role yet — granting them one is the point. It lives on its own controller for exactly
+that reason, since a class-level `@Roles(SUPER_ADMIN)` would make it unreachable by the people
+it exists for. It is still authenticated.
+
+Granting reuses the role-change rule unchanged: **Supabase first**, because the role reaches
+this API as a JWT claim that is re-mirrored on every request. If Supabase refuses, nothing
+changed and the invitation stays open. If the local settle fails afterwards, the role is live
+but the invitation is not closed, so that path logs everything needed to reconcile and returns
+`InvitationAcceptPartial`.
+
+Two invitations racing to accept the same token cannot both win: `settleAudited` filters on
+`status = PENDING` in the `UPDATE`, so the loser writes nothing and gets a conflict rather
+than closing an invitation twice.
+
+Expiry is **derived from `expires_at`, never a status value.** A row cannot claim to be open
+while its deadline has passed, and only a deliberate act moves the status column.
 
 ## Product images
 

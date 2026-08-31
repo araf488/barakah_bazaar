@@ -62,6 +62,25 @@ export class AuthRepository {
    * perfectly valid token during a database outage — a 404 that sends everyone hunting in
    * the wrong place.
    */
+  /**
+   * Looks a user up by email, case-insensitively.
+   *
+   * Used to refuse a staff invitation to an address that already has an account: two paths to
+   * the same state invite drift, and changing a role is the other endpoint.
+   */
+  async findByEmail(email: string): Promise<User | null | undefined> {
+    try {
+      return (
+        (await this.prisma.user.findFirst({
+          where: { email: { equals: email, mode: 'insensitive' } },
+        })) ?? undefined
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthRepository.findByEmail');
+      return null;
+    }
+  }
+
   async findBySupabaseId(supabaseUserId: string): Promise<User | null | undefined> {
     try {
       return (await this.prisma.user.findUnique({ where: { supabaseUserId } })) ?? undefined;

@@ -41,6 +41,8 @@ ALTER TABLE public.orders             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_items        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_events       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.staff_invitations    ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -75,6 +77,8 @@ ALTER TABLE public.orders       FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.order_items  FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.order_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_transactions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.staff_invitations FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -207,6 +211,15 @@ CREATE POLICY notifications_read_own
 -- row a customer owns. That is acceptable because neither carries a credential — the body is
 -- never stored — but the API withholds them anyway, so a direct PostgREST read is the only
 -- way to see them.
+
+-- staff_invitations deliberately gets NO policy. Every row is a pending permission grant,
+-- and token_hash is the stored half of a live credential: a client that could read this table
+-- could enumerate open invitations, and one that could write could grant itself a role.
+
+-- payment_transactions deliberately gets NO policy. It is the money ledger: it names the
+-- staff member who took the cash, carries gateway references usable in a dispute, and a
+-- forged row here is a forged receipt. Customers see what they paid through this API's
+-- order endpoints, not by reading the books.
 
 -- order_events deliberately gets NO policy: it names the staff member who moved an order,
 -- which is internal. Customers see status through this API, not the ledger behind it.

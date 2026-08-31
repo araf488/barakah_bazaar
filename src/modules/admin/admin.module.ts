@@ -11,16 +11,34 @@ import { AdminUserService } from './admin-user.service';
 import { AdminController } from './admin.controller';
 import { AuditLogRepository } from './audit-log.repository';
 import { AuditLogService } from './audit-log.service';
+import { NoopEmailSender } from '../notification/gateways/noop-email.sender';
+import { AdminTokens } from './admin.constants';
+import {
+  StaffInvitationAcceptController,
+  StaffInvitationController,
+} from './staff-invitation.controller';
+import { StaffInvitationRepository } from './staff-invitation.repository';
+import { StaffInvitationService } from './staff-invitation.service';
 
 /**
- * Backoffice: the audit trail now, catalog and staff management next.
+ * Backoffice: the audit trail, catalog write-side, account management and staff invitations.
  *
  * Exports AuditLogService because every module that performs a staff write appends to the
  * same trail — a second log would defeat the point of having one.
+ *
+ * The email sender is bound here rather than imported from NotificationModule, matching how
+ * that module binds its own SMS gateway: invitations and order updates are different
+ * audiences, and a deployment may well want a different from-address for each.
  */
 @Module({
   imports: [AuthModule],
-  controllers: [AdminController, AdminCatalogController, AdminUserController],
+  controllers: [
+    AdminController,
+    AdminCatalogController,
+    AdminUserController,
+    StaffInvitationController,
+    StaffInvitationAcceptController,
+  ],
   providers: [
     AuditLogService,
     AuditLogRepository,
@@ -30,6 +48,9 @@ import { AuditLogService } from './audit-log.service';
     AdminImageService,
     AdminUserService,
     AdminUserRepository,
+    StaffInvitationService,
+    StaffInvitationRepository,
+    { provide: AdminTokens.EmailSender, useClass: NoopEmailSender },
   ],
   exports: [AuditLogService, AuditLogRepository, AdminCatalogRepository],
 })

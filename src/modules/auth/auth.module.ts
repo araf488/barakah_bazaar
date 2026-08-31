@@ -20,7 +20,10 @@ import { NoopSmsGateway } from './gateways/noop-sms.gateway';
     AuthRepository,
     { provide: AuthTokens.SmsGateway, useClass: NoopSmsGateway },
   ],
-  exports: [AuthService],
+  // AuthRepository is exported because it owns the local user mirror, which the admin
+  // module's invitation flow must read (by email, and by Supabase id). Re-providing it there
+  // would create a second instance of the same table's accessor.
+  exports: [AuthService, AuthRepository],
 })
 export class AuthModule {
   /** Re-exported so consumers do not import the constants file directly. */
