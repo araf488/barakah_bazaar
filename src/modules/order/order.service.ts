@@ -27,6 +27,7 @@ import {
   OrderMessages,
 } from './order.constants';
 import { reachWithin } from '../delivery/delivery-reach';
+import { startOfDay } from '../delivery/slot-availability';
 import { DeliveryService } from '../delivery/delivery.service';
 import { AppliedDiscount, DiscountBasis, PromotionService } from '../promotion/promotion.service';
 import { NotificationService } from '../notification/notification.service';
@@ -129,10 +130,20 @@ export class OrderService {
         return discount;
       }
 
+      // Re-checked against the hub that will actually pack it. Availability was computed
+      // when the customer opened the page; the cutoff can pass and the last place can go
+      // between then and pressing pay.
+      const slot = await this.resolveSlot(dto, warehouse.data, cart);
+
+      if (!slot.ok) {
+        return slot;
+      }
+
       const order = await this.repository.place(
         OrderService.toPlaceData(owner.data, cart, address, warehouse.data, dto, {
           deliveryFee: delivery.data.feePoysha,
           discount: discount.data,
+          slot: slot.data,
         }),
       );
 
@@ -535,6 +546,45 @@ export class OrderService {
     return applied.ok ? serviceOk<AppliedDiscount | null>(applied.data) : applied;
   }
 
+  /**
+   * The chosen delivery window, re-validated, or null when none was chosen.
+   *
+   * A slot is optional: an order with no window is delivered whenever the hub gets to it,
+   * which is how dry goods have always worked. Sending a date without a slot, or a slot
+   * without a date, is a client bug rather than a choice, and is refused.
+   */
+  private async resolveSlot(
+    dto: PlaceOrderDto,
+    warehouseId: string,
+    cart: CartWithItems,
+  ): Promise<ServiceResponse<{ slotId: string; date: Date } | null>> {
+    if (!dto.deliverySlotId && !dto.deliveryDate) {
+      return serviceOk<{ slotId: string; date: Date } | null>(null);
+    }
+
+    if (!dto.deliverySlotId || !dto.deliveryDate) {
+      return serviceFail(HttpStatus.BAD_REQUEST, OrderMessages.SlotNeedsDate);
+    }
+
+    const date = startOfDay(new Date(dto.deliveryDate));
+
+    const bookable = await this.delivery.assertSlotBookable(
+      dto.deliverySlotId,
+      date,
+      warehouseId,
+      OrderService.basketNeedsCold(cart),
+    );
+
+    return bookable.ok
+      ? serviceOk<{ slotId: string; date: Date } | null>({ slotId: dto.deliverySlotId, date })
+      : bookable;
+  }
+
+  /** Whether anything in the basket has to stay cold on the van. */
+  private static basketNeedsCold(cart: CartWithItems): boolean {
+    return cart.items.some((item) => item.variant.product.isPerishable);
+  }
+
   /** What the customer actually owes, never below zero. */
   private static chargeable(subtotal: bigint, deliveryFee: bigint, discount: bigint): bigint {
     const total = subtotal + deliveryFee - discount;
@@ -566,7 +616,11 @@ export class OrderService {
     },
     warehouseId: string,
     dto: PlaceOrderDto,
-    money: { deliveryFee: bigint; discount: AppliedDiscount | null },
+    money: {
+      deliveryFee: bigint;
+      discount: AppliedDiscount | null;
+      slot: { slotId: string; date: Date } | null;
+    },
   ): PlaceOrderData {
     const items = cart.items.map((item) => ({
       variantId: item.variantId,
@@ -611,6 +665,7 @@ export class OrderService {
       promotion: money.discount
         ? { id: money.discount.promotion.id, discountPoysha: money.discount.discountPoysha }
         : null,
+      delivery: money.slot,
       items,
       cartId: cart.id,
     };

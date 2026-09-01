@@ -1,6 +1,6 @@
 # Delivery module
 
-**Status:** pricing implemented — Phase 1. Slots, hubs and courier integration remain Phase 4/5.
+**Status:** pricing, delivery reach and slots implemented. Shipments and courier integration remain Phase 5.
 
 What it costs to deliver a basket to an address.
 
@@ -9,7 +9,7 @@ What it costs to deliver a basket to an address.
 - `delivery_zones`
 - `delivery_zone_rules`
 
-Still planned: `delivery_slots`, `shipments`, `courier_tracking`, `hubs`.
+`delivery_slots` ✅. Still planned: `shipments`, `courier_tracking`, `hubs`.
 
 ## Why this exists
 
@@ -122,6 +122,38 @@ refusal **names the item**, because the customer's only useful action is to remo
 no storage-capability field, so nothing stops a frozen line being picked from an ambient-only
 hub, and shelf life does not seed batch expiry. Both need a schema change; neither is bluffed
 here.
+
+## Delivery slots
+
+A slot is a **template**, not an occurrence: _"Morning 9–11, every day, 20 orders"_ describes
+every day it runs. Occurrences are computed for the next few days rather than stored, because a
+table of pre-generated dates needs a job to keep extending it — and the shop stops taking
+orders the day that job stops, a failure invisible until it is urgent.
+
+Capacity belongs to the **hub**, because it is a van and a driver, and both live at a warehouse.
+It is counted **per window per day**: one van doing Tuesday morning is a different van from the
+one doing Wednesday morning. The count comes from live orders, so cancelled and refunded ones
+release their place — a van not delivering an order has room for another.
+
+**The cutoff** is the "order by 8am for same-day doi" rule: a two-hour window needs the picking
+done before the van leaves. A cutoff that has just landed counts as closed, not closing.
+
+**`supportsPerishable` is the last link in the cold chain.** A basket with anything perishable
+may only take a window with cold transport, however convenient the others look. Warehouse
+storage and delivery distance are already enforced; the van was the remaining gap, and the
+easiest one to forget.
+
+Choosing a slot is **optional**. An order without one is delivered whenever the hub gets to it,
+which is how dry goods have always worked — so adding this changed nothing about existing
+behaviour.
+
+### Re-checked at checkout
+
+Availability is computed when the customer opens the page. Between then and pressing pay, the
+cutoff can pass and the last place can go, so checkout runs the check again — against the same
+computation rather than a second copy of the rules, and against the hub that will actually pack
+the order. A window belonging to another hub is refused: it would book a van in the wrong city,
+which no capacity count would catch, because the count would be right.
 
 ## Conventions this module follows
 

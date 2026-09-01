@@ -87,7 +87,7 @@ describe('OrderService', () => {
   let inventoryRepository: Record<string, jest.Mock>;
   let authService: { resolveActiveUserId: jest.Mock };
   let notifications: { notifyOrderStatus: jest.Mock };
-  let delivery: { resolveFee: jest.Mock };
+  let delivery: { resolveFee: jest.Mock; assertSlotBookable: jest.Mock };
   let promotions: { apply: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: OrderService;
@@ -122,6 +122,7 @@ describe('OrderService', () => {
     notifications = { notifyOrderStatus: jest.fn().mockResolvedValue(undefined) };
     promotions = { apply: jest.fn() };
     delivery = {
+      assertSlotBookable: jest.fn().mockResolvedValue({ ok: true, data: undefined }),
       resolveFee: jest.fn().mockResolvedValue({
         ok: true,
         data: { feePoysha: 6000n, zone: { nameEn: 'Inside Dhaka' }, isFree: false },
@@ -520,6 +521,104 @@ describe('OrderService', () => {
 
       expect(result.ok).toBe(true);
       expect(repository.place.mock.calls[0][0].warehouseId).toBe('wh-chilled');
+    });
+  });
+
+  describe('delivery slots', () => {
+    it('books no window when the customer chose none', async () => {
+      await service.placeOrder(customer, placeDto());
+
+      expect(delivery.assertSlotBookable).not.toHaveBeenCalled();
+      expect(repository.place.mock.calls[0][0].delivery).toBeNull();
+    });
+
+    it('re-checks the window against the hub that will pack the order', async () => {
+      // Availability was computed when the page opened; the cutoff can pass and the last
+      // place can go before the customer presses pay.
+      await service.placeOrder(
+        customer,
+        placeDto({ deliverySlotId: 'slot-1', deliveryDate: '2026-09-03' }),
+      );
+
+      expect(delivery.assertSlotBookable).toHaveBeenCalledWith(
+        'slot-1',
+        new Date(2026, 8, 3),
+        'wh-1',
+        false,
+      );
+    });
+
+    it('tells the slot check that a perishable basket needs cold transport', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(
+        cart([
+          cartLine({
+            variant: {
+              sku: 'DOI-500',
+              nameEn: '500g',
+              pricePoysha: 125000n,
+              product: {
+                nameEn: 'Doi',
+                nameBn: 'দই',
+                isPerishable: true,
+                maxDeliveryDistanceKm: null,
+                storageType: StorageType.CHILLED,
+              },
+            },
+          }),
+        ]),
+      );
+
+      await service.placeOrder(
+        customer,
+        placeDto({ deliverySlotId: 'slot-1', deliveryDate: '2026-09-03' }),
+      );
+
+      expect(delivery.assertSlotBookable.mock.calls[0][3]).toBe(true);
+    });
+
+    it('books the window with the order', async () => {
+      await service.placeOrder(
+        customer,
+        placeDto({ deliverySlotId: 'slot-1', deliveryDate: '2026-09-03' }),
+      );
+
+      expect(repository.place.mock.calls[0][0].delivery).toEqual({
+        slotId: 'slot-1',
+        date: new Date(2026, 8, 3),
+      });
+    });
+
+    it('refuses the order when the window has since filled', async () => {
+      delivery.assertSlotBookable.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'That delivery slot is no longer available. Please choose another.',
+      });
+
+      const result = await service.placeOrder(
+        customer,
+        placeDto({ deliverySlotId: 'slot-1', deliveryDate: '2026-09-03' }),
+      );
+
+      expect(result.ok).toBe(false);
+      expect(repository.place).not.toHaveBeenCalled();
+    });
+
+    it('refuses a slot sent without its date', async () => {
+      const result = await service.placeOrder(customer, placeDto({ deliverySlotId: 'slot-1' }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Choose both a delivery slot and the date it falls on.',
+      });
+    });
+
+    it('refuses a date sent without a slot', async () => {
+      const result = await service.placeOrder(customer, placeDto({ deliveryDate: '2026-09-03' }));
+
+      expect(result.ok).toBe(false);
+      expect(repository.place).not.toHaveBeenCalled();
     });
   });
 

@@ -1,6 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from 'class-validator';
 import { TrimString } from '../../../common/dto/trim.decorator';
 import { PaginationQueryDto } from '../../../common/dto/pagination.dto';
 import { OrderStatus, PaymentMethod, PaymentStatus } from '../../../infra/prisma/prisma-client';
@@ -16,6 +25,19 @@ export class PlaceOrderDto {
   @IsOptional()
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;
+
+  @ApiPropertyOptional({ format: 'uuid', description: 'Chosen delivery window.' })
+  @IsOptional()
+  @IsUUID()
+  deliverySlotId?: string | null;
+
+  @ApiPropertyOptional({
+    format: 'date',
+    description: 'The date the chosen window falls on, yyyy-mm-dd. Required with a slot.',
+  })
+  @IsOptional()
+  @IsDateString()
+  deliveryDate?: string | null;
 
   @ApiPropertyOptional({ description: 'Promo code to apply. Validated and priced server-side.' })
   @IsOptional()

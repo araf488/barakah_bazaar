@@ -27,6 +27,7 @@ const placement = (overrides: Partial<PlaceOrderData> = {}): PlaceOrderData => (
   discountPoysha: 0n,
   totalPoysha: 250000n,
   promotion: null,
+  delivery: null,
   items: [
     {
       variantId: 'var-1',

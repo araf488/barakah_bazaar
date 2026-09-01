@@ -342,6 +342,7 @@ model ProductVariant {
   cartItems    CartItem[]
   orderItems   OrderItem[]
   inventory    Inventory[]
+  slots        DeliverySlot[]
   batches      InventoryBatch[]
   movements    StockMovement[]
   reservations StockReservation[]
@@ -433,11 +434,12 @@ model Warehouse {
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
-  inventory    Inventory[]
-  batches      InventoryBatch[]
-  movements    StockMovement[]
-  reservations StockReservation[]
-  orders       Order[]
+  inventory     Inventory[]
+  batches       InventoryBatch[]
+  movements     StockMovement[]
+  reservations  StockReservation[]
+  orders        Order[]
+  deliverySlots DeliverySlot[]
 
   @@index([isActive])
   @@map("warehouses")
@@ -646,13 +648,23 @@ model Order {
   cancelledAt  DateTime? @map("cancelled_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  user        User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
-  warehouse   Warehouse             @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  user           User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  warehouse      Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  /// The window the customer chose, and the date it falls on. Null for orders placed before
+  /// slots existed, or where none was offered.
+  deliverySlotId String?   @map("delivery_slot_id") @db.Uuid
+  /// Date only, at midnight. The slot supplies the time of day; storing them separately is
+  /// what lets capacity be counted per slot per DAY rather than per timestamp.
+  deliveryDate   DateTime? @map("delivery_date") @db.Date
+
+  deliverySlot DeliverySlot? @relation(fields: [deliverySlotId], references: [id], onDelete: Restrict)
+
   items       OrderItem[]
   events      OrderEvent[]
   payments    PaymentTransaction[]
   redemptions PromotionRedemption[]
 
+  @@index([deliverySlotId, deliveryDate])
   @@index([userId, placedAt])
   @@index([status, placedAt])
   @@index([warehouseId, status])
@@ -964,4 +976,47 @@ model Review {
   @@index([status, createdAt])
   @@index([userId])
   @@map("reviews")
+}
+
+/// A recurring delivery window offered by one hub.
+///
+/// A template, not an occurrence: "Morning 9–11, Sun/Tue/Thu, 20 orders" describes every
+/// Sunday, Tuesday and Thursday. Occurrences are computed for the next few days rather than
+/// stored, because storing them means a job that has to keep running for the shop to take
+/// orders next month.
+///
+/// Capacity belongs to the HUB, not the zone: it is a van and a driver, and both live at a
+/// warehouse.
+model DeliverySlot {
+  id                 String   @id @default(uuid()) @db.Uuid
+  warehouseId        String   @map("warehouse_id") @db.Uuid
+  labelEn            String   @map("label_en")
+  labelBn            String?  @map("label_bn")
+  /// Minutes from midnight, local time. Integers rather than a time type because the only
+  /// arithmetic ever done on them is comparison and subtraction against a cutoff.
+  startMinute        Int      @map("start_minute")
+  endMinute          Int      @map("end_minute")
+  /// Which weekdays this window runs, 0 = Sunday. The Bangladeshi week starts Sunday, and a
+  /// grocery genuinely does not deliver every day.
+  daysOfWeek         Int[]    @map("days_of_week")
+  /// How many orders this window can take, per occurrence.
+  capacity           Int
+  /// Orders close this many minutes before the window opens. This is the "order by 8am for
+  /// same-day doi" rule: a two-hour window needs the picking done before the van leaves.
+  cutoffMinutes      Int      @default(0) @map("cutoff_minutes")
+  /// Whether this window has cold transport. A perishable basket may only take a slot that
+  /// does — the delivery van is the last link in the cold chain and the easiest to forget.
+  supportsPerishable Boolean  @default(false) @map("supports_perishable")
+  isActive           Boolean  @default(true) @map("is_active")
+  sortOrder          Int      @default(0) @map("sort_order")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  warehouse        Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  orders           Order[]
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id])
+  productVariantId String?         @db.Uuid
+
+  @@index([warehouseId, isActive])
+  @@map("delivery_slots")
 }

@@ -6,6 +6,9 @@ export const DeliveryConstants = {
   /** A zone with more rules than this is almost certainly modelled the wrong way round. */
   MaxRulesPerZone: 500,
   MaxPageSize: 100,
+  /** How far ahead delivery windows are offered. */
+  SlotHorizonDays: 7,
+  MaxSlotHorizonDays: 14,
   DefaultPageSize: 50,
 } as const;
 
@@ -22,6 +25,13 @@ export const DeliveryMessages = {
   DistrictNeedsDivision: 'A rule naming a district must also name its division.',
   /** The same place is already claimed by another zone. */
   PlaceAlreadyZoned: 'That place already belongs to another delivery zone.',
+  /** The chosen window has since filled or closed. */
+  SlotUnavailable: 'That delivery slot is no longer available. Please choose another.',
+  /** A perishable basket was sent to a window without cold transport. */
+  SlotNotCold:
+    'That delivery slot cannot keep chilled items cold. Please choose a cold-chain slot.',
+  /** The window does not belong to the hub that will pack the order. */
+  SlotWrongHub: 'That delivery slot is not offered for this order.',
   /** The database could not be read or written. */
   Unavailable: 'Could not load delivery pricing. Please try again.',
   /** The audit row could not be written, so the change was refused. */

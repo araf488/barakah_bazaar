@@ -48,9 +48,16 @@ ALTER TABLE public.delivery_zone_rules   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.promotions             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.promotion_redemptions  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_slots         ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
+--
+-- Everything is forced EXCEPT categories, products, product_variants and
+-- product_images. Those four are the published catalog: their policy grants the
+-- read that FORCE would protect, so forcing them guards nothing while adding a
+-- way for an owner-role migration or backfill to fail confusingly. Every table
+-- holding customer, money, stock or permission data is forced.
 ALTER TABLE public.users     FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.addresses FORCE ROW LEVEL SECURITY;
 
@@ -89,6 +96,7 @@ ALTER TABLE public.delivery_zone_rules FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.promotions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.promotion_redemptions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_slots FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -242,6 +250,11 @@ CREATE POLICY reviews_read_published
 -- merely private: the row count IS the usage limit, so a client that could insert here could
 -- exhaust a rival's allowance, and one that could delete could redeem a single-use code
 -- forever.
+
+-- delivery_slots gets no policy. Capacity is the interesting part of a slot, and it is
+-- derived from orders rather than stored — so a readable table would show a client every
+-- hub's van schedule while telling it nothing useful. Availability comes from the API, which
+-- computes what is actually left.
 
 -- delivery_zones and delivery_zone_rules get no policy either. Pricing is readable through
 -- the quote endpoint, which resolves ONE fee for ONE address; exposing the table would let a

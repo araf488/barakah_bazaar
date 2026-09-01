@@ -49,6 +49,8 @@ export interface PlaceOrderData {
   totalPoysha: bigint;
   /** The promotion redeemed, if any. Recorded in the same transaction as the order. */
   promotion: { id: string; discountPoysha: bigint } | null;
+  /** The delivery window booked, if the customer chose one. */
+  delivery: { slotId: string; date: Date } | null;
   items: {
     variantId: string;
     sku: string;
@@ -94,6 +96,14 @@ export class OrderRepository {
             deliveryFeePoysha: data.deliveryFeePoysha,
             discountPoysha: data.discountPoysha,
             totalPoysha: data.totalPoysha,
+            // Written with the order, so a booked place and the order holding it cannot
+            // exist apart. Capacity is counted from these rows.
+            ...(data.delivery
+              ? {
+                  deliverySlot: { connect: { id: data.delivery.slotId } },
+                  deliveryDate: data.delivery.date,
+                }
+              : {}),
             items: { create: data.items },
             events: { create: { toStatus: OrderStatus.PLACED } },
           },

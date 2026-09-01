@@ -63,6 +63,8 @@ export const OrderMessages = {
   InsufficientStockTemplate: 'Only {0} of "{1}" left in stock. Adjust your basket and try again.',
   /** Nowhere to fulfil the order from. */
   NoWarehouse: 'We cannot deliver to that address right now.',
+  /** A slot id without its date, or a date without a slot. */
+  SlotNeedsDate: 'Choose both a delivery slot and the date it falls on.',
   /**
    * A perishable in the basket cannot be delivered this far. Names the item, because the
    * customer's only useful action is to remove it — a generic refusal leaves them retrying

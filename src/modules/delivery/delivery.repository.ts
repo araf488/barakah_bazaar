@@ -1,8 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { DeliveryZone, DeliveryZoneRule, Prisma } from '../../infra/prisma/prisma-client';
+import {
+  DeliverySlot,
+  DeliveryZone,
+  DeliveryZoneRule,
+  OrderStatus,
+  Prisma,
+} from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { AuditLogRepository, AuditLogWriteData } from '../admin/audit-log.repository';
+import { occurrenceKey } from './slot-availability';
 
 export type ZoneWithRules = Prisma.DeliveryZoneGetPayload<{ include: { rules: true } }>;
 export type ZoneResult = ZoneWithRules | null | undefined;
@@ -195,6 +202,75 @@ export class DeliveryRepository {
       });
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in DeliveryRepository.findAll');
+      return null;
+    }
+  }
+
+  /** Active windows offered by one hub. */
+  async findSlotsForWarehouse(warehouseId: string): Promise<DeliverySlot[] | null> {
+    try {
+      return await this.prisma.deliverySlot.findMany({
+        where: { warehouseId, isActive: true },
+        orderBy: [{ sortOrder: 'asc' }, { startMinute: 'asc' }],
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, warehouseId },
+        'Exception occurred in DeliveryRepository.findSlotsForWarehouse',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * How many orders each window already holds, over a date range.
+   *
+   * Cancelled and refunded orders release their place: a van that is not delivering an order
+   * has room for another. Counting them would make a busy day of cancellations look full.
+   */
+  async countBookings(
+    slotIds: string[],
+    from: Date,
+    to: Date,
+  ): Promise<Map<string, number> | null> {
+    if (slotIds.length === 0) {
+      return new Map();
+    }
+
+    try {
+      const rows = await this.prisma.order.groupBy({
+        by: ['deliverySlotId', 'deliveryDate'],
+        where: {
+          deliverySlotId: { in: slotIds },
+          deliveryDate: { gte: from, lte: to },
+          status: { notIn: [OrderStatus.CANCELLED, OrderStatus.REFUNDED] },
+        },
+        _count: { _all: true },
+      });
+
+      const counts = new Map<string, number>();
+
+      for (const row of rows) {
+        if (row.deliverySlotId && row.deliveryDate) {
+          counts.set(occurrenceKey(row.deliverySlotId, row.deliveryDate), row._count._all);
+        }
+      }
+
+      return counts;
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in DeliveryRepository.countBookings');
+      return null;
+    }
+  }
+
+  async findSlotById(id: string): Promise<DeliverySlot | null | undefined> {
+    try {
+      return (await this.prisma.deliverySlot.findUnique({ where: { id } })) ?? undefined;
+    } catch (error) {
+      this.logger.error(
+        { err: error, slotId: id },
+        'Exception occurred in DeliveryRepository.findSlotById',
+      );
       return null;
     }
   }
