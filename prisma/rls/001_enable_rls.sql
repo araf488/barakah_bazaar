@@ -47,6 +47,7 @@ ALTER TABLE public.delivery_zones        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_zone_rules   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.promotions             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.promotion_redemptions  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reviews                ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -87,6 +88,7 @@ ALTER TABLE public.delivery_zones FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_zone_rules FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.promotions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.promotion_redemptions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.reviews FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -219,6 +221,18 @@ CREATE POLICY notifications_read_own
 -- row a customer owns. That is acceptable because neither carries a credential — the body is
 -- never stored — but the API withholds them anyway, so a direct PostgREST read is the only
 -- way to see them.
+
+DROP POLICY IF EXISTS reviews_read_published ON public.reviews;
+CREATE POLICY reviews_read_published
+  ON public.reviews FOR SELECT
+  TO authenticated
+  USING (status = 'PUBLISHED');
+
+-- The policy is on STATUS, not ownership, and that is the point: an unmoderated review must
+-- not be readable by anyone but staff, including its own author through a direct client. The
+-- author sees their pending review through this API, which returns it to them on create.
+-- moderation_note is a readable column on a published row, so nothing internal may be written
+-- there — the API withholds it either way.
 
 -- promotions gets no policy. A readable table hands every customer the whole code list,
 -- including unlaunched campaigns and codes meant for one segment. Codes are checked one at a

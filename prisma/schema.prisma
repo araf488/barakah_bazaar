@@ -156,6 +156,17 @@ enum PromotionType {
   FREE_DELIVERY
 }
 
+/// Where a review stands in moderation.
+///
+/// PENDING is the default and nothing about it is public. A halal grocery cannot let an
+/// unmoderated claim about a product's provenance or a food-safety complaint appear on the
+/// storefront unread — that is a trust and liability question, not a spam one.
+enum ReviewStatus {
+  PENDING
+  PUBLISHED
+  REJECTED
+}
+
 /// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
 /// user's first authenticated request — see AuthService.resolveUser().
 model User {
@@ -176,6 +187,7 @@ model User {
   addresses           Address[]
   auditLog            AdminAuditLog[]
   redemptions         PromotionRedemption[]
+  reviews             Review[]
   invitationsSent     StaffInvitation[]     @relation("StaffInvitationsSent")
   invitationsAccepted StaffInvitation[]     @relation("StaffInvitationsAccepted")
   cart                Cart?
@@ -289,9 +301,16 @@ model Product {
   /// here stops a future migration from dropping a column Prisma does not recognise.
   searchVector Unsupported("tsvector")? @map("search_vector")
 
+  /// Denormalised rating, recomputed from published reviews whenever one is published or
+  /// withdrawn. Sum and count rather than an average: integer arithmetic cannot drift, and a
+  /// stored float would round differently from the number a recount produces.
+  ratingSum   Int @default(0) @map("rating_sum")
+  ratingCount Int @default(0) @map("rating_count")
+
   category Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   variants ProductVariant[]
   images   ProductImage[]
+  reviews  Review[]
 
   @@index([categoryId])
   @@index([isActive, publishedAt])
@@ -652,6 +671,7 @@ model OrderItem {
 
   order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
   variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  review  Review?
 
   @@index([orderId])
   @@index([variantId])
@@ -901,4 +921,41 @@ model PromotionRedemption {
   /// Counting one customer's uses of one code, which is the per-customer limit check.
   @@index([promotionId, userId])
   @@map("promotion_redemptions")
+}
+
+/// One customer's rating of one thing they actually received.
+///
+/// Tied to an ORDER LINE, not to a product: `orderItemId` is unique, so a customer may review
+/// each delivered line once and cannot review a product they never bought. That is what makes
+/// "verified purchase" a property of the schema rather than a badge the application remembers
+/// to check.
+model Review {
+  id             String       @id @default(uuid()) @db.Uuid
+  productId      String       @map("product_id") @db.Uuid
+  /// The line that earns the right to review. Unique: one review per delivered line.
+  orderItemId    String       @unique @map("order_item_id") @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  /// Whole stars, 1-5.
+  rating         Int
+  title          String?
+  body           String?
+  status         ReviewStatus @default(PENDING)
+  /// Staff member who published or rejected it.
+  moderatedBy    String?      @map("moderated_by") @db.Uuid
+  moderatedAt    DateTime?    @map("moderated_at")
+  /// Why it was rejected. Internal — never returned to the customer.
+  moderationNote String?      @map("moderation_note")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// The storefront read: published reviews for one product, newest first.
+  @@index([productId, status, createdAt])
+  /// The moderation queue.
+  @@index([status, createdAt])
+  @@index([userId])
+  @@map("reviews")
 }

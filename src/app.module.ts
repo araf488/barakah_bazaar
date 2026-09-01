@@ -19,6 +19,7 @@ import { OrderModule } from './modules/order/order.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
 import { PaymentModule } from './modules/payment/payment.module';
 import { PromotionModule } from './modules/promotion/promotion.module';
+import { ReviewModule } from './modules/review/review.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
@@ -85,6 +86,7 @@ import { UserModule } from './modules/user/user.module';
     PaymentModule,
     DeliveryModule,
     PromotionModule,
+    ReviewModule,
   ],
   providers: [
     // Ahead of authentication: an unauthenticated flood should be rejected before it costs

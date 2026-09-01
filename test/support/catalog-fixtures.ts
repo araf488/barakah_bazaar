@@ -65,6 +65,8 @@ export const productFixture = (
   categoryId: 'cat-dry-fruits',
   brand: 'Barakah Select',
   pricingMode: PricingMode.WEIGHT,
+  ratingSum: 0,
+  ratingCount: 0,
   isPerishable: false,
   shelfLifeHours: null,
   storageType: StorageType.AMBIENT,

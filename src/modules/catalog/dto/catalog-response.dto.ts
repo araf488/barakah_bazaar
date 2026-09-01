@@ -44,6 +44,18 @@ export class ProductHandlingDto {
 }
 
 /** Compact shape for grid and search results. */
+/** A product's published rating. */
+export class ProductRatingDto {
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Null when nothing has been published yet — not the same as zero stars.',
+  })
+  average!: number | null;
+
+  @ApiProperty({ description: 'How many published reviews the average is over.' })
+  count!: number;
+}
+
 export class ProductListItemDto {
   @ApiProperty({ format: 'uuid' }) id!: string;
   @ApiProperty() slug!: string;
@@ -57,6 +69,7 @@ export class ProductListItemDto {
   @ApiPropertyOptional({ nullable: true, type: ProductImageDto })
   primaryImage?: ProductImageDto | null;
   @ApiProperty({ type: ProductHandlingDto }) handling!: ProductHandlingDto;
+  @ApiProperty({ type: ProductRatingDto }) rating!: ProductRatingDto;
 }
 
 /** Full product detail page. */
