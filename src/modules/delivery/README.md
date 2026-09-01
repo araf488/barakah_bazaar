@@ -87,6 +87,42 @@ Updating a zone **replaces its whole rule set** rather than diffing it. A partia
 is how a place ends up in two zones or none, and the set is small enough that rewriting it is
 cheaper than reasoning about which half applied.
 
+## Cold chain and delivery reach
+
+`products.max_delivery_distance_km`, `is_perishable`, `storage_type`, `shelf_life_hours` and
+`warehouses.service_radius_km` all existed as columns that **nothing read**. Admin wrote them,
+the catalog returned them, and no decision anywhere consulted them — a frozen item with a 5 km
+limit could be ordered to Manikganj. `delivery-reach.ts` and the checkout rules make the first
+two load-bearing.
+
+Two limits, enforced **differently**, because they mean different things:
+
+| Limit                               | Kind                | Unmeasurable distance              |
+| ----------------------------------- | ------------------- | ---------------------------------- |
+| `warehouses.service_radius_km`      | commercial boundary | **passes**                         |
+| `products.max_delivery_distance_km` | cold-chain safety   | **falls back to a district match** |
+
+That asymmetry is the important decision. Addresses carry coordinates only when the customer
+pasted a map link, so most orders cannot be measured at all.
+
+- Refusing everything unmeasurable would reject orders that succeed today — a regression
+  dressed as a rule. So the hub's commercial radius lets it through.
+- Treating unmeasurable as fine would leave the cold-chain limit decorative, which is exactly
+  the state being replaced. So a perishable falls back to "same district as the hub" — the
+  coarsest honest proxy for _close enough to arrive cold_, and the only one needing no
+  coordinates.
+
+Warehouse selection now takes the destination: a hub must have the stock **and** be able to
+reach the address. When every hub is ruled out by a perishable rather than by stock, the
+refusal **names the item**, because the customer's only useful action is to remove it.
+
+### Still decorative
+
+`storage_type` and `shelf_life_hours` are written and read but drive nothing. Warehouses have
+no storage-capability field, so nothing stops a frozen line being picked from an ambient-only
+hub, and shelf life does not seed batch expiry. Both need a schema change; neither is bluffed
+here.
+
 ## Conventions this module follows
 
 1. Every public method wraps its body in `try`/`catch` and logs with the error object first.

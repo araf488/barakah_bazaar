@@ -18,6 +18,12 @@ const cartInclude = {
               nameBn: true,
               isActive: true,
               publishedAt: true,
+              // Cold-chain handling. Checkout refuses a hub that cannot reach the address
+              // within a perishable's limit, so these have to travel with the basket rather
+              // than be fetched again per line.
+              isPerishable: true,
+              maxDeliveryDistanceKm: true,
+              storageType: true,
               images: { where: { isPrimary: true }, select: { url: true }, take: 1 },
             },
           },

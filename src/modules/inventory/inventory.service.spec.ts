@@ -1,7 +1,7 @@
 import { HttpStatus } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
-import { StockMovementReason, UserRole } from '../../infra/prisma/prisma-client';
+import { StockMovementReason, UserRole, StorageType } from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AdminCatalogRepository } from '../admin/admin-catalog.repository';
 import { AuthService } from '../auth/auth.service';
@@ -63,12 +63,21 @@ describe('InventoryService', () => {
       receive: jest.fn().mockResolvedValue({ id: 'batch-1', createdAt: new Date() }),
       adjust: jest.fn().mockResolvedValue({ quantityOnHand: 17 }),
       listMovements: jest.fn().mockResolvedValue([]),
+      findWarehouseById: jest.fn().mockResolvedValue({
+        id: 'wh-1',
+        storageTypes: [StorageType.AMBIENT, StorageType.CHILLED, StorageType.FROZEN],
+      }),
     };
     catalog = {
       findVariantById: jest
         .fn()
         .mockResolvedValue({ id: VARIANT, productId: 'p-1', isActive: true }),
-      findProductById: jest.fn().mockResolvedValue({ id: 'p-1', isPerishable: false }),
+      findProductById: jest.fn().mockResolvedValue({
+        id: 'p-1',
+        isPerishable: false,
+        shelfLifeHours: null,
+        storageType: StorageType.AMBIENT,
+      }),
     };
     authService = {
       resolveActiveUserId: jest.fn().mockResolvedValue({ ok: true, data: 'user-1' }),
@@ -183,7 +192,12 @@ describe('InventoryService', () => {
     it('requires an expiry for a perishable product', async () => {
       // A perishable batch with no expiry cannot be picked first-expiry-first-out, which is
       // the one thing this module exists to do.
-      catalog.findProductById.mockResolvedValue({ id: 'p-1', isPerishable: true });
+      catalog.findProductById.mockResolvedValue({
+        id: 'p-1',
+        isPerishable: true,
+        shelfLifeHours: null,
+        storageType: StorageType.AMBIENT,
+      });
 
       const result = await service.receiveStock(staff, receiveDto());
 
@@ -196,7 +210,12 @@ describe('InventoryService', () => {
     });
 
     it('accepts a perishable receipt that carries an expiry', async () => {
-      catalog.findProductById.mockResolvedValue({ id: 'p-1', isPerishable: true });
+      catalog.findProductById.mockResolvedValue({
+        id: 'p-1',
+        isPerishable: true,
+        shelfLifeHours: null,
+        storageType: StorageType.AMBIENT,
+      });
 
       const result = await service.receiveStock(staff, receiveDto({ expiresAt: TOMORROW }));
 
@@ -327,6 +346,118 @@ describe('InventoryService', () => {
       const result = await service.listMovements(WAREHOUSE, VARIANT);
 
       expect(!result.ok && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+  });
+
+  describe('receipt: cold-chain guards', () => {
+    const inHours = (hours: number) => new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+
+    const product = (overrides = {}) => ({
+      id: 'p-1',
+      isPerishable: true,
+      shelfLifeHours: 72,
+      storageType: StorageType.CHILLED,
+      ...overrides,
+    });
+
+    it('refuses an expiry further out than the product can possibly keep', async () => {
+      // Not a computed expiry — a ceiling. A date beyond it is a typo, most often a mistyped
+      // year, and accepting it would let FEFO hand out spoiled stock last.
+      catalog.findProductById.mockResolvedValue(product());
+
+      const result = await service.receiveStock(staff, receiveDto({ expiresAt: inHours(24 * 30) }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message:
+          'That expiry is more than 72 hours away, which is longer than this product keeps. Check the date on the batch.',
+      });
+      expect(repository.receive).not.toHaveBeenCalled();
+    });
+
+    it('accepts an expiry inside the shelf life', async () => {
+      catalog.findProductById.mockResolvedValue(product());
+
+      const result = await service.receiveStock(staff, receiveDto({ expiresAt: inHours(48) }));
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('accepts an expiry sooner than the shelf life, since stock arrives part-used', async () => {
+      catalog.findProductById.mockResolvedValue(product());
+
+      const result = await service.receiveStock(staff, receiveDto({ expiresAt: inHours(6) }));
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('never computes an expiry from shelf life, only bounds one', async () => {
+      catalog.findProductById.mockResolvedValue(product({ isPerishable: false }));
+
+      await service.receiveStock(staff, receiveDto());
+
+      expect(repository.receive.mock.calls[0][0].expiresAt).toBeNull();
+    });
+
+    it('skips the check for a product with no declared shelf life', async () => {
+      catalog.findProductById.mockResolvedValue(product({ shelfLifeHours: null }));
+
+      const result = await service.receiveStock(
+        staff,
+        receiveDto({ expiresAt: inHours(24 * 365) }),
+      );
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses stock a hub cannot hold', async () => {
+      // Enforced at receipt, not only at checkout: by checkout the frozen goods are already
+      // sitting in a dry room.
+      catalog.findProductById.mockResolvedValue(product({ storageType: StorageType.FROZEN }));
+      repository.findWarehouseById.mockResolvedValue({
+        id: 'wh-1',
+        storageTypes: [StorageType.AMBIENT],
+      });
+
+      const result = await service.receiveStock(staff, receiveDto({ expiresAt: inHours(24) }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This hub cannot store FROZEN items. Receive them into a hub that can.',
+      });
+      expect(repository.receive).not.toHaveBeenCalled();
+    });
+
+    it('accepts stock into a hub that declares the condition', async () => {
+      catalog.findProductById.mockResolvedValue(product({ storageType: StorageType.FROZEN }));
+      repository.findWarehouseById.mockResolvedValue({
+        id: 'wh-1',
+        storageTypes: [StorageType.AMBIENT, StorageType.FROZEN],
+      });
+
+      const result = await service.receiveStock(staff, receiveDto({ expiresAt: inHours(24) }));
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('reports 404 for a hub that does not exist', async () => {
+      catalog.findProductById.mockResolvedValue(product({ isPerishable: false }));
+      repository.findWarehouseById.mockResolvedValue(undefined);
+
+      const result = await service.receiveStock(staff, receiveDto());
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.NOT_FOUND);
+    });
+
+    it('reports 503 rather than refusing when the hub cannot be read', async () => {
+      catalog.findProductById.mockResolvedValue(product({ isPerishable: false }));
+      repository.findWarehouseById.mockResolvedValue(null);
+
+      const result = await service.receiveStock(staff, receiveDto());
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
     });
   });
 });

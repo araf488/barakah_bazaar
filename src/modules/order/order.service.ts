@@ -9,9 +9,9 @@ import { PaginatedResponseDto } from '../../common/dto/pagination.dto';
 import { Money } from '../../common/money/money';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
-import { OrderStatus, PaymentMethod, Prisma } from '../../infra/prisma/prisma-client';
+import { OrderStatus, PaymentMethod, Prisma, Warehouse } from '../../infra/prisma/prisma-client';
 import { AuthService } from '../auth/auth.service';
-import { CartWithItems } from '../cart/cart.repository';
+import { CartLine, CartWithItems } from '../cart/cart.repository';
 import {
   AdminOrderQueryDto,
   CancelOrderDto,
@@ -26,11 +26,19 @@ import {
   OrderConstants,
   OrderMessages,
 } from './order.constants';
+import { reachWithin } from '../delivery/delivery-reach';
 import { DeliveryService } from '../delivery/delivery.service';
 import { AppliedDiscount, DiscountBasis, PromotionService } from '../promotion/promotion.service';
 import { NotificationService } from '../notification/notification.service';
 import { CheckoutSources } from './checkout-sources';
 import { OrderRepository, OrderWithDetail, PlaceOrderData } from './order.repository';
+
+/** Only the address fields the delivery-reach rules read. */
+interface DeliveryDestinationAddress {
+  readonly district: string;
+  readonly latitude: number | null;
+  readonly longitude: number | null;
+}
 
 /**
  * Placing and moving orders.
@@ -92,7 +100,7 @@ export class OrderService {
         return priced;
       }
 
-      const warehouse = await this.resolveWarehouse(cart);
+      const warehouse = await this.resolveWarehouse(cart, address);
       if (!warehouse.ok) {
         return warehouse;
       }
@@ -374,12 +382,19 @@ export class OrderService {
    * delivery module does not model yet — so a basket no single hub can satisfy is refused
    * rather than half-shipped.
    */
-  private async resolveWarehouse(cart: CartWithItems): Promise<ServiceResponse<string>> {
+  private async resolveWarehouse(
+    cart: CartWithItems,
+    destination: DeliveryDestinationAddress,
+  ): Promise<ServiceResponse<string>> {
     const warehouses = await this.sources.inventory.listWarehouses(false);
 
     if (warehouses === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
+
+    // Remembered so the refusal can name the item that blocked every hub, rather than saying
+    // only "we cannot deliver there" and leaving the customer to guess which line is at fault.
+    let blockedBy: string | null = null;
 
     for (const warehouse of warehouses) {
       const shortfall = await this.findShortfall(warehouse.id, cart);
@@ -388,12 +403,94 @@ export class OrderService {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
 
-      if (shortfall === undefined) {
+      if (shortfall !== undefined) {
+        continue;
+      }
+
+      if (!OrderService.servesAddress(warehouse, destination)) {
+        continue;
+      }
+
+      const blocked = OrderService.firstColdChainBlock(warehouse, cart, destination);
+
+      if (blocked === null) {
         return serviceOk(warehouse.id);
       }
+
+      blockedBy ??= blocked;
     }
 
-    return serviceFail(HttpStatus.CONFLICT, OrderMessages.NoWarehouse);
+    return blockedBy
+      ? serviceFail(
+          HttpStatus.CONFLICT,
+          formatMessage(OrderMessages.PerishableOutOfRangeTemplate, blockedBy),
+        )
+      : serviceFail(HttpStatus.CONFLICT, OrderMessages.NoWarehouse);
+  }
+
+  /**
+   * Whether the hub's own commercial radius covers this address.
+   *
+   * Unmeasurable distance passes. `serviceRadiusKm` is a business boundary rather than a
+   * safety one, and coordinates are optional on addresses — refusing what cannot be measured
+   * would start rejecting orders that succeed today, which is a regression dressed as a rule.
+   */
+  private static servesAddress(
+    warehouse: Warehouse,
+    destination: DeliveryDestinationAddress,
+  ): boolean {
+    return reachWithin(warehouse, destination, warehouse.serviceRadiusKm) !== 'too-far';
+  }
+
+  /**
+   * The first perishable this hub cannot get to in time, or null when it can serve them all.
+   *
+   * Unlike the hub radius above, an unmeasurable distance here does NOT pass. A perishable's
+   * `maxDeliveryDistanceKm` is a cold-chain limit, and since most addresses carry no
+   * coordinates, treating "unknown" as "fine" would leave the limit decorative — which is
+   * exactly the state this replaces. The district match is the coarsest honest proxy for
+   * "close enough to arrive cold", and it is the only one that needs no coordinates.
+   */
+  private static firstColdChainBlock(
+    warehouse: Warehouse,
+    cart: CartWithItems,
+    destination: DeliveryDestinationAddress,
+  ): string | null {
+    const blocked = cart.items.find((item) =>
+      OrderService.isOutOfColdChainRange(warehouse, item, destination),
+    );
+
+    return blocked ? blocked.variant.product.nameEn : null;
+  }
+
+  /** Whether one line's cold-chain limit rules this hub out. */
+  private static isOutOfColdChainRange(
+    warehouse: Warehouse,
+    item: CartLine,
+    destination: DeliveryDestinationAddress,
+  ): boolean {
+    const { isPerishable, maxDeliveryDistanceKm, storageType } = item.variant.product;
+
+    // A hub that cannot hold the condition cannot ship it, whatever the distance. Receipt
+    // refuses to put it there in the first place; this is the second line of defence, for
+    // stock that predates the rule or a hub whose capability was narrowed afterwards.
+    if (!warehouse.storageTypes.includes(storageType)) {
+      return true;
+    }
+
+    if (!isPerishable || maxDeliveryDistanceKm === null) {
+      return false;
+    }
+
+    const reach = reachWithin(warehouse, destination, maxDeliveryDistanceKm);
+
+    if (reach === 'unknown') {
+      // No coordinates on either side. Same district is the coarsest honest proxy for "close
+      // enough to arrive cold", and it is the only one that works without them.
+      return destination.district !== warehouse.district;
+    }
+
+    return reach === 'too-far';
   }
 
   /** The first line this hub cannot cover, or undefined when it can cover them all. */

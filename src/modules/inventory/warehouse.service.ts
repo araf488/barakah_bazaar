@@ -256,6 +256,7 @@ export class WarehouseService {
       latitude: dto.latitude ?? null,
       longitude: dto.longitude ?? null,
       serviceRadiusKm: dto.serviceRadiusKm ?? null,
+      ...(dto.storageTypes ? { storageTypes: dto.storageTypes } : {}),
     };
   }
 
@@ -273,6 +274,7 @@ export class WarehouseService {
       ...(dto.latitude === undefined ? {} : { latitude: dto.latitude }),
       ...(dto.longitude === undefined ? {} : { longitude: dto.longitude }),
       ...(dto.serviceRadiusKm === undefined ? {} : { serviceRadiusKm: dto.serviceRadiusKm }),
+      ...(dto.storageTypes === undefined ? {} : { storageTypes: dto.storageTypes }),
     };
   }
 
@@ -291,6 +293,7 @@ export class WarehouseService {
       latitude: warehouse.latitude,
       longitude: warehouse.longitude,
       serviceRadiusKm: warehouse.serviceRadiusKm,
+      storageTypes: warehouse.storageTypes,
       isActive: warehouse.isActive,
     };
   }

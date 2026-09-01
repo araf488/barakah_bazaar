@@ -408,24 +408,30 @@ model AdminAuditLog {
 /// The address uses the same four levels as a customer address so delivery routing can
 /// compare them directly without a second geography vocabulary.
 model Warehouse {
-  id              String   @id @default(uuid()) @db.Uuid
+  id              String        @id @default(uuid()) @db.Uuid
   /// Short human code used on labels and pick lists, e.g. "DHK-GUL".
-  code            String   @unique
-  nameEn          String   @map("name_en")
-  nameBn          String?  @map("name_bn")
+  code            String        @unique
+  nameEn          String        @map("name_en")
+  nameBn          String?       @map("name_bn")
   division        String
   district        String
   upazila         String
   area            String?
-  addressLine     String   @map("address_line")
-  postCode        String?  @map("post_code")
+  addressLine     String        @map("address_line")
+  postCode        String?       @map("post_code")
   latitude        Float?
   longitude       Float?
   /// Radius this hub will deliver within. Perishables are additionally capped per product.
-  serviceRadiusKm Int?     @map("service_radius_km")
-  isActive        Boolean  @default(true) @map("is_active")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  serviceRadiusKm Int?          @map("service_radius_km")
+  /// Which storage conditions this hub can actually hold.
+  ///
+  /// Defaults to AMBIENT alone: a hub is a dry room until someone says it has a chiller. The
+  /// safe default is the one that refuses frozen stock, not the one that silently accepts it
+  /// and lets it spoil.
+  storageTypes    StorageType[] @default([AMBIENT]) @map("storage_types")
+  isActive        Boolean       @default(true) @map("is_active")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
 
   inventory    Inventory[]
   batches      InventoryBatch[]

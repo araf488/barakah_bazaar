@@ -1,10 +1,14 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { ErrorMessages, formatMessage } from '../../common/constants/error-messages.constants';
+import {
+  ErrorMessageTemplates,
+  ErrorMessages,
+  formatMessage,
+} from '../../common/constants/error-messages.constants';
 import { PaginatedResponseDto } from '../../common/dto/pagination.dto';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
-import { StockMovementReason } from '../../infra/prisma/prisma-client';
+import { StorageType, StockMovementReason } from '../../infra/prisma/prisma-client';
 import { AuthService } from '../auth/auth.service';
 import { AdminCatalogRepository } from '../admin/admin-catalog.repository';
 import {
@@ -14,7 +18,7 @@ import {
   StockMovementDto,
   StockQueryDto,
 } from './dto/inventory.dto';
-import { InventoryMessages } from './inventory.constants';
+import { InventoryConstants, InventoryMessages } from './inventory.constants';
 import { InventoryRepository, StockRow } from './inventory.repository';
 
 const MS_PER_DAY = 86_400_000;
@@ -222,6 +226,71 @@ export class InventoryService {
 
   // ── Guards ────────────────────────────────────────────────────────────────
 
+  /**
+   * Refuses an expiry further out than the product could possibly keep.
+   *
+   * Deliberately NOT a calculation of the expiry. Shelf life runs from production and stock
+   * arrives partway through it, so `received + shelfLife` always overstates freshness —
+   * computing the date would put a food-safety error in the dangerous direction. It is only
+   * used as a ceiling: anything beyond it is a typed date that cannot be true.
+   */
+  private static assertExpiryPlausible(
+    product: { shelfLifeHours: number | null },
+    expiresAt: string | null | undefined,
+  ): ServiceResponse<void> | null {
+    if (!expiresAt || product.shelfLifeHours === null) {
+      return null;
+    }
+
+    const ceiling = Date.now() + product.shelfLifeHours * 60 * 60 * 1000;
+
+    if (new Date(expiresAt).getTime() > ceiling) {
+      return serviceFail(
+        HttpStatus.BAD_REQUEST,
+        formatMessage(
+          InventoryMessages.ExpiryBeyondShelfLifeTemplate,
+          String(product.shelfLifeHours),
+        ),
+      );
+    }
+
+    return null;
+  }
+
+  /**
+   * Refuses stock a hub cannot hold.
+   *
+   * Enforced at RECEIPT rather than only at checkout, because by checkout the frozen goods are
+   * already sitting in a dry room. The delivery rules stop it being sold; this stops it
+   * arriving.
+   */
+  private async assertHubCanStore(
+    warehouseId: string,
+    storageType: StorageType,
+  ): Promise<ServiceResponse<void>> {
+    const warehouse = await this.repository.findWarehouseById(warehouseId);
+
+    if (warehouse === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+
+    if (!warehouse) {
+      return serviceFail(
+        HttpStatus.NOT_FOUND,
+        formatMessage(ErrorMessageTemplates.NotFound, InventoryConstants.WarehouseResourceName),
+      );
+    }
+
+    if (!warehouse.storageTypes.includes(storageType)) {
+      return serviceFail(
+        HttpStatus.CONFLICT,
+        formatMessage(InventoryMessages.StorageNotSupportedTemplate, storageType),
+      );
+    }
+
+    return serviceOk<void>(undefined);
+  }
+
   private async guardReceipt(dto: ReceiveStockDto): Promise<ServiceResponse<void>> {
     const variant = await this.catalog.findVariantById(dto.variantId);
 
@@ -249,7 +318,12 @@ export class InventoryService {
       return serviceFail(HttpStatus.BAD_REQUEST, InventoryMessages.ExpiryInPast);
     }
 
-    return serviceOk<void>(undefined);
+    const implausible = InventoryService.assertExpiryPlausible(product, dto.expiresAt);
+    if (implausible) {
+      return implausible;
+    }
+
+    return await this.assertHubCanStore(dto.warehouseId, product.storageType);
   }
 
   /**

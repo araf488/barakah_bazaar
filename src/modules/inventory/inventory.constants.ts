@@ -36,6 +36,17 @@ export const InventoryMessages = {
   ExpiryRequired: 'This product is perishable, so a receipt must include the batch expiry date.',
   /** An expiry already in the past cannot be received as sellable stock. */
   ExpiryInPast: 'The expiry date has already passed. Receive it as a write-off instead.',
+  /**
+   * The typed expiry is further out than the product's whole shelf life allows.
+   *
+   * A plausibility check, not a calculation: shelf life runs from production, and stock always
+   * arrives partway through it, so the true expiry is always sooner than received + shelf
+   * life. Anything LATER than that ceiling is a typo — a year mistyped, or the wrong box.
+   */
+  ExpiryBeyondShelfLifeTemplate:
+    'That expiry is more than {0} hours away, which is longer than this product keeps. Check the date on the batch.',
+  /** The hub cannot hold this product's storage condition. */
+  StorageNotSupportedTemplate: 'This hub cannot store {0} items. Receive them into a hub that can.',
   /** Refusing to deactivate a warehouse that still holds stock. */
   WarehouseHoldsStock:
     'This warehouse still holds stock. Transfer or write it off before deactivating.',

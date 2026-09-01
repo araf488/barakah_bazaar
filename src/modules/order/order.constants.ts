@@ -63,6 +63,13 @@ export const OrderMessages = {
   InsufficientStockTemplate: 'Only {0} of "{1}" left in stock. Adjust your basket and try again.',
   /** Nowhere to fulfil the order from. */
   NoWarehouse: 'We cannot deliver to that address right now.',
+  /**
+   * A perishable in the basket cannot be delivered this far. Names the item, because the
+   * customer's only useful action is to remove it — a generic refusal leaves them retrying
+   * the same basket.
+   */
+  PerishableOutOfRangeTemplate:
+    'We cannot deliver {0} to that address — it needs to stay cold over a shorter distance. Remove it to continue.',
   /** {0} = from, {1} = to. */
   IllegalTransitionTemplate: 'An order cannot go from {0} to {1}.',
   /** The sweep cancelled an order nobody acted on. */

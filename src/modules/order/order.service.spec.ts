@@ -1,7 +1,12 @@
 import { HttpStatus } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
-import { OrderStatus, PaymentMethod, UserRole } from '../../infra/prisma/prisma-client';
+import {
+  OrderStatus,
+  PaymentMethod,
+  UserRole,
+  StorageType,
+} from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
 import { addressFixture } from '../../../test/support/user-fixtures';
 import { AuthService } from '../auth/auth.service';
@@ -31,7 +36,13 @@ const cartLine = (overrides = {}) => ({
     sku: 'ALM-500',
     nameEn: '500g',
     pricePoysha: 125000n,
-    product: { nameEn: 'Almonds', nameBn: 'কাঠবাদাম' },
+    product: {
+      nameEn: 'Almonds',
+      nameBn: 'কাঠবাদাম',
+      isPerishable: false,
+      maxDeliveryDistanceKm: null,
+      storageType: StorageType.AMBIENT,
+    },
   },
   ...overrides,
 });
@@ -92,7 +103,16 @@ describe('OrderService', () => {
     cartRepository = { findOrCreate: jest.fn().mockResolvedValue(cart()) };
     addressRepository = { findOneForUser: jest.fn().mockResolvedValue(addressFixture()) };
     inventoryRepository = {
-      listWarehouses: jest.fn().mockResolvedValue([{ id: 'wh-1' }]),
+      listWarehouses: jest.fn().mockResolvedValue([
+        {
+          id: 'wh-1',
+          district: 'Dhaka',
+          latitude: null,
+          longitude: null,
+          serviceRadiusKm: null,
+          storageTypes: [StorageType.AMBIENT, StorageType.CHILLED, StorageType.FROZEN],
+        },
+      ]),
       findStock: jest.fn().mockResolvedValue({ quantityOnHand: 50, quantityReserved: 0 }),
     };
     authService = {
@@ -210,7 +230,10 @@ describe('OrderService', () => {
     });
 
     it('picks a hub that can cover the whole basket', async () => {
-      inventoryRepository.listWarehouses.mockResolvedValue([{ id: 'wh-short' }, { id: 'wh-1' }]);
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        { id: 'wh-short', storageTypes: [StorageType.AMBIENT] },
+        { id: 'wh-1', storageTypes: [StorageType.AMBIENT] },
+      ]);
       inventoryRepository.findStock.mockImplementation((warehouseId: string) =>
         Promise.resolve(
           warehouseId === 'wh-short'
@@ -316,6 +339,187 @@ describe('OrderService', () => {
         'user-1',
         'Stock checked',
       );
+    });
+  });
+
+  describe('cold chain and delivery reach', () => {
+    const hub = (overrides = {}) => ({
+      id: 'wh-1',
+      district: 'Dhaka',
+      latitude: null,
+      longitude: null,
+      serviceRadiusKm: null,
+      storageTypes: [StorageType.AMBIENT, StorageType.CHILLED, StorageType.FROZEN],
+      ...overrides,
+    });
+
+    const perishable = (maxDeliveryDistanceKm: number | null) =>
+      cartLine({
+        variant: {
+          sku: 'DOI-500',
+          nameEn: '500g',
+          pricePoysha: 125000n,
+          product: {
+            nameEn: 'Doi',
+            nameBn: 'দই',
+            isPerishable: true,
+            maxDeliveryDistanceKm,
+            storageType: StorageType.CHILLED,
+          },
+        },
+      });
+
+    it('skips a hub whose own radius excludes the address', async () => {
+      // The bug this guards: an out-of-range hub must not be selected. Returning "reachable"
+      // for a too-far hub silently ships from the wrong city.
+      addressRepository.findOneForUser.mockResolvedValue(
+        addressFixture({ latitude: 22.3569, longitude: 91.7832 }),
+      );
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        hub({ id: 'wh-far', latitude: 23.7925, longitude: 90.4078, serviceRadiusKm: 20 }),
+      ]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(false);
+      expect(repository.place).not.toHaveBeenCalled();
+    });
+
+    it('accepts a hub within its own radius', async () => {
+      addressRepository.findOneForUser.mockResolvedValue(
+        addressFixture({ latitude: 23.7331, longitude: 90.4172 }),
+      );
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        hub({ latitude: 23.7925, longitude: 90.4078, serviceRadiusKm: 20 }),
+      ]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('allows an unmeasurable distance against a hub radius, as it did before', async () => {
+      // A commercial boundary, not a safety one. Refusing what cannot be measured would
+      // reject orders that succeed today.
+      inventoryRepository.listWarehouses.mockResolvedValue([hub({ serviceRadiusKm: 5 })]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses a perishable the hub cannot reach in time', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(cart([perishable(5)]));
+      addressRepository.findOneForUser.mockResolvedValue(
+        addressFixture({ latitude: 22.3569, longitude: 91.7832 }),
+      );
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        hub({ latitude: 23.7925, longitude: 90.4078 }),
+      ]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message:
+          'We cannot deliver Doi to that address — it needs to stay cold over a shorter distance. Remove it to continue.',
+      });
+    });
+
+    it('names the blocking item so the customer knows what to remove', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(cart([cartLine(), perishable(1)]));
+      addressRepository.findOneForUser.mockResolvedValue(
+        addressFixture({ latitude: 22.3569, longitude: 91.7832 }),
+      );
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        hub({ latitude: 23.7925, longitude: 90.4078 }),
+      ]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok === false && result.message).toContain('Doi');
+    });
+
+    it('falls back to the district when a perishable distance cannot be measured', async () => {
+      // Coordinates are optional, so treating unknown as fine would leave the cold-chain
+      // limit decorative — which is the state this replaces.
+      cartRepository.findOrCreate.mockResolvedValue(cart([perishable(5)]));
+      addressRepository.findOneForUser.mockResolvedValue(addressFixture({ district: 'Khulna' }));
+      inventoryRepository.listWarehouses.mockResolvedValue([hub({ district: 'Dhaka' })]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(false);
+    });
+
+    it('allows a perishable in the same district when distance is unmeasurable', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(cart([perishable(5)]));
+      addressRepository.findOneForUser.mockResolvedValue(addressFixture({ district: 'Dhaka' }));
+      inventoryRepository.listWarehouses.mockResolvedValue([hub({ district: 'Dhaka' })]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('never applies a cold-chain limit to a non-perishable', async () => {
+      addressRepository.findOneForUser.mockResolvedValue(addressFixture({ district: 'Khulna' }));
+      inventoryRepository.listWarehouses.mockResolvedValue([hub({ district: 'Dhaka' })]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('ignores a perishable that declares no limit', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(cart([perishable(null)]));
+      addressRepository.findOneForUser.mockResolvedValue(addressFixture({ district: 'Khulna' }));
+      inventoryRepository.listWarehouses.mockResolvedValue([hub({ district: 'Dhaka' })]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('tries the next hub when the first cannot keep a perishable cold', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(cart([perishable(5)]));
+      addressRepository.findOneForUser.mockResolvedValue(addressFixture({ district: 'Khulna' }));
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        hub({ id: 'wh-dhaka', district: 'Dhaka' }),
+        hub({ id: 'wh-khulna', district: 'Khulna' }),
+      ]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+      expect(repository.place.mock.calls[0][0].warehouseId).toBe('wh-khulna');
+    });
+    it('skips a hub that cannot hold the product condition, whatever the distance', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(cart([perishable(null)]));
+      addressRepository.findOneForUser.mockResolvedValue(addressFixture({ district: 'Dhaka' }));
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        hub({ district: 'Dhaka', storageTypes: [StorageType.AMBIENT] }),
+      ]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(false);
+      expect(repository.place).not.toHaveBeenCalled();
+    });
+
+    it('picks the hub that can hold the condition over one that cannot', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(cart([perishable(null)]));
+      addressRepository.findOneForUser.mockResolvedValue(addressFixture({ district: 'Dhaka' }));
+      inventoryRepository.listWarehouses.mockResolvedValue([
+        hub({ id: 'wh-dry', district: 'Dhaka', storageTypes: [StorageType.AMBIENT] }),
+        hub({ id: 'wh-chilled', district: 'Dhaka', storageTypes: [StorageType.CHILLED] }),
+      ]);
+
+      const result = await service.placeOrder(customer, placeDto());
+
+      expect(result.ok).toBe(true);
+      expect(repository.place.mock.calls[0][0].warehouseId).toBe('wh-chilled');
     });
   });
 

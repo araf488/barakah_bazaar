@@ -1,7 +1,10 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsBoolean,
+  IsEnum,
   IsInt,
   IsLatitude,
   IsLongitude,
@@ -12,6 +15,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { StorageType } from '../../../infra/prisma/prisma-client';
 import { TrimString } from '../../../common/dto/trim.decorator';
 import { POST_CODE_PATTERN, UserConstants } from '../../user/user.constants';
 import { InventoryConstants } from '../inventory.constants';
@@ -116,6 +120,17 @@ export class CreateWarehouseDto {
   @IsInt()
   @Min(1)
   serviceRadiusKm?: number | null;
+
+  @ApiPropertyOptional({
+    enum: StorageType,
+    isArray: true,
+    description: 'Conditions this hub can hold. Defaults to AMBIENT alone.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsEnum(StorageType, { each: true })
+  storageTypes?: StorageType[];
 }
 
 export class UpdateWarehouseDto extends PartialType(CreateWarehouseDto, {
@@ -136,6 +151,7 @@ export class WarehouseDto {
   @ApiPropertyOptional({ nullable: true }) latitude!: number | null;
   @ApiPropertyOptional({ nullable: true }) longitude!: number | null;
   @ApiPropertyOptional({ nullable: true }) serviceRadiusKm!: number | null;
+  @ApiProperty({ enum: StorageType, isArray: true }) storageTypes!: StorageType[];
   @ApiProperty() isActive!: boolean;
 }
 
