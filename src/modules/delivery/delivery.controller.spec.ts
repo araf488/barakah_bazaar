@@ -52,12 +52,19 @@ describe('DeliveryController', () => {
 });
 
 describe('AdminDeliveryController', () => {
-  let zones: { list: jest.Mock; create: jest.Mock; update: jest.Mock };
+  let zones: Record<string, jest.Mock>;
   let logger: jest.Mocked<PinoLogger>;
   let controller: AdminDeliveryController;
 
   beforeEach(() => {
-    zones = { list: jest.fn(), create: jest.fn(), update: jest.fn() };
+    zones = {
+      list: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      listSlots: jest.fn(),
+      createSlot: jest.fn(),
+      updateSlot: jest.fn(),
+    };
     logger = createMockLogger();
     controller = new AdminDeliveryController(zones as unknown as AdminDeliveryService, logger);
   });
@@ -117,5 +124,89 @@ describe('AdminDeliveryController', () => {
     );
 
     expect(logger.error.mock.calls[0][0]).toMatchObject({ zoneId: 'zone-1' });
+  });
+
+  describe('delivery windows', () => {
+    const slot = {
+      id: 'slot-1',
+      warehouseId: 'wh-1',
+      labelEn: 'Morning 9-11',
+      startMinute: 540,
+      endMinute: 660,
+      capacity: 20,
+    };
+
+    const upsert = (overrides = {}) => ({
+      warehouseId: 'wh-1',
+      labelEn: 'Morning 9-11',
+      startMinute: 540,
+      endMinute: 660,
+      daysOfWeek: [0, 1, 2],
+      capacity: 20,
+      ...overrides,
+    });
+
+    it('lists every window across all hubs', async () => {
+      zones.listSlots.mockResolvedValue({ ok: true, data: [slot] });
+
+      expect(await controller.listSlots()).toEqual([slot]);
+    });
+
+    it('turns unreadable windows into a 503', async () => {
+      zones.listSlots.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'Could not load delivery pricing. Please try again.',
+      });
+
+      await expect(controller.listSlots()).rejects.toMatchObject({
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+      });
+    });
+
+    it('passes the actor through when creating, so the audit row names them', async () => {
+      zones.createSlot.mockResolvedValue({ ok: true, data: slot });
+
+      await controller.createSlot(staff, upsert());
+
+      expect(zones.createSlot).toHaveBeenCalledWith(staff, upsert());
+    });
+
+    it('turns an inverted window into a 400', async () => {
+      zones.createSlot.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'A delivery window must end after it starts.',
+      });
+
+      await expect(
+        controller.createSlot(staff, upsert({ startMinute: 660, endMinute: 540 }) as never),
+      ).rejects.toThrow(HttpException);
+    });
+
+    it('passes the actor and the id through when updating', async () => {
+      zones.updateSlot.mockResolvedValue({ ok: true, data: slot });
+
+      await controller.updateSlot(staff, 'slot-1', upsert());
+
+      expect(zones.updateSlot).toHaveBeenCalledWith(staff, 'slot-1', upsert());
+    });
+
+    it('logs with the slot id when an update throws', async () => {
+      zones.updateSlot.mockRejectedValue(new Error('boom'));
+
+      await expect(controller.updateSlot(staff, 'slot-1', upsert() as never)).rejects.toThrow(
+        'boom',
+      );
+
+      expect(logger.error.mock.calls[0][0]).toMatchObject({ slotId: 'slot-1' });
+    });
+
+    it('logs when a create throws', async () => {
+      zones.createSlot.mockRejectedValue(new Error('boom'));
+
+      await expect(controller.createSlot(staff, upsert() as never)).rejects.toThrow('boom');
+      expect(logger.error).toHaveBeenCalled();
+    });
   });
 });

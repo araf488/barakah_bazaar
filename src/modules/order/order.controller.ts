@@ -20,6 +20,9 @@ import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { CancelOrderDto, OrderDto, OrderQueryDto, PlaceOrderDto } from './dto/order.dto';
 import { OrderConstants } from './order.constants';
+import { DeliveryConstants } from '../delivery/delivery.constants';
+import { SlotOccurrenceDto, SlotQueryDto } from '../delivery/dto/slot.dto';
+import { toDateKey } from '../delivery/slot-availability';
 import { OrderService } from './order.service';
 
 /**
@@ -68,6 +71,36 @@ export class OrderController {
       );
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in OrderController.list');
+      throw error;
+    }
+  }
+
+  @Get('delivery-slots')
+  @ApiOperation({ summary: 'Delivery windows available for the current basket and address' })
+  @ApiResponse({ status: HttpStatus.OK, type: [SlotOccurrenceDto] })
+  async deliverySlots(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: SlotQueryDto,
+  ): Promise<SlotOccurrenceDto[]> {
+    try {
+      const occurrences = unwrapOrThrow(
+        await this.orderService.listDeliverySlots(
+          user,
+          query.addressId,
+          query.days ?? DeliveryConstants.SlotHorizonDays,
+        ),
+      );
+
+      return occurrences.map((occurrence) => ({
+        slotId: occurrence.slotId,
+        date: toDateKey(occurrence.date),
+        startMinute: occurrence.startMinute,
+        endMinute: occurrence.endMinute,
+        remaining: occurrence.remaining,
+        supportsPerishable: occurrence.supportsPerishable,
+      }));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in OrderController.deliverySlots');
       throw error;
     }
   }

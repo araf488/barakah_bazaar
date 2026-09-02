@@ -15,6 +15,24 @@ const staff: AuthenticatedUser = {
   email: 'ops@barakahbazaar.com.bd',
 };
 
+const slotRow = (overrides = {}) => ({
+  id: 'slot-1',
+  warehouseId: 'wh-1',
+  labelEn: 'Morning 9-11',
+  labelBn: null,
+  startMinute: 540,
+  endMinute: 660,
+  daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+  capacity: 20,
+  cutoffMinutes: 120,
+  supportsPerishable: true,
+  isActive: true,
+  sortOrder: 1,
+  createdAt: new Date('2026-09-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-09-01T00:00:00.000Z'),
+  ...overrides,
+});
+
 const zoneRow = (overrides = {}) => ({
   id: 'zone-1',
   nameEn: 'Inside Dhaka',
@@ -37,6 +55,9 @@ describe('AdminDeliveryService', () => {
     findDefault: jest.Mock;
     findConflictingRules: jest.Mock;
     createAudited: jest.Mock;
+    findAllSlots: jest.Mock;
+    createSlotAudited: jest.Mock;
+    updateSlotAudited: jest.Mock;
     updateAudited: jest.Mock;
   };
   let geo: {
@@ -55,6 +76,9 @@ describe('AdminDeliveryService', () => {
       findDefault: jest.fn().mockResolvedValue(undefined),
       findConflictingRules: jest.fn().mockResolvedValue([]),
       createAudited: jest.fn().mockResolvedValue(zoneRow()),
+      findAllSlots: jest.fn().mockResolvedValue([]),
+      createSlotAudited: jest.fn().mockResolvedValue(slotRow()),
+      updateSlotAudited: jest.fn().mockResolvedValue(slotRow()),
       updateAudited: jest.fn().mockResolvedValue(zoneRow()),
     };
     geo = {
@@ -260,6 +284,117 @@ describe('AdminDeliveryService', () => {
       const result = await service.list(false);
 
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe('delivery windows', () => {
+    const slotDto = (overrides = {}) => ({
+      warehouseId: '11111111-1111-1111-1111-111111111111',
+      labelEn: 'Morning 9-11',
+      startMinute: 540,
+      endMinute: 660,
+      daysOfWeek: [0, 1, 2],
+      capacity: 20,
+      cutoffMinutes: 120,
+      supportsPerishable: true,
+      ...overrides,
+    });
+
+    it('creates a window with its audit row', async () => {
+      const result = await service.createSlot(staff, slotDto());
+
+      expect(result.ok).toBe(true);
+      expect(repository.createSlotAudited.mock.calls[0][0]).toMatchObject({
+        startMinute: 540,
+        endMinute: 660,
+        capacity: 20,
+        supportsPerishable: true,
+      });
+    });
+
+    it('refuses a window that ends before it starts', async () => {
+      const result = await service.createSlot(staff, slotDto({ startMinute: 660, endMinute: 540 }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'A delivery window must end after it starts.',
+      });
+      expect(repository.createSlotAudited).not.toHaveBeenCalled();
+    });
+
+    it('refuses a cutoff longer than the time before the window opens', async () => {
+      // Orders would close before the previous day ended — a window nobody can book.
+      const result = await service.createSlot(
+        staff,
+        slotDto({ startMinute: 540, cutoffMinutes: 600 }),
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message:
+          'The cutoff is longer than the time before the window opens, so it could never be booked.',
+      });
+    });
+
+    it('allows a cutoff exactly as long as the lead time', async () => {
+      const result = await service.createSlot(
+        staff,
+        slotDto({ startMinute: 540, cutoffMinutes: 540 }),
+      );
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('defaults an omitted cutoff to none and the van to no cold transport', async () => {
+      await service.createSlot(
+        staff,
+        slotDto({ cutoffMinutes: undefined, supportsPerishable: undefined }),
+      );
+
+      expect(repository.createSlotAudited.mock.calls[0][0]).toMatchObject({
+        cutoffMinutes: 0,
+        supportsPerishable: false,
+      });
+    });
+
+    it('refuses the change when its audit row cannot be written', async () => {
+      repository.createSlotAudited.mockResolvedValue(null);
+
+      const result = await service.createSlot(staff, slotDto());
+
+      expect(result.ok).toBe(false);
+    });
+
+    it('validates coherence on update too', async () => {
+      const result = await service.updateSlot(
+        staff,
+        'slot-1',
+        slotDto({ startMinute: 660, endMinute: 540 }),
+      );
+
+      expect(result.ok).toBe(false);
+      expect(repository.updateSlotAudited).not.toHaveBeenCalled();
+    });
+
+    it('lists every window', async () => {
+      repository.findAllSlots.mockResolvedValue([slotRow()]);
+
+      const result = await service.listSlots();
+
+      expect(result.ok && result.data[0]).toMatchObject({
+        id: 'slot-1',
+        startMinute: 540,
+        capacity: 20,
+        supportsPerishable: true,
+      });
+    });
+
+    it('reports 503 when the windows cannot be read', async () => {
+      repository.findAllSlots.mockResolvedValue(null);
+
+      expect((await service.listSlots()).ok).toBe(false);
     });
   });
 });

@@ -274,4 +274,55 @@ export class DeliveryRepository {
       return null;
     }
   }
+
+  /** Every window, for the admin list. */
+  async findAllSlots(): Promise<DeliverySlot[] | null> {
+    try {
+      return await this.prisma.deliverySlot.findMany({
+        orderBy: [{ warehouseId: 'asc' }, { sortOrder: 'asc' }, { startMinute: 'asc' }],
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in DeliveryRepository.findAllSlots');
+      return null;
+    }
+  }
+
+  async createSlotAudited(
+    data: Prisma.DeliverySlotUncheckedCreateInput,
+    audit: (created: DeliverySlot) => AuditLogWriteData,
+  ): Promise<DeliverySlot | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.deliverySlot.create({ data });
+        await this.auditLog.appendWithin(tx, audit(created));
+        return created;
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'Exception occurred in DeliveryRepository.createSlotAudited',
+      );
+      return null;
+    }
+  }
+
+  async updateSlotAudited(
+    id: string,
+    data: Prisma.DeliverySlotUncheckedUpdateInput,
+    audit: (updated: DeliverySlot) => AuditLogWriteData,
+  ): Promise<DeliverySlot | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.deliverySlot.update({ where: { id }, data });
+        await this.auditLog.appendWithin(tx, audit(updated));
+        return updated;
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, slotId: id },
+        'Exception occurred in DeliveryRepository.updateSlotAudited',
+      );
+      return null;
+    }
+  }
 }

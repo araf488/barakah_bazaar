@@ -20,6 +20,7 @@ import { AdminDeliveryService } from './admin-delivery.service';
 import { DeliveryConstants } from './delivery.constants';
 import { DeliveryService } from './delivery.service';
 import { DeliveryQuoteDto, DeliveryZoneDto, UpsertZoneDto } from './dto/delivery.dto';
+import { DeliverySlotDto, UpsertSlotDto } from './dto/slot.dto';
 import { QuoteDeliveryDto } from './dto/quote-delivery.dto';
 
 /**
@@ -113,6 +114,52 @@ export class AdminDeliveryController {
       this.logger.error(
         { err: error, zoneId: id },
         'Exception occurred in AdminDeliveryController.update',
+      );
+      throw error;
+    }
+  }
+
+  @Get('slots')
+  @ApiOperation({ summary: 'Every delivery window, across all hubs' })
+  @ApiResponse({ status: HttpStatus.OK, type: [DeliverySlotDto] })
+  async listSlots(): Promise<DeliverySlotDto[]> {
+    try {
+      return unwrapOrThrow(await this.zones.listSlots());
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AdminDeliveryController.listSlots');
+      throw error;
+    }
+  }
+
+  @Post('slots')
+  @ApiOperation({ summary: 'Create a delivery window' })
+  @ApiResponse({ status: HttpStatus.CREATED, type: DeliverySlotDto })
+  async createSlot(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Body() dto: UpsertSlotDto,
+  ): Promise<DeliverySlotDto> {
+    try {
+      return unwrapOrThrow(await this.zones.createSlot(actor, dto));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AdminDeliveryController.createSlot');
+      throw error;
+    }
+  }
+
+  @Patch('slots/:id')
+  @ApiOperation({ summary: 'Update a delivery window' })
+  @ApiResponse({ status: HttpStatus.OK, type: DeliverySlotDto })
+  async updateSlot(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpsertSlotDto,
+  ): Promise<DeliverySlotDto> {
+    try {
+      return unwrapOrThrow(await this.zones.updateSlot(actor, id, dto));
+    } catch (error) {
+      this.logger.error(
+        { err: error, slotId: id },
+        'Exception occurred in AdminDeliveryController.updateSlot',
       );
       throw error;
     }

@@ -32,6 +32,11 @@ export const DeliveryMessages = {
     'That delivery slot cannot keep chilled items cold. Please choose a cold-chain slot.',
   /** The window does not belong to the hub that will pack the order. */
   SlotWrongHub: 'That delivery slot is not offered for this order.',
+  /** A window that ends before it starts. */
+  SlotWindowInverted: 'A delivery window must end after it starts.',
+  /** A cutoff so long the window closes before the day it runs. */
+  SlotCutoffTooEarly:
+    'The cutoff is longer than the time before the window opens, so it could never be booked.',
   /** The database could not be read or written. */
   Unavailable: 'Could not load delivery pricing. Please try again.',
   /** The audit row could not be written, so the change was refused. */

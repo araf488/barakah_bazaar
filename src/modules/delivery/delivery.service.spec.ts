@@ -3,6 +3,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
 import { DeliveryRepository } from './delivery.repository';
 import { DeliveryService } from './delivery.service';
+import { occurrenceKey, startOfDay } from './slot-availability';
 
 const zone = (nameEn: string, feePoysha: bigint, freeAbovePoysha: bigint | null = null) => ({
   id: `zone-${nameEn}`,
@@ -35,12 +36,17 @@ const rule = (
 const dhaka = { division: 'Dhaka', district: 'Dhaka', unit: 'Gulshan' };
 
 describe('DeliveryService', () => {
-  let repository: { findCandidates: jest.Mock };
+  let repository: Record<string, jest.Mock>;
   let logger: jest.Mocked<PinoLogger>;
   let service: DeliveryService;
 
   beforeEach(() => {
-    repository = { findCandidates: jest.fn() };
+    repository = {
+      findCandidates: jest.fn(),
+      findSlotsForWarehouse: jest.fn(),
+      countBookings: jest.fn(),
+      findSlotById: jest.fn(),
+    };
     logger = createMockLogger();
     service = new DeliveryService(repository as unknown as DeliveryRepository, logger);
   });
@@ -238,6 +244,209 @@ describe('DeliveryService', () => {
       const result = await service.quote(dhaka, 100000n);
 
       expect(result.ok).toBe(false);
+    });
+  });
+});
+
+describe('DeliveryService slots', () => {
+  let repository: Record<string, jest.Mock>;
+  let logger: jest.Mocked<PinoLogger>;
+  let service: DeliveryService;
+
+  /** Midday today, so "later the same day" stays on today's date. */
+  const noon = (): Date => {
+    const date = new Date();
+    date.setHours(12, 0, 0, 0);
+    return date;
+  };
+
+  /** A window that opens two hours from now, on every weekday. */
+  const openWindow = (overrides = {}) => {
+    const start = new Date();
+    const startMinute = start.getHours() * 60 + start.getMinutes() + 120;
+
+    return {
+      id: 'slot-1',
+      warehouseId: 'wh-1',
+      startMinute,
+      endMinute: startMinute + 60,
+      daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+      capacity: 20,
+      cutoffMinutes: 0,
+      supportsPerishable: true,
+      isActive: true,
+      ...overrides,
+    };
+  };
+
+  beforeEach(() => {
+    repository = {
+      findCandidates: jest.fn(),
+      findSlotsForWarehouse: jest.fn().mockResolvedValue([openWindow()]),
+      countBookings: jest.fn().mockResolvedValue(new Map()),
+      findSlotById: jest.fn().mockResolvedValue(openWindow()),
+    };
+    logger = createMockLogger();
+    service = new DeliveryService(repository as unknown as DeliveryRepository, logger);
+  });
+
+  describe('listSlots', () => {
+    it('asks only for the hub that will pack the order', async () => {
+      await service.listSlots('wh-1', false, 7);
+
+      expect(repository.findSlotsForWarehouse).toHaveBeenCalledWith('wh-1');
+    });
+
+    it('counts bookings from today to the end of the horizon', async () => {
+      await service.listSlots('wh-1', false, 3);
+
+      const [ids, from, to] = repository.countBookings.mock.calls[0] as [string[], Date, Date];
+
+      expect(ids).toEqual(['slot-1']);
+      expect(from.getHours()).toBe(0);
+      expect(Math.round((to.getTime() - from.getTime()) / 86_400_000)).toBe(3);
+    });
+
+    it('reports 503 rather than an empty list when the windows cannot be read', async () => {
+      // An empty list would read as "no windows today" and quietly stop the shop selling.
+      repository.findSlotsForWarehouse.mockResolvedValue(null);
+
+      const result = await service.listSlots('wh-1', false, 7);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'Could not load delivery pricing. Please try again.',
+      });
+    });
+
+    it('reports 503 when the bookings cannot be counted', async () => {
+      repository.countBookings.mockResolvedValue(null);
+
+      const result = await service.listSlots('wh-1', false, 7);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('subtracts the places already taken', async () => {
+      repository.countBookings.mockResolvedValue(
+        new Map([[occurrenceKey('slot-1', startOfDay(new Date())), 18]]),
+      );
+
+      const result = await service.listSlots('wh-1', false, 1);
+
+      expect(result.ok && result.data[0].remaining).toBe(2);
+    });
+
+    it('offers no ambient window to a basket that needs cold', async () => {
+      repository.findSlotsForWarehouse.mockResolvedValue([
+        openWindow({ supportsPerishable: false }),
+      ]);
+
+      const result = await service.listSlots('wh-1', true, 1);
+
+      expect(result.ok && result.data).toEqual([]);
+    });
+
+    it('reports 500 when the repository throws outright', async () => {
+      repository.findSlotsForWarehouse.mockRejectedValue(new Error('boom'));
+
+      const result = await service.listSlots('wh-1', false, 7);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('assertSlotBookable', () => {
+    it('accepts a window that is still open on the chosen date', async () => {
+      expect(await service.assertSlotBookable('slot-1', noon(), 'wh-1', false)).toEqual({
+        ok: true,
+        data: undefined,
+      });
+    });
+
+    it('refuses a window that belongs to another hub', async () => {
+      // No capacity count would catch this: the count would be right, and the van would be
+      // in the wrong city.
+      const result = await service.assertSlotBookable('slot-1', noon(), 'wh-2', false);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'That delivery slot is not offered for this order.',
+      });
+    });
+
+    it('refuses an ambient van for a perishable basket', async () => {
+      repository.findSlotById.mockResolvedValue(openWindow({ supportsPerishable: false }));
+
+      const result = await service.assertSlotBookable('slot-1', noon(), 'wh-1', true);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.CONFLICT);
+    });
+
+    it('refuses a window that has been switched off', async () => {
+      repository.findSlotById.mockResolvedValue(openWindow({ isActive: false }));
+
+      const result = await service.assertSlotBookable('slot-1', noon(), 'wh-1', false);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'That delivery slot is no longer available. Please choose another.',
+      });
+    });
+
+    it('refuses a window that no longer exists', async () => {
+      repository.findSlotById.mockResolvedValue(undefined);
+
+      const result = await service.assertSlotBookable('slot-1', noon(), 'wh-1', false);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.CONFLICT);
+    });
+
+    it('reports 503 when the window cannot be read, rather than refusing the order', async () => {
+      repository.findSlotById.mockResolvedValue(null);
+
+      const result = await service.assertSlotBookable('slot-1', noon(), 'wh-1', false);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('refuses a date the window does not run on', async () => {
+      const wrongDay = new Date();
+      wrongDay.setDate(wrongDay.getDate() + 1);
+      repository.findSlotsForWarehouse.mockResolvedValue([
+        openWindow({ daysOfWeek: [new Date().getDay()] }),
+      ]);
+
+      const result = await service.assertSlotBookable('slot-1', wrongDay, 'wh-1', false);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.CONFLICT);
+    });
+
+    it('refuses a window whose last place went between browsing and paying', async () => {
+      // This is the check that counts: availability was computed when the page opened.
+      repository.countBookings.mockResolvedValue(
+        new Map([[occurrenceKey('slot-1', startOfDay(new Date())), 20]]),
+      );
+
+      const result = await service.assertSlotBookable('slot-1', noon(), 'wh-1', false);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'That delivery slot is no longer available. Please choose another.',
+      });
+    });
+
+    it('passes a read failure through rather than calling the window unavailable', async () => {
+      repository.countBookings.mockResolvedValue(null);
+
+      const result = await service.assertSlotBookable('slot-1', noon(), 'wh-1', false);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
     });
   });
 });

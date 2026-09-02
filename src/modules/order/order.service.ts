@@ -27,7 +27,7 @@ import {
   OrderMessages,
 } from './order.constants';
 import { reachWithin } from '../delivery/delivery-reach';
-import { startOfDay } from '../delivery/slot-availability';
+import { SlotOccurrence, startOfDay } from '../delivery/slot-availability';
 import { DeliveryService } from '../delivery/delivery.service';
 import { AppliedDiscount, DiscountBasis, PromotionService } from '../promotion/promotion.service';
 import { NotificationService } from '../notification/notification.service';
@@ -544,6 +544,65 @@ export class OrderService {
     const applied = await this.promotions.apply(dto.promotionCode, basis);
 
     return applied.ok ? serviceOk<AppliedDiscount | null>(applied.data) : applied;
+  }
+
+  /**
+   * Delivery windows this customer can choose for their current basket and address.
+   *
+   * Deliberately on the ORDER service rather than the delivery one: answering it needs the
+   * basket, the address and the hub that would pack it — the same three things checkout uses,
+   * resolved by the same code. A second copy in the delivery module would be a second set of
+   * rules to drift out of step with the one that actually books.
+   */
+  async listDeliverySlots(
+    user: AuthenticatedUser,
+    addressId: string,
+    days: number,
+  ): Promise<ServiceResponse<SlotOccurrence[]>> {
+    try {
+      const owner = await this.authService.resolveActiveUserId(user);
+      if (!owner.ok) {
+        return owner;
+      }
+
+      const cart = await this.sources.carts.findOrCreate(owner.data);
+
+      if (cart === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      const address = await this.sources.addresses.findOneForUser(owner.data, addressId);
+
+      if (address === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      if (address === undefined) {
+        // Same message checkout gives, so an address deleted in another tab reads the same
+        // whether the customer was picking a slot or paying.
+        return serviceFail(HttpStatus.NOT_FOUND, OrderMessages.AddressUnavailable);
+      }
+
+      const warehouse = await this.resolveWarehouse(cart, address);
+
+      if (!warehouse.ok) {
+        // No hub can serve this basket to this address, so no window can either. The
+        // refusal already explains why — an empty list would not.
+        return warehouse;
+      }
+
+      return await this.delivery.listSlots(
+        warehouse.data,
+        OrderService.basketNeedsCold(cart),
+        days,
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error, addressId },
+        'Exception occurred in OrderService.listDeliverySlots',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
   }
 
   /**

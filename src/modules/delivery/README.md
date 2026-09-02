@@ -147,6 +147,27 @@ Choosing a slot is **optional**. An order without one is delivered whenever the 
 which is how dry goods have always worked — so adding this changed nothing about existing
 behaviour.
 
+### Endpoints
+
+| Route                                   | Who              | What                                                           |
+| --------------------------------------- | ---------------- | -------------------------------------------------------------- |
+| `GET /orders/delivery-slots?addressId=` | customer         | Windows available for **their current basket** to that address |
+| `GET /admin/delivery/zones/slots`       | SUPER_ADMIN, OPS | Every window across all hubs                                   |
+| `POST` / `PATCH` `…/slots[/:id]`        | SUPER_ADMIN, OPS | Create and edit windows, audited                               |
+
+The customer endpoint lives on the **order** controller, not this module's. Answering it needs
+the basket, the address and the hub that would pack them — the same three things checkout uses,
+resolved by the same code. A copy in the delivery module would be a second set of rules to
+drift out of step with the one that actually books.
+
+It is declared **before** `GET /orders/:id`, and a test enforces that: Nest matches in
+declaration order, so after the wildcard it would hit the uuid route and 400 on `ParseUUIDPipe`
+— a dead endpoint every other test would pass straight over.
+
+When no hub can serve the basket to that address, the endpoint **refuses with the reason**
+rather than returning an empty list. Empty reads as "no windows today"; unreachable is a
+different problem with a different fix.
+
 ### Re-checked at checkout
 
 Availability is computed when the customer opens the page. Between then and pressing pay, the

@@ -87,7 +87,7 @@ describe('OrderService', () => {
   let inventoryRepository: Record<string, jest.Mock>;
   let authService: { resolveActiveUserId: jest.Mock };
   let notifications: { notifyOrderStatus: jest.Mock };
-  let delivery: { resolveFee: jest.Mock; assertSlotBookable: jest.Mock };
+  let delivery: { resolveFee: jest.Mock; assertSlotBookable: jest.Mock; listSlots: jest.Mock };
   let promotions: { apply: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: OrderService;
@@ -123,6 +123,7 @@ describe('OrderService', () => {
     promotions = { apply: jest.fn() };
     delivery = {
       assertSlotBookable: jest.fn().mockResolvedValue({ ok: true, data: undefined }),
+      listSlots: jest.fn().mockResolvedValue({ ok: true, data: [] }),
       resolveFee: jest.fn().mockResolvedValue({
         ok: true,
         data: { feePoysha: 6000n, zone: { nameEn: 'Inside Dhaka' }, isFree: false },
@@ -521,6 +522,84 @@ describe('OrderService', () => {
 
       expect(result.ok).toBe(true);
       expect(repository.place.mock.calls[0][0].warehouseId).toBe('wh-chilled');
+    });
+  });
+
+  describe('listDeliverySlots', () => {
+    it('resolves the hub the same way checkout would, then asks it for windows', async () => {
+      await service.listDeliverySlots(customer, 'address-1', 7);
+
+      expect(delivery.listSlots).toHaveBeenCalledWith('wh-1', false, 7);
+    });
+
+    it('tells the slot lookup when the basket needs cold transport', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(
+        cart([
+          cartLine({
+            variant: {
+              sku: 'DOI-500',
+              nameEn: '500g',
+              pricePoysha: 125000n,
+              product: {
+                nameEn: 'Doi',
+                nameBn: 'দই',
+                isPerishable: true,
+                maxDeliveryDistanceKm: null,
+                storageType: StorageType.CHILLED,
+              },
+            },
+          }),
+        ]),
+      );
+
+      await service.listDeliverySlots(customer, 'address-1', 7);
+
+      expect(delivery.listSlots.mock.calls[0][1]).toBe(true);
+    });
+
+    it('explains why rather than returning an empty list when no hub can serve it', async () => {
+      // An empty list reads as "no windows today"; the refusal says the address is
+      // unreachable, which is a different problem with a different fix.
+      inventoryRepository.listWarehouses.mockResolvedValue([]);
+
+      const result = await service.listDeliverySlots(customer, 'address-1', 7);
+
+      expect(result.ok).toBe(false);
+      expect(delivery.listSlots).not.toHaveBeenCalled();
+    });
+
+    it('reports 404 for an address that is not the caller own', async () => {
+      addressRepository.findOneForUser.mockResolvedValue(undefined);
+
+      const result = await service.listDeliverySlots(customer, 'address-1', 7);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.NOT_FOUND);
+    });
+
+    it('reports 503 when the basket cannot be read', async () => {
+      cartRepository.findOrCreate.mockResolvedValue(null);
+
+      const result = await service.listDeliverySlots(customer, 'address-1', 7);
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('passes the windows through untouched', async () => {
+      const occurrences = [
+        {
+          slotId: 'slot-1',
+          date: new Date(2026, 8, 3),
+          startMinute: 540,
+          endMinute: 660,
+          remaining: 4,
+          supportsPerishable: true,
+        },
+      ];
+      delivery.listSlots.mockResolvedValue({ ok: true, data: occurrences });
+
+      const result = await service.listDeliverySlots(customer, 'address-1', 7);
+
+      expect(result.ok && result.data).toEqual(occurrences);
     });
   });
 

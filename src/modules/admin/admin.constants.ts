@@ -94,6 +94,8 @@ export const AdminAuditActions = {
   ZoneUpdated: 'delivery_zone.updated',
   PromotionCreated: 'promotion.created',
   PromotionUpdated: 'promotion.updated',
+  SlotCreated: 'delivery_slot.created',
+  SlotUpdated: 'delivery_slot.updated',
 } as const;
 
 export type AdminAuditAction = (typeof AdminAuditActions)[keyof typeof AdminAuditActions];
@@ -108,6 +110,7 @@ export const AdminAuditEntities = {
   StaffInvitation: 'StaffInvitation',
   DeliveryZone: 'DeliveryZone',
   Promotion: 'Promotion',
+  DeliverySlot: 'DeliverySlot',
 } as const;
 
 export const AdminMessages = {

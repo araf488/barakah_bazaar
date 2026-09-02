@@ -6,6 +6,7 @@ import {
   formatMessage,
 } from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { DeliverySlot } from '../../infra/prisma/prisma-client';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
 import { AuthService } from '../auth/auth.service';
 import { AdminAuditActions, AdminAuditEntities } from '../admin/admin.constants';
@@ -15,6 +16,7 @@ import { DeliveryConstants, DeliveryMessages } from './delivery.constants';
 import { DeliveryMapper } from './delivery.mapper';
 import { DeliveryRepository, RuleSpec, ZoneWithRules } from './delivery.repository';
 import { DeliveryZoneDto, UpsertZoneDto, ZoneRuleDto } from './dto/delivery.dto';
+import { DeliverySlotDto, UpsertSlotDto } from './dto/slot.dto';
 
 /**
  * Managing delivery pricing.
@@ -289,5 +291,161 @@ export class AdminDeliveryService {
         typeof item === 'bigint' ? Number(item) : item,
       ),
     ) as AuditLogWriteData['before'];
+  }
+
+  async listSlots(): Promise<ServiceResponse<DeliverySlotDto[]>> {
+    try {
+      const slots = await this.repository.findAllSlots();
+
+      if (slots === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, DeliveryMessages.Unavailable);
+      }
+
+      return serviceOk(slots.map((slot) => AdminDeliveryService.toSlotDto(slot)));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AdminDeliveryService.listSlots');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  async createSlot(
+    actor: AuthenticatedUser,
+    dto: UpsertSlotDto,
+  ): Promise<ServiceResponse<DeliverySlotDto>> {
+    try {
+      const staff = await this.authService.resolveActiveUserId(actor);
+      if (!staff.ok) {
+        return staff;
+      }
+
+      const invalid = AdminDeliveryService.assertSlotCoherent(dto);
+      if (invalid) {
+        return invalid;
+      }
+
+      const created = await this.repository.createSlotAudited(
+        AdminDeliveryService.toSlotWriteData(dto),
+        (slot) =>
+          AdminDeliveryService.auditSlot(staff.data, actor, AdminAuditActions.SlotCreated, slot),
+      );
+
+      if (!created) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, DeliveryMessages.AuditTrailUnavailable);
+      }
+
+      return serviceOk(AdminDeliveryService.toSlotDto(created));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AdminDeliveryService.createSlot');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  async updateSlot(
+    actor: AuthenticatedUser,
+    id: string,
+    dto: UpsertSlotDto,
+  ): Promise<ServiceResponse<DeliverySlotDto>> {
+    try {
+      const staff = await this.authService.resolveActiveUserId(actor);
+      if (!staff.ok) {
+        return staff;
+      }
+
+      const invalid = AdminDeliveryService.assertSlotCoherent(dto);
+      if (invalid) {
+        return invalid;
+      }
+
+      const updated = await this.repository.updateSlotAudited(
+        id,
+        AdminDeliveryService.toSlotWriteData(dto),
+        (slot) =>
+          AdminDeliveryService.auditSlot(staff.data, actor, AdminAuditActions.SlotUpdated, slot),
+      );
+
+      if (!updated) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, DeliveryMessages.AuditTrailUnavailable);
+      }
+
+      return serviceOk(AdminDeliveryService.toSlotDto(updated));
+    } catch (error) {
+      this.logger.error(
+        { err: error, slotId: id },
+        'Exception occurred in AdminDeliveryService.updateSlot',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * A window that cannot be delivered.
+   *
+   * The database enforces the same things, but a 400 naming the problem beats a 500 from a
+   * constraint violation the operator cannot read.
+   */
+  private static assertSlotCoherent(dto: UpsertSlotDto): ServiceResponse<never> | null {
+    if (dto.endMinute <= dto.startMinute) {
+      return serviceFail(HttpStatus.BAD_REQUEST, DeliveryMessages.SlotWindowInverted);
+    }
+
+    // A cutoff longer than the window's own start means orders close before the previous day
+    // ends, which is a same-day window nobody can ever book.
+    if ((dto.cutoffMinutes ?? 0) > dto.startMinute) {
+      return serviceFail(HttpStatus.BAD_REQUEST, DeliveryMessages.SlotCutoffTooEarly);
+    }
+
+    return null;
+  }
+
+  private static toSlotWriteData(dto: UpsertSlotDto) {
+    return {
+      warehouseId: dto.warehouseId,
+      labelEn: dto.labelEn,
+      labelBn: dto.labelBn ?? null,
+      startMinute: dto.startMinute,
+      endMinute: dto.endMinute,
+      daysOfWeek: dto.daysOfWeek,
+      capacity: dto.capacity,
+      cutoffMinutes: dto.cutoffMinutes ?? 0,
+      supportsPerishable: dto.supportsPerishable ?? false,
+      isActive: dto.isActive ?? true,
+      sortOrder: dto.sortOrder ?? 0,
+    };
+  }
+
+  private static toSlotDto(slot: DeliverySlot): DeliverySlotDto {
+    return {
+      id: slot.id,
+      warehouseId: slot.warehouseId,
+      labelEn: slot.labelEn,
+      labelBn: slot.labelBn,
+      startMinute: slot.startMinute,
+      endMinute: slot.endMinute,
+      daysOfWeek: slot.daysOfWeek,
+      capacity: slot.capacity,
+      cutoffMinutes: slot.cutoffMinutes,
+      supportsPerishable: slot.supportsPerishable,
+      isActive: slot.isActive,
+      sortOrder: slot.sortOrder,
+    };
+  }
+
+  private static auditSlot(
+    actorId: string,
+    actor: AuthenticatedUser,
+    action: string,
+    slot: DeliverySlot,
+  ): AuditLogWriteData {
+    return {
+      actorId,
+      actorEmail: actor.email ?? null,
+      actorRole: actor.role,
+      action,
+      entityType: AdminAuditEntities.DeliverySlot,
+      entityId: slot.id,
+      before: undefined,
+      after: JSON.parse(JSON.stringify(slot)) as AuditLogWriteData['after'],
+      requestId: null,
+    };
   }
 }
