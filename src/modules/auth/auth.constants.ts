@@ -13,10 +13,120 @@ export const AuthConstants = {
   RoleClaimKey: 'role',
   /** Resource label used in not-found messages about the local user row. */
   UserResourceName: 'User',
+  /** Stored-hash format: scrypt$N$r$p$salt$hash. */
+  PasswordHashAlgorithm: 'scrypt',
+  PasswordHashSeparator: '$',
+  PasswordHashPartCount: 6,
+  PasswordSaltBytes: 16,
+  PasswordKeyBytes: 32,
+  /** scrypt needs 128 * N * r bytes; Node's 32 MiB default maxmem throws above it. */
+  ScryptMaxMemFactor: 128,
+  /**
+   * Node's internal scrypt buffers need a bit more than the textbook 128*N*r bytes (measured
+   * ~72 KiB extra at r=32,p=16, independent of N); without this margin `maxmem` set to exactly
+   * 128*N*r throws "memory limit exceeded" on every call, including at the schema's defaults.
+   */
+  ScryptMaxMemSafetyBytes: 1_048_576,
+  /** Filename of the bundled weak-password denylist, resolved relative to this module. */
+  // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a filename, not a credential
+  CommonPasswordsFileName: 'common-passwords.txt',
+  PasswordMinLength: 12,
+  PasswordMaxLength: 128,
+  PasswordMinDistinctCharacters: 6,
+  PasswordMaxSequentialRun: 6,
+  /** Below this, a name fragment matches too much to be meaningful. */
+  PasswordIdentityMinLength: 4,
+  PasswordBannedWords: ['barakah', 'bazaar'] as readonly string[],
+  /** AES-256-GCM: the algorithm TOTP secrets are sealed with at rest. */
+  CipherAlgorithm: 'aes-256-gcm',
+  CipherIvBytes: 12,
+  /** AES-256 key size. Anything a configured TOTP_ENCRYPTION_KEY decodes to besides this is a misconfiguration. */
+  CipherKeyBytes: 32,
+  CipherSeparator: '.',
+  CipherPartCount: 3,
+  /** Issuer name shown in an authenticator app next to the account label. */
+  TotpIssuer: 'Barakah Bazaar',
+  TotpAlgorithm: 'sha1',
+  TotpDigits: 6,
+  TotpStepSeconds: 30,
+  /** Steps of clock drift tolerated either side of now. */
+  TotpDriftSteps: 1,
+  /** 20 bytes is the RFC 6238 recommendation and encodes to 32 base32 characters. */
+  TotpSecretBytes: 20,
+  TotpMaxFailedAttempts: 5,
+  TotpLockoutMinutes: 15,
+  TotpRecoveryCodeCount: 10,
+  TotpRecoveryCodeBytes: 10,
+  /** Prisma primary key of the single, singleton `auth_settings` row. */
+  AuthSettingsRowId: 'singleton',
+  /** Floor and ceiling for a configurable access-token lifetime, in minutes. */
+  AccessTokenMinMinutes: 5,
+  AccessTokenMaxMinutes: 120,
+  /** HS256: exactly one service both signs and verifies this application's tokens. */
+  JwtAlgorithm: 'HS256',
+  /** Seconds of clock drift tolerated either side of `exp`/`iat` on verification. */
+  JwtClockToleranceSeconds: 30,
+  /** HS256 secret size for the generated fallback signing key, in bytes. */
+  JwtSecretBytes: 32,
+  /** Header a client sends its device id in. */
+  DeviceIdHeader: 'x-device-id',
+  DeviceIdMaxLength: 128,
+  /** Refresh-token entropy, in bytes, before base64url encoding. */
+  RefreshTokenBytes: 32,
+  /**
+   * Hard ceiling on the refresh-token reuse grace window, enforced where the window is used
+   * rather than where it is configured. The stored setting is validated as a non-negative
+   * integer but is not bounded above, and the window is the length of time a rotated-away
+   * token still works — so one mistyped value would otherwise switch replay detection off
+   * for as long as it said. Two minutes is far beyond any plausible request race.
+   */
+  RefreshReuseGraceMaxSeconds: 120,
+  /**
+   * How stale `lastUsedAt` must be before an authenticated request writes the sliding idle
+   * deadline forward. Without a floor, every request on a busy session becomes a write.
+   */
+  SessionTouchIntervalMinutes: 5,
+  /** How long the intermediate MFA and enrolment tokens live. */
+  MfaTokenMinutes: 5,
+  /** Resource label for the 404 on someone else's session. */
+  SessionResourceName: 'Session',
+  /** IPv4 last octet replacement in a session listing. */
+  IpTruncationSuffix: '.0',
+  /** Unit conversions for the token and session deadlines, all of which are configured in minutes. */
+  MillisecondsPerMinute: 60_000,
+  MillisecondsPerSecond: 1_000,
 } as const;
 
 /** Injection tokens for the auth ports. */
 export const AuthTokens = {
   SmsGateway: Symbol('BARAKAH_SMS_GATEWAY'),
   OtpService: Symbol('BARAKAH_OTP_SERVICE'),
+} as const;
+
+/** User-facing auth messages. Changing one of these is an API change. */
+export const AuthMessages = {
+  /** The password is shorter than the 12-character minimum. */
+  PasswordTooShort: 'Your password must be at least 12 characters.',
+  /** The password is longer than the 128-character maximum. */
+  PasswordTooLong: 'Your password must be 128 characters or fewer.',
+  /** The password appears on the bundled list of common passwords. */
+  PasswordTooCommon: 'That password is too common. Please choose a different one.',
+  /** The password contains the account's own email local-part or full name. */
+  PasswordContainsIdentity: 'Your password must not contain your name or email address.',
+  /** The password contains "barakah" or "bazaar". */
+  PasswordContainsShopName: 'Your password must not contain the name of this shop.',
+  /** Fewer than six distinct characters. */
+  PasswordTooFewDistinct: 'Your password must use at least 6 different characters.',
+  /** Six or more sequential characters, ascending or descending. */
+  PasswordSequential: 'Your password must not contain a long run of sequential characters.',
+  /** Wrong password, unknown address, or an unusable refresh token. Deliberately one message. */
+  InvalidCredentials: 'Those sign-in details are not correct.',
+  /** The account exists and the password was right, but the email is not verified. */
+  EmailNotVerified: 'Please verify your email address before signing in.',
+  /** Login or refresh arrived without the X-Device-Id header. */
+  DeviceIdRequired: 'This client must identify its device.',
+  /** A second factor is needed to finish signing in. */
+  MfaRequired: 'Enter the code from your authenticator app.',
+  /** Too many wrong codes. */
+  MfaLocked: 'Too many incorrect codes. Try again in 15 minutes.',
 } as const;

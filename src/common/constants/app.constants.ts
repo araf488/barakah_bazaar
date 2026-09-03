@@ -33,5 +33,20 @@ export const PaginationDefaults = {
   MaxLimit: 100,
 } as const;
 
+/**
+ * Prisma error codes this application classifies rather than treats as faults.
+ *
+ * A code here means the database reported something a caller can act on, so the repository
+ * returns it as data at a log level below `error` — reserving `error` (and its stack trace)
+ * for the faults that actually need looking at.
+ */
+export const PrismaErrorCodes = {
+  /**
+   * An `update` or `delete` matched no row. On a conditional write that means the condition
+   * did not hold, not that anything is broken.
+   */
+  RecordNotFound: 'P2025',
+} as const;
+
 /** Shutdown grace period, in milliseconds, for in-flight requests. */
 export const ShutdownGracePeriodMs = 10_000;

@@ -51,6 +51,22 @@ describe('validateEnv', () => {
     it('defaults the SMS provider to noop so tests spend no credits', () => {
       expect(validateEnv({}).SMS_PROVIDER).toBe('noop');
     });
+
+    it('defaults the identity vars, so a fresh clone still boots', () => {
+      const env = validateEnv({});
+
+      expect(env.JWT_SECRET).toBeUndefined();
+      expect(env.JWT_ISSUER).toBe('barakah-bazaar-api');
+      expect(env.JWT_AUDIENCE).toBe('barakah-bazaar');
+      expect(env.TOTP_ENCRYPTION_KEY).toBeUndefined();
+      expect(env.SCRYPT_COST_LOG2).toBe(15);
+      expect(env.SCRYPT_BLOCK_SIZE).toBe(8);
+      expect(env.SCRYPT_PARALLELISM).toBe(3);
+      expect(env.AUTH_RATE_LIMIT).toBe(10);
+      expect(env.AUTH_SETTINGS_CACHE_SECONDS).toBe(60);
+      expect(env.SESSION_TOUCH_INTERVAL_MINUTES).toBe(5);
+      expect(env.APP_PUBLIC_BASE_URL).toBe('http://localhost:3000');
+    });
   });
 
   describe('coercion', () => {
@@ -82,6 +98,11 @@ describe('validateEnv', () => {
 
     it('rejects a malformed Supabase URL', () => {
       expect(() => validateEnv({ SUPABASE_URL: 'not-a-url' })).toThrow(/SUPABASE_URL/);
+    });
+
+    it('rejects a SCRYPT_COST_LOG2 outside 12-20', () => {
+      expect(() => validateEnv({ SCRYPT_COST_LOG2: '11' })).toThrow(/SCRYPT_COST_LOG2/);
+      expect(() => validateEnv({ SCRYPT_COST_LOG2: '21' })).toThrow(/SCRYPT_COST_LOG2/);
     });
 
     it('reports every problem in one message', () => {

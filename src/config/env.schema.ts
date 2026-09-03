@@ -94,6 +94,22 @@ const baseEnvSchema = z.object({
   GEOAPIFY_API_KEY: z.string().min(1).optional(),
   /** Requests per minute, per IP, allowed against the outbound geocoding proxies. */
   GEOCODING_RATE_LIMIT: z.coerce.number().int().positive().default(30),
+
+  // ── Identity ──────────────────────────────────────────────────────────────
+  /** HS256 signing secret. Absent, a random one is generated per boot with a warning. */
+  JWT_SECRET: z.string().min(32).optional(),
+  JWT_ISSUER: z.string().min(1).default('barakah-bazaar-api'),
+  JWT_AUDIENCE: z.string().min(1).default('barakah-bazaar'),
+  /** base64, 32 bytes. Encrypts TOTP secrets at rest. */
+  TOTP_ENCRYPTION_KEY: z.string().min(1).optional(),
+  SCRYPT_COST_LOG2: z.coerce.number().int().min(12).max(20).default(15),
+  SCRYPT_BLOCK_SIZE: z.coerce.number().int().min(1).max(32).default(8),
+  SCRYPT_PARALLELISM: z.coerce.number().int().min(1).max(16).default(3),
+  AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(10),
+  AUTH_SETTINGS_CACHE_SECONDS: z.coerce.number().int().min(0).default(60),
+  SESSION_TOUCH_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(5),
+  /** Base for verification and reset links. NEVER derived from the request Host header. */
+  APP_PUBLIC_BASE_URL: z.url().default('http://localhost:3000'),
 });
 
 export type Env = z.infer<typeof baseEnvSchema>;

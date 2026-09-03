@@ -36,6 +36,16 @@ export default tseslint.config(
       // ── Hygiene that otherwise accumulates during refactors ────────────────
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-floating-promises': 'error',
+      // `return somePromise` inside a try/catch resolves *after* the catch has gone out of
+      // scope, so a rejection escapes the very handler the method appears to have. Every
+      // service and repository here wraps its body in try/catch, which makes this the one
+      // rule that mechanically enforces the "no exception escapes the layer" guarantee.
+      //
+      // `error-handling-correctness-only` rather than `in-try-catch`: both enforce the await
+      // that matters — inside a try/catch — and this one stays silent about the redundant
+      // `return await` in ordinary contexts, of which the pre-existing modules hold 30 across
+      // eight of them. Tightening to `in-try-catch` is this one word plus an `--fix` sweep.
+      '@typescript-eslint/return-await': ['error', 'error-handling-correctness-only'],
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/explicit-member-accessibility': [
         'error',

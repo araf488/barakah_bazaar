@@ -49,6 +49,9 @@ ALTER TABLE public.promotions             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.promotion_redemptions  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews                ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_slots         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sessions               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.auth_settings          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mfa_recovery_codes     ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
@@ -97,6 +100,15 @@ ALTER TABLE public.promotions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.promotion_redemptions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.delivery_slots FORCE ROW LEVEL SECURITY;
+
+-- sessions, auth_settings and mfa_recovery_codes are forced too, and get NO anon/authenticated
+-- policy at all — the same treatment staff_invitations gets. Every row in these three is either
+-- the stored half of a live credential (a session's refresh token hash, a recovery code hash) or
+-- the configuration that governs how those credentials behave. There is no legitimate direct-client
+-- read of any of them: sessions and MFA are managed exclusively through this API's auth endpoints.
+ALTER TABLE public.sessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.auth_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.mfa_recovery_codes FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -147,24 +159,12 @@ CREATE POLICY product_images_public_read
 -- A signed-in user may read their own profile row and their own addresses.
 -- Writes still go through the API so validation and audit logging happen.
 
+-- users_read_own and addresses_read_own are dropped, not replaced: both keyed on
+-- auth.uid(), which can never be populated again once no client holds a Supabase JWT.
+-- Profile and address reads go through this API now, which resolves ownership from its
+-- own session, not a Supabase-issued token.
 DROP POLICY IF EXISTS users_read_own ON public.users;
-CREATE POLICY users_read_own
-  ON public.users FOR SELECT
-  TO authenticated
-  USING (supabase_user_id = auth.uid());
-
 DROP POLICY IF EXISTS addresses_read_own ON public.addresses;
-CREATE POLICY addresses_read_own
-  ON public.addresses FOR SELECT
-  TO authenticated
-  USING (
-    addresses.deleted_at IS NULL
-    AND EXISTS (
-      SELECT 1 FROM public.users u
-      WHERE u.id = addresses.user_id
-        AND u.supabase_user_id = auth.uid()
-    )
-  );
 
 DROP POLICY IF EXISTS carts_read_own ON public.carts;
 CREATE POLICY carts_read_own
@@ -264,6 +264,13 @@ CREATE POLICY reviews_read_published
 -- staff_invitations deliberately gets NO policy. Every row is a pending permission grant,
 -- and token_hash is the stored half of a live credential: a client that could read this table
 -- could enumerate open invitations, and one that could write could grant itself a role.
+
+-- sessions, auth_settings and mfa_recovery_codes deliberately get NO policy either, for the
+-- same reason as staff_invitations: refresh_token_hash and code_hash are each the stored half
+-- of a live credential, and auth_settings is the configuration that decides how long every
+-- credential in the system stays valid. A client that could read sessions could enumerate a
+-- user's devices; one that could write auth_settings could extend its own session forever.
+-- These are managed exclusively by this API's auth endpoints, never by a direct client read.
 
 -- payment_transactions deliberately gets NO policy. It is the money ledger: it names the
 -- staff member who took the cash, carries gateway references usable in a dispute, and a
