@@ -22,11 +22,18 @@ import { OrderRepository } from './order.repository';
 import { OrderService } from './order.service';
 
 const customer: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: '11111111-1111-1111-1111-111111111111',
+  sessionId: 'session-1',
+  email: 'test@example.com',
   role: UserRole.CUSTOMER,
 };
 
-const staff: AuthenticatedUser = { supabaseUserId: 'sub-2', role: UserRole.OPS };
+const staff: AuthenticatedUser = {
+  userId: 'sub-2',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.OPS,
+};
 
 const cartLine = (overrides = {}) => ({
   variantId: 'var-1',

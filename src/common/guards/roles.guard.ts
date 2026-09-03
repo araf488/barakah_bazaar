@@ -7,7 +7,7 @@ import { ErrorMessages } from '../constants/error-messages.constants';
 import { AuthenticatedUser } from '../types/authenticated-user';
 
 /**
- * Enforces `@Roles(...)`. Runs after SupabaseAuthGuard, so a request reaching
+ * Enforces `@Roles(...)`. Runs after SessionAuthGuard, so a request reaching
  * it is already authenticated; a route with no `@Roles` metadata is open to
  * any authenticated caller.
  */

@@ -1,13 +1,15 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
+import { AuthThrottlerGuard } from './common/guards/auth-throttler.guard';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { RolesGuard } from './common/guards/roles.guard';
-import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
+import { SessionAuthGuard } from './common/guards/session-auth.guard';
 import { Env, validateEnv } from './config';
 import { buildLoggerParams } from './config/logger.config';
+import { buildThrottlerOptions } from './config/throttler.config';
 import { PrismaModule } from './infra/prisma/prisma.module';
 import { QueueModule } from './infra/redis/queue.module';
 import { SupabaseModule } from './infra/supabase/supabase.module';
@@ -30,8 +32,9 @@ import { UserModule } from './modules/user/user.module';
  * Modular monolith root (plan §2). New feature modules are added to `imports`;
  * they get Prisma, Supabase and the logger for free because those are global.
  *
- * Guard order matters: SupabaseAuthGuard establishes *who* is calling before
- * RolesGuard decides *whether* they may.
+ * Guard order matters: SessionAuthGuard establishes *who* is calling — from this
+ * application's own session, not a third-party token — before RolesGuard decides *whether*
+ * they may.
  */
 @Module({
   imports: [
@@ -54,17 +57,16 @@ import { UserModule } from './modules/user/user.module';
         }),
     }),
 
-    // Outbound-proxy rate limiting. Only routes that carry @Throttle are limited; the
-    // dataset endpoints read memory and stay unmetered.
+    // Named rate-limit buckets, checked by AuthThrottlerGuard below for every request unless a
+    // route opts out with @SkipThrottle. 'geocoding' guards the outbound map-search proxies;
+    // 'auth' guards login and MFA verification against brute force.
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService<Env, true>) => [
-        {
-          name: 'geocoding',
-          ttl: 60_000,
-          limit: config.get('GEOCODING_RATE_LIMIT', { infer: true }),
-        },
-      ],
+      useFactory: (config: ConfigService<Env, true>) =>
+        buildThrottlerOptions({
+          GEOCODING_RATE_LIMIT: config.get('GEOCODING_RATE_LIMIT', { infer: true }),
+          AUTH_RATE_LIMIT: config.get('AUTH_RATE_LIMIT', { infer: true }),
+        }),
     }),
 
     // Infrastructure
@@ -90,9 +92,11 @@ import { UserModule } from './modules/user/user.module';
   ],
   providers: [
     // Ahead of authentication: an unauthenticated flood should be rejected before it costs
-    // a token verification, and the geocoding proxies are @Public().
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
-    { provide: APP_GUARD, useClass: SupabaseAuthGuard },
+    // a token verification, and the geocoding proxies are @Public(). AuthThrottlerGuard
+    // replaces the library's default ThrottlerGuard so every named bucket — 'geocoding' and
+    // 'auth' alike — is tracked by IP+email rather than IP alone; see its class comment.
+    { provide: APP_GUARD, useClass: AuthThrottlerGuard },
+    { provide: APP_GUARD, useClass: SessionAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
   ],

@@ -9,7 +9,12 @@ import { AdminDeliveryService } from './admin-delivery.service';
 import { AdminDeliveryController, DeliveryController } from './delivery.controller';
 import { DeliveryService } from './delivery.service';
 
-const staff: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.OPS };
+const staff: AuthenticatedUser = {
+  userId: 'sub-1',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.OPS,
+};
 
 describe('DeliveryController', () => {
   let delivery: { quote: jest.Mock };

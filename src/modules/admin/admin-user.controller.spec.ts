@@ -9,7 +9,9 @@ import { AdminUserService } from './admin-user.service';
 import { AdminUserQueryDto, ChangeRoleDto } from './dto/admin-user.dto';
 
 const staff: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: '11111111-1111-1111-1111-111111111111',
+  sessionId: 'session-1',
+  email: 'test@example.com',
   role: UserRole.SUPER_ADMIN,
 };
 

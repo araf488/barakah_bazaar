@@ -11,8 +11,18 @@ import {
 } from './staff-invitation.controller';
 import { StaffInvitationService } from './staff-invitation.service';
 
-const superAdmin: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.SUPER_ADMIN };
-const invitee: AuthenticatedUser = { supabaseUserId: 'sub-2', role: UserRole.CUSTOMER };
+const superAdmin: AuthenticatedUser = {
+  userId: 'sub-1',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.SUPER_ADMIN,
+};
+const invitee: AuthenticatedUser = {
+  userId: 'sub-2',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.CUSTOMER,
+};
 
 describe('StaffInvitationController', () => {
   let service: {

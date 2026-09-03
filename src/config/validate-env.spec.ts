@@ -81,6 +81,15 @@ describe('validateEnv', () => {
     it('treats an empty string as unset rather than an invalid value', () => {
       expect(validateEnv({ SUPABASE_URL: '' }).SUPABASE_URL).toBeUndefined();
     });
+
+    it('falls back to the default for a coerced numeric field left empty, not zero', () => {
+      // `.env` files carry an empty string, not an absent key, for "unset" — a coerced
+      // numeric field must fall back to its configured default rather than `z.coerce.number()`
+      // reading '' as 0. This is what keeps AuthSettingsService's cache from silently
+      // defaulting to "never cache", which would add a database read to every authenticated
+      // request.
+      expect(validateEnv({ AUTH_SETTINGS_CACHE_SECONDS: '' }).AUTH_SETTINGS_CACHE_SECONDS).toBe(60);
+    });
   });
 
   describe('rejections', () => {

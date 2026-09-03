@@ -120,15 +120,14 @@ export class AdminUserService {
   /**
    * Changes a staff role.
    *
-   * Supabase `app_metadata` is the source of truth and is written FIRST, because the role
-   * reaches this API as a JWT claim and `AuthRepository.upsertFromToken` re-mirrors that
-   * claim on every request — writing only the column would be undone within seconds.
+   * Supabase `app_metadata` is written FIRST, ahead of the local `role` column, purely for
+   * which failure is survivable: the two writes cannot share a transaction, since one is an
+   * HTTP call to another system. If Supabase fails, nothing changed locally either.
    *
-   * The two writes cannot share a transaction: one is an HTTP call to another system. So the
-   * order is chosen for which failure is survivable. If Supabase fails, nothing changed. If
-   * the local write fails afterwards, the identity provider is already authoritative and the
-   * column self-heals on the user's next request — but the AUDIT ROW is lost, which is not
-   * survivable silently, so that case logs everything needed to reconcile and tells the
+   * SessionAuthGuard reads `role` straight from Postgres on every request — this application
+   * trusts no other source for it — so if the *local* write fails after Supabase accepts, there
+   * is no self-heal: the AUDIT ROW is lost and the column is stale until someone retries, which
+   * is not survivable silently. That case logs everything needed to reconcile and tells the
    * operator plainly.
    */
   async changeRole(

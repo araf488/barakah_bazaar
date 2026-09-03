@@ -1,23 +1,18 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import {
-  ErrorMessageTemplates,
-  ErrorMessages,
-  formatMessage,
-} from '../../common/constants/error-messages.constants';
+import { ErrorMessages } from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
 import { AuthMapper } from './auth.mapper';
-import { AuthConstants } from './auth.constants';
 import { AuthRepository } from './auth.repository';
 import { UserProfileDto } from './dto/user-profile.dto';
 
 /**
- * Bridges a verified Supabase token to this system's own user record.
+ * The local half of "who is calling".
  *
- * The token proves identity; this service decides whether that identity may
- * still act — a disabled account holds a perfectly valid token right up to its
- * expiry, so `isActive` has to be checked against the database.
+ * SessionAuthGuard has already read the `users` row and enforced `isActive` by the time any
+ * of this runs — there is no Supabase-era provisioning step left, because a row exchanged for
+ * a third-party token no longer exists as a concept: the local row is created at signup.
  */
 @Injectable()
 export class AuthService {
@@ -26,27 +21,25 @@ export class AuthService {
     @InjectPinoLogger(AuthService.name) private readonly logger: PinoLogger,
   ) {}
 
-  /** Provisions the local user row on first sight, then returns the profile. */
+  /** The caller's own profile. Reads the row the guard already proved exists and is active. */
   async resolveProfile(authenticated: AuthenticatedUser): Promise<ServiceResponse<UserProfileDto>> {
     try {
-      const user = await this.repository.upsertFromToken(authenticated);
+      const user = await this.repository.findById(authenticated.userId);
 
-      if (!user) {
+      if (user === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
 
-      if (!user.isActive) {
-        this.logger.warn(
-          { supabaseUserId: authenticated.supabaseUserId },
-          'Disabled account attempted to authenticate',
-        );
-        return serviceFail(HttpStatus.FORBIDDEN, ErrorMessages.AccountDisabled);
+      if (user === undefined) {
+        // Guarded against by SessionAuthGuard moments earlier — reachable only if the row was
+        // deleted in the gap between the guard's read and this one.
+        return serviceFail(HttpStatus.NOT_FOUND, ErrorMessages.InvalidAccessToken);
       }
 
       return serviceOk(AuthMapper.toProfile(user));
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId },
+        { err: error, userId: authenticated.userId },
         'Exception occurred in AuthService.resolveProfile',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -54,42 +47,14 @@ export class AuthService {
   }
 
   /**
-   * Resolves the local user id for a verified token, without provisioning.
+   * The local user id for the caller.
    *
-   * Deliberately not `resolveProfile`: that upserts on every call, which would turn every
-   * address read into a write. A client that never called `/auth/me` has no local row yet
-   * and gets a 404 saying so.
+   * Keeps its signature from when it was a database lookup, deliberately: about forty call
+   * sites across cart, order, review, payment, inventory, warehouse and admin pass an
+   * AuthenticatedUser to it, and none of them need to change. The guard has already resolved
+   * the row and enforced `isActive`, so there is nothing left to look up.
    */
   async resolveActiveUserId(authenticated: AuthenticatedUser): Promise<ServiceResponse<string>> {
-    try {
-      const user = await this.repository.findBySupabaseId(authenticated.supabaseUserId);
-
-      if (user === null) {
-        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
-      }
-
-      if (user === undefined) {
-        return serviceFail(
-          HttpStatus.NOT_FOUND,
-          formatMessage(ErrorMessageTemplates.NotFound, AuthConstants.UserResourceName),
-        );
-      }
-
-      if (!user.isActive) {
-        this.logger.warn(
-          { supabaseUserId: authenticated.supabaseUserId },
-          'Disabled account attempted an authenticated operation',
-        );
-        return serviceFail(HttpStatus.FORBIDDEN, ErrorMessages.AccountDisabled);
-      }
-
-      return serviceOk(user.id);
-    } catch (error) {
-      this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId },
-        'Exception occurred in AuthService.resolveActiveUserId',
-      );
-      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
-    }
+    return Promise.resolve(serviceOk(authenticated.userId));
   }
 }

@@ -11,8 +11,18 @@ import { EmailSender } from '../notification/ports/email-sender.port';
 import { StaffInvitationRepository } from './staff-invitation.repository';
 import { StaffInvitationService } from './staff-invitation.service';
 
-const superAdmin: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.SUPER_ADMIN };
-const invitee: AuthenticatedUser = { supabaseUserId: 'sub-2', role: UserRole.CUSTOMER };
+const superAdmin: AuthenticatedUser = {
+  userId: 'user-1',
+  sessionId: 'session-1',
+  email: 'boss@barakahbazaar.com.bd',
+  role: UserRole.SUPER_ADMIN,
+};
+const invitee: AuthenticatedUser = {
+  userId: 'user-2',
+  sessionId: 'session-1',
+  email: 'ops@barakahbazaar.com.bd',
+  role: UserRole.CUSTOMER,
+};
 
 const hourFromNow = () => new Date(Date.now() + 60 * 60 * 1000);
 const hourAgo = () => new Date(Date.now() - 60 * 60 * 1000);
@@ -48,7 +58,7 @@ describe('StaffInvitationService', () => {
     findOpenForEmail: jest.Mock;
     findPage: jest.Mock;
   };
-  let users: { findBySupabaseId: jest.Mock; findByEmail: jest.Mock };
+  let users: { findById: jest.Mock; findByEmail: jest.Mock };
   let supabaseAdmin: { setUserRole: jest.Mock };
   let email: RealEmailSender;
   let logger: jest.Mocked<PinoLogger>;
@@ -74,7 +84,7 @@ describe('StaffInvitationService', () => {
       findPage: jest.fn(),
     };
     users = {
-      findBySupabaseId: jest
+      findById: jest
         .fn()
         .mockResolvedValue(userFixture({ id: 'user-1', role: UserRole.SUPER_ADMIN })),
       findByEmail: jest.fn().mockResolvedValue(undefined),
@@ -216,7 +226,7 @@ describe('StaffInvitationService', () => {
 
   describe('accept', () => {
     beforeEach(() => {
-      users.findBySupabaseId.mockResolvedValue(
+      users.findById.mockResolvedValue(
         userFixture({ id: 'user-2', email: 'ops@barakahbazaar.com.bd', role: UserRole.CUSTOMER }),
       );
       repository.findByTokenHash.mockResolvedValue(invitation());
@@ -247,7 +257,7 @@ describe('StaffInvitationService', () => {
 
     it('refuses when the signed-in email is not the invited one', async () => {
       // The check that makes the token safe to email: possession alone is not enough.
-      users.findBySupabaseId.mockResolvedValue(
+      users.findById.mockResolvedValue(
         userFixture({ id: 'user-3', email: 'someone.else@example.com' }),
       );
 
@@ -263,7 +273,7 @@ describe('StaffInvitationService', () => {
     });
 
     it('matches the invited email case-insensitively', async () => {
-      users.findBySupabaseId.mockResolvedValue(
+      users.findById.mockResolvedValue(
         userFixture({ id: 'user-2', email: 'OPS@BarakahBazaar.com.bd' }),
       );
 
@@ -273,7 +283,7 @@ describe('StaffInvitationService', () => {
     });
 
     it('refuses an account with no email at all', async () => {
-      users.findBySupabaseId.mockResolvedValue(userFixture({ id: 'user-2', email: null }));
+      users.findById.mockResolvedValue(userFixture({ id: 'user-2', email: null }));
 
       const result = await service.accept(invitee, { token: 'plain-token' });
 

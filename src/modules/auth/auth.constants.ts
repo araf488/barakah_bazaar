@@ -88,6 +88,12 @@ export const AuthConstants = {
   SessionTouchIntervalMinutes: 5,
   /** How long the intermediate MFA and enrolment tokens live. */
   MfaTokenMinutes: 5,
+  /**
+   * `sessionId` claim for a token signed before any session exists (the intermediate MFA and
+   * enrolment tokens). Empty is honest about there being nothing to name yet, matching the
+   * convention `SessionService` already uses for an absent email claim.
+   */
+  PendingSessionId: '',
   /** Resource label for the 404 on someone else's session. */
   SessionResourceName: 'Session',
   /** IPv4 last octet replacement in a session listing. */
@@ -129,4 +135,11 @@ export const AuthMessages = {
   MfaRequired: 'Enter the code from your authenticator app.',
   /** Too many wrong codes. */
   MfaLocked: 'Too many incorrect codes. Try again in 15 minutes.',
+  /** The TOTP code or recovery code presented does not verify. */
+  InvalidMfaCode: 'That code is not valid.',
+  /** Enabling MFA was requested before `setup` produced a secret to confirm. */
+  MfaSetupRequired: 'Set up two-factor authentication before enabling it.',
+  /** A staff account tried to turn MFA off while `staffMfaRequired` is set. */
+  MfaCannotBeDisabledForStaff:
+    'Two-factor authentication is required for staff accounts and cannot be disabled.',
 } as const;

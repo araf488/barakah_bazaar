@@ -10,7 +10,8 @@ import { AdminDeliveryService } from './admin-delivery.service';
 import { DeliveryRepository } from './delivery.repository';
 
 const staff: AuthenticatedUser = {
-  supabaseUserId: 'sub-1',
+  userId: 'sub-1',
+  sessionId: 'session-1',
   role: UserRole.OPS,
   email: 'ops@barakahbazaar.com.bd',
 };

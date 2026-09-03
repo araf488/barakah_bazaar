@@ -6,7 +6,6 @@ import { SERVICE_VERSION } from '../../common/service-version';
 import { AppConfigService } from '../../config';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
-import { SupabaseJwtVerifier } from '../../infra/supabase/supabase-jwt.verifier';
 import { ComponentStatus, HealthReport } from './health.types';
 
 const SECONDS_PER_MILLISECOND = 1000;
@@ -22,7 +21,6 @@ const SECONDS_PER_MILLISECOND = 1000;
 export class HealthService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly verifier: SupabaseJwtVerifier,
     private readonly supabase: SupabaseAdminService,
     @Inject(ConfigService) private readonly config: AppConfigService,
     @InjectPinoLogger(HealthService.name) private readonly logger: PinoLogger,
@@ -41,7 +39,13 @@ export class HealthService {
         timestamp: new Date().toISOString(),
         checks: {
           database,
-          authentication: this.verifier.isEnabled ? 'up' : 'disabled',
+          // This application signs and verifies its own session tokens (SessionAuthGuard,
+          // AccessTokenService) — there is no third-party identity provider left to be
+          // "unconfigured". What can actually go wrong is JWT_SECRET being unset: the app
+          // still boots and issues working sessions on a random per-process secret, but every
+          // one of them dies silently on the next restart. 'down', not 'disabled': this is a
+          // real operational hazard the operator needs to see, not a deliberately-off feature.
+          authentication: this.config.get('JWT_SECRET', { infer: true }) ? 'up' : 'down',
           storage: this.supabase.isConfigured ? 'up' : 'disabled',
           queue: this.config.get('QUEUE_ENABLED', { infer: true }) ? 'up' : 'disabled',
           // Third-party capabilities, each selected by a <THING>_PROVIDER env enum that

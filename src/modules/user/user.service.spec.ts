@@ -10,7 +10,9 @@ import { UserRepository } from './user.repository';
 import { UserService } from './user.service';
 
 const authenticated: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: '11111111-1111-1111-1111-111111111111',
+  sessionId: 'session-1',
+  email: 'test@example.com',
   role: UserRole.CUSTOMER,
 };
 

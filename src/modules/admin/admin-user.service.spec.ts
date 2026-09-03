@@ -11,7 +11,8 @@ import { AdminUserService } from './admin-user.service';
 import { AdminUserQueryDto } from './dto/admin-user.dto';
 
 const actor: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: 'user-1',
+  sessionId: 'session-1',
   email: 'boss@barakahbazaar.com.bd',
   role: UserRole.SUPER_ADMIN,
 };

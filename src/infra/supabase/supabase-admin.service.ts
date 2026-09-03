@@ -97,15 +97,13 @@ export class SupabaseAdminService {
   }
 
   /**
-   * Writes a staff role into Supabase `app_metadata`, which is the source of truth.
+   * Writes a staff role into Supabase `app_metadata`, kept in step with the local `role`
+   * column, which the caller writes directly right after this call accepts.
    *
-   * The role reaches this API as a JWT claim, so changing the column alone would be undone
-   * on the user's next request: `AuthRepository.upsertFromToken` re-mirrors the claim every
-   * time. This call is therefore the change; the local column follows it.
-   *
-   * The affected user keeps their old role until their access token is refreshed — a JWT
-   * already issued cannot be edited. That window is why `users.isActive` exists and is
-   * checked on every request: revoking access is immediate, changing a role is not.
+   * There is no self-healing path if that local write fails afterwards: SessionAuthGuard
+   * reads `role` straight from Postgres on every request, so the column — not this call — is
+   * this application's own source of truth, and a caller here must reconcile a partial
+   * failure rather than rely on it correcting itself.
    */
   async setUserRole(supabaseUserId: string, role: UserRole): Promise<boolean> {
     try {

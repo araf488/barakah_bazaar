@@ -8,8 +8,18 @@ import { createMockLogger } from '../../../test/support/mocks';
 import { AdminReviewController, ReviewController } from './review.controller';
 import { ReviewService } from './review.service';
 
-const customer: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.CUSTOMER };
-const staff: AuthenticatedUser = { supabaseUserId: 'sub-2', role: UserRole.MARKETING };
+const customer: AuthenticatedUser = {
+  userId: 'sub-1',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.CUSTOMER,
+};
+const staff: AuthenticatedUser = {
+  userId: 'sub-2',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.MARKETING,
+};
 
 describe('ReviewController', () => {
   let reviews: {

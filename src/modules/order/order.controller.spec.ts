@@ -7,7 +7,12 @@ import { SlotQueryDto } from '../delivery/dto/slot.dto';
 import { OrderController } from './order.controller';
 import { OrderService } from './order.service';
 
-const customer: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.CUSTOMER };
+const customer: AuthenticatedUser = {
+  userId: 'sub-1',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.CUSTOMER,
+};
 
 const query = (overrides: Partial<SlotQueryDto> = {}): SlotQueryDto =>
   Object.assign(new SlotQueryDto(), { addressId: 'address-1' }, overrides);

@@ -8,7 +8,8 @@ import { AdminPromotionService } from './admin-promotion.service';
 import { PromotionRepository } from './promotion.repository';
 
 const staff: AuthenticatedUser = {
-  supabaseUserId: 'sub-1',
+  userId: 'sub-1',
+  sessionId: 'session-1',
   role: UserRole.MARKETING,
   email: 'marketing@barakahbazaar.com.bd',
 };

@@ -15,7 +15,9 @@ import { NotificationRepository } from './notification.repository';
 import { NotificationService, OrderNotificationContext } from './notification.service';
 
 const customer: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: '11111111-1111-1111-1111-111111111111',
+  sessionId: 'session-1',
+  email: 'test@example.com',
   role: UserRole.CUSTOMER,
 };
 

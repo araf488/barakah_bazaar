@@ -27,22 +27,31 @@ interface ExecutionContextOptions {
   user?: unknown;
   handlerMetadata?: Record<string, unknown>;
   classMetadata?: Record<string, unknown>;
+  /** Simulated client address, read by guards that bind a session to an IP. */
+  ip?: string;
 }
 
 /** Minimal HTTP ExecutionContext for guard tests. */
 export const createExecutionContext = (
   options: ExecutionContextOptions = {},
-): { context: ExecutionContext; request: Record<string, unknown> } => {
+): {
+  context: ExecutionContext;
+  request: Record<string, unknown>;
+  response: { setHeader: jest.Mock };
+} => {
   const request: Record<string, unknown> = {
     headers: options.headers ?? {},
+    ip: options.ip,
     ...(options.user === undefined ? {} : { user: options.user }),
   };
 
+  const response = { setHeader: jest.fn() };
+
   const context = {
-    switchToHttp: () => ({ getRequest: () => request }),
+    switchToHttp: () => ({ getRequest: () => request, getResponse: () => response }),
     getHandler: () => options.handlerMetadata ?? {},
     getClass: () => options.classMetadata ?? {},
   } as unknown as ExecutionContext;
 
-  return { context, request };
+  return { context, request, response };
 };

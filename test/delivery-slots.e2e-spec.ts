@@ -3,9 +3,15 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { ErrorMessages } from '../src/common/constants/error-messages.constants';
 import { ErrorResponseBody } from '../src/common/filters/global-exception.filter';
-import { AuthenticatedUser } from '../src/common/types/authenticated-user';
 import { UserRole } from '../src/infra/prisma/prisma-client';
-import { SupabaseJwtVerifier } from '../src/infra/supabase/supabase-jwt.verifier';
+import { AuthConstants } from '../src/modules/auth/auth.constants';
+import {
+  AccessTokenClaims,
+  AccessTokenService,
+} from '../src/modules/auth/tokens/access-token.service';
+import { SessionService, ValidatedSession } from '../src/modules/auth/sessions/session.service';
+import { ServiceResponse } from '../src/common/types/service-response';
+import { userFixture } from './support/user-fixtures';
 
 // ConfigModule.forRoot() reads and validates the environment at the moment app.module.ts is
 // imported, not when the module is instantiated — so this has to be at module scope, before a
@@ -28,27 +34,53 @@ const WAREHOUSE_ID = 'a1f4c0de-2b73-4f9a-9c1e-8d5b6a0f3e21';
 const ORDER_SLOTS = '/api/v1/orders/delivery-slots';
 const ADMIN_SLOTS = '/api/v1/admin/delivery/zones/slots';
 
-/** A token this suite's stub verifier rejects, standing in for an expired or forged one. */
+/** A token this suite's stub token service rejects, standing in for an expired or forged one. */
 const REJECTED_TOKEN = 'not-a-real-token';
 
+/** Every authenticated request in this suite identifies as the same device. */
+const DEVICE_ID = 'device-1';
+
 /**
- * Stands in for Supabase, so role enforcement can be exercised without a project.
+ * Stands in for this application's own session stack, so role enforcement can be exercised
+ * with no database.
  *
- * Only signature *verification* is stubbed — the token is the role name. SupabaseAuthGuard,
- * RolesGuard, the routing table, the global ValidationPipe and the exception filter all run
- * for real, which is the point of this file: the service specs already prove the rules, and
- * what stays unproven there is that a request reaches the right handler with the right
- * protection.
+ * The token is the role name, and stage one (AccessTokenService.verify) accepts it only when
+ * a device id is also present — exactly SessionAuthGuard's real contract. Stage two
+ * (SessionService.validate) always succeeds for a token stage one accepted: this suite has
+ * nothing to say about revocation or expiry, which the guard's own unit spec already proves.
+ * SessionAuthGuard, RolesGuard, the routing table, the global ValidationPipe and the exception
+ * filter all run for real, which is the point of this file: the service specs already prove
+ * the rules, and what stays unproven there is that a request reaches the right handler with
+ * the right protection.
  */
-const stubVerifier = {
-  isEnabled: true,
-  currentMode: 'secret' as const,
-  verify: (token: string): Promise<AuthenticatedUser | null> =>
+const stubTokens = {
+  verify: (
+    token: string,
+    deviceId: string | undefined,
+    expected: string,
+  ): Promise<AccessTokenClaims | null> =>
     Promise.resolve(
-      Object.values(UserRole).includes(token as UserRole)
-        ? { supabaseUserId: 'sub-1', role: token as UserRole, email: 'staff@example.com' }
+      deviceId && expected === 'access' && Object.values(UserRole).includes(token as UserRole)
+        ? {
+            userId: 'staff-1',
+            sessionId: 'session-1',
+            role: token as UserRole,
+            email: 'staff@example.com',
+            type: 'access' as const,
+          }
         : null,
     ),
+};
+
+const stubSessions = {
+  validate: (claims: AccessTokenClaims): Promise<ServiceResponse<ValidatedSession>> =>
+    Promise.resolve({
+      ok: true,
+      data: {
+        user: userFixture({ id: claims.userId, email: claims.email, role: claims.role }),
+        sessionId: claims.sessionId,
+      },
+    }),
 };
 
 const slotRow = () => ({
@@ -92,7 +124,9 @@ describe('Delivery slots (HTTP)', () => {
 
   const get = (path: string, role?: UserRole) => {
     const call = request(app.getHttpServer()).get(path);
-    return role ? call.set('Authorization', `Bearer ${role}`) : call;
+    return role
+      ? call.set('Authorization', `Bearer ${role}`).set(AuthConstants.DeviceIdHeader, DEVICE_ID)
+      : call;
   };
 
   beforeAll(async () => {
@@ -104,8 +138,10 @@ describe('Delivery slots (HTTP)', () => {
     adminDelivery = { listSlots: jest.fn(), createSlot: jest.fn(), updateSlot: jest.fn() };
 
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(SupabaseJwtVerifier)
-      .useValue(stubVerifier)
+      .overrideProvider(AccessTokenService)
+      .useValue(stubTokens)
+      .overrideProvider(SessionService)
+      .useValue(stubSessions)
       .overrideProvider(OrderService)
       .useValue(orderService)
       .overrideProvider(AdminDeliveryService)
@@ -362,6 +398,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .post(ADMIN_SLOTS)
         .set('Authorization', `Bearer ${UserRole.CUSTOMER}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody());
 
       expect(response.status).toBe(HttpStatus.FORBIDDEN);
@@ -372,6 +409,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .patch(`${ADMIN_SLOTS}/${SLOT_ID}`)
         .set('Authorization', `Bearer ${UserRole.WAREHOUSE}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody());
 
       expect(response.status).toBe(HttpStatus.FORBIDDEN);
@@ -384,6 +422,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .post(ADMIN_SLOTS)
         .set('Authorization', `Bearer ${UserRole.OPS}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody());
 
       expect(response.status).toBe(HttpStatus.CREATED);
@@ -404,6 +443,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .post(ADMIN_SLOTS)
         .set('Authorization', `Bearer ${UserRole.OPS}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody({ startMinute: 660, endMinute: 540 }));
 
       expect(response.status).toBe(HttpStatus.BAD_REQUEST);
@@ -420,6 +460,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .post(ADMIN_SLOTS)
         .set('Authorization', `Bearer ${UserRole.OPS}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody());
 
       expect(response.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
@@ -442,6 +483,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .post(ADMIN_SLOTS)
         .set('Authorization', `Bearer ${UserRole.OPS}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody(overrides));
 
       expect(response.status).toBe(HttpStatus.BAD_REQUEST);
@@ -455,6 +497,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .patch(`${ADMIN_SLOTS}/${SLOT_ID}`)
         .set('Authorization', `Bearer ${UserRole.SUPER_ADMIN}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody());
 
       expect(response.status).toBe(HttpStatus.OK);
@@ -469,6 +512,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .patch(`${ADMIN_SLOTS}/slot-1`)
         .set('Authorization', `Bearer ${UserRole.OPS}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody());
 
       expect(response.status).toBe(HttpStatus.BAD_REQUEST);
@@ -479,6 +523,7 @@ describe('Delivery slots (HTTP)', () => {
       const response = await request(app.getHttpServer())
         .patch(`${ADMIN_SLOTS}/${SLOT_ID}`)
         .set('Authorization', `Bearer ${UserRole.OPS}`)
+        .set(AuthConstants.DeviceIdHeader, DEVICE_ID)
         .send(validSlotBody({ daysOfWeek: [] }));
 
       expect(response.status).toBe(HttpStatus.BAD_REQUEST);

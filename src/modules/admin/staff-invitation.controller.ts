@@ -131,7 +131,7 @@ export class StaffInvitationAcceptController {
     } catch (error) {
       // The token is deliberately absent from this log line: it is a live credential.
       this.logger.error(
-        { err: error, supabaseUserId: user.supabaseUserId },
+        { err: error, userId: user.userId },
         'Exception occurred in StaffInvitationAcceptController.accept',
       );
       throw error;

@@ -16,7 +16,12 @@ import { PaymentGateway } from './ports/payment-gateway.port';
 import { PaymentRepository } from './payment.repository';
 import { PaymentService } from './payment.service';
 
-const staff: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.OPS };
+const staff: AuthenticatedUser = {
+  userId: 'sub-1',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.OPS,
+};
 
 const order = (overrides = {}) => ({
   id: 'ord-1',

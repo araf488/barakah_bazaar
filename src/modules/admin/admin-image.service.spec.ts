@@ -10,7 +10,8 @@ import { AdminImageService } from './admin-image.service';
 import { AddProductImageDto, ImageUploadUrlDto } from './dto/product-image.dto';
 
 const actor: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: '11111111-1111-1111-1111-111111111111',
+  sessionId: 'session-1',
   email: 'marketing@barakahbazaar.com.bd',
   role: UserRole.MARKETING,
 };

@@ -10,7 +10,8 @@ import { AuditLogRepository } from './audit-log.repository';
 import { AuditLogQueryDto } from './dto/audit-log.dto';
 
 const actor: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: 'user-1',
+  sessionId: 'session-1',
   email: 'ops@barakahbazaar.com.bd',
   role: UserRole.SUPER_ADMIN,
 };
@@ -75,7 +76,12 @@ describe('AuditLogService', () => {
     });
 
     it('records a missing actor email as null rather than dropping the entry', async () => {
-      await service.record(context({ actor: { supabaseUserId: 'sub', role: UserRole.OPS } }));
+      // AuthenticatedUser.email is mandatory; a phone-only account is '', not undefined.
+      await service.record(
+        context({
+          actor: { userId: 'user-2', sessionId: 'session-1', email: '', role: UserRole.OPS },
+        }),
+      );
 
       expect(repository.append.mock.calls[0][0].actorEmail).toBeNull();
     });

@@ -4,7 +4,6 @@ import { UserRole } from '../prisma/prisma-client';
 import { JWTPayload, createRemoteJWKSet, jwtVerify } from 'jose';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '../../config';
-import { AuthenticatedUser } from '../../common/types/authenticated-user';
 
 /** How the verifier was configured at boot. */
 export type JwtVerifierMode = 'jwks' | 'secret' | 'disabled';
@@ -18,6 +17,23 @@ interface SupabaseClaims extends JWTPayload {
   email?: string;
   phone?: string;
   app_metadata?: { role?: string };
+}
+
+/**
+ * What a verified Supabase token proves about its caller.
+ *
+ * No longer `AuthenticatedUser`: since SessionAuthGuard replaced this verifier's guard, that
+ * type describes a caller proven by this application's own session (`userId`, `sessionId`),
+ * which a Supabase-issued token cannot supply. This verifier itself is slated for removal —
+ * it has no remaining production caller — but keeps its own honest return type until then.
+ */
+export interface SupabaseVerifiedIdentity {
+  readonly supabaseUserId: string;
+  readonly email?: string;
+  readonly phone?: string;
+  readonly role: UserRole;
+  readonly issuedAt?: number;
+  readonly expiresAt?: number;
 }
 
 /**
@@ -59,10 +75,10 @@ export class SupabaseJwtVerifier implements OnModuleInit {
   }
 
   /** Returns the caller, or null when the token is absent/invalid/expired. */
-  async verify(token: string): Promise<AuthenticatedUser | null> {
+  async verify(token: string): Promise<SupabaseVerifiedIdentity | null> {
     try {
       const claims = await this.verifyClaims(token);
-      return claims ? SupabaseJwtVerifier.toAuthenticatedUser(claims) : null;
+      return claims ? SupabaseJwtVerifier.toVerifiedIdentity(claims) : null;
     } catch (error) {
       // Verification failure is an expected outcome, not a fault: log at debug
       // so an expired token does not fill the error budget.
@@ -122,7 +138,7 @@ export class SupabaseJwtVerifier implements OnModuleInit {
     this.logger.info({ jwksUrl: url }, 'JWT verification configured with a remote key set');
   }
 
-  private static toAuthenticatedUser(claims: SupabaseClaims): AuthenticatedUser | null {
+  private static toVerifiedIdentity(claims: SupabaseClaims): SupabaseVerifiedIdentity | null {
     if (!claims.sub) {
       return null;
     }

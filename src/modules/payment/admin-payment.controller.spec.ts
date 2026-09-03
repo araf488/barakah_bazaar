@@ -6,7 +6,12 @@ import { createMockLogger } from '../../../test/support/mocks';
 import { AdminPaymentController } from './admin-payment.controller';
 import { PaymentService } from './payment.service';
 
-const staff: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.OPS };
+const staff: AuthenticatedUser = {
+  userId: 'sub-1',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.OPS,
+};
 
 describe('AdminPaymentController', () => {
   let service: {

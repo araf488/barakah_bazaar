@@ -43,7 +43,7 @@ export class UserService {
       return serviceOk(AuthMapper.toProfile(updated));
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId },
+        { err: error, userId: authenticated.userId },
         'Exception occurred in UserService.updateProfile',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);

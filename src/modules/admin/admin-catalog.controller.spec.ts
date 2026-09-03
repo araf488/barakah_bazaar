@@ -11,7 +11,9 @@ import { AdminImportService } from './admin-import.service';
 import { CreateCategoryDto, CreateProductDto, CreateVariantDto } from './dto/admin-catalog.dto';
 
 const staff: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: '11111111-1111-1111-1111-111111111111',
+  sessionId: 'session-1',
+  email: 'test@example.com',
   role: UserRole.MARKETING,
 };
 

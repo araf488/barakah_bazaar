@@ -131,7 +131,7 @@ export class NotificationService {
       });
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: user.supabaseUserId },
+        { err: error, userId: user.userId },
         'Exception occurred in NotificationService.listMine',
       );
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, NotificationMessages.ListFailed);

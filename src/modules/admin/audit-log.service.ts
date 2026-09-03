@@ -13,7 +13,10 @@ import { AuditLogEntryDto, AuditLogQueryDto } from './dto/audit-log.dto';
 /** What a calling service knows about the change it just made. */
 export interface AuditContext {
   readonly actor: AuthenticatedUser;
-  /** The local `users.id`, resolved by the caller — the token carries only the Supabase id. */
+  /**
+   * The local `users.id`. Equal to `actor.userId` in every real caller — kept as its own field
+   * because some callers resolve the acting row (e.g. after a role change) before this fires.
+   */
   readonly actorId: string;
   readonly action: AdminAuditAction;
   readonly entityType: string;
@@ -47,7 +50,9 @@ export class AuditLogService {
     try {
       const written = await this.repository.append({
         actorId: context.actorId,
-        actorEmail: context.actor.email ?? null,
+        // Phone-only accounts carry `''`, not `undefined`, as AuthenticatedUser.email — see
+        // its own doc comment — so emptiness, not nullishness, is what "no email" means here.
+        actorEmail: context.actor.email || null,
         actorRole: context.actor.role,
         action: context.action,
         entityType: context.entityType,

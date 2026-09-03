@@ -60,7 +60,7 @@ export class AddressService {
       return serviceOk(UserMapper.toAddressList(addresses));
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId },
+        { err: error, userId: authenticated.userId },
         'Exception occurred in AddressService.listAddresses',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -81,7 +81,7 @@ export class AddressService {
       return AddressService.toAddressResponse(await this.repository.findOneForUser(owner.data, id));
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId, addressId: id },
+        { err: error, userId: authenticated.userId, addressId: id },
         'Exception occurred in AddressService.getAddress',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -139,7 +139,7 @@ export class AddressService {
       return serviceOk(UserMapper.toAddress(created));
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId },
+        { err: error, userId: authenticated.userId },
         'Exception occurred in AddressService.createAddress',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -175,7 +175,7 @@ export class AddressService {
       );
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId, addressId: id },
+        { err: error, userId: authenticated.userId, addressId: id },
         'Exception occurred in AddressService.updateAddress',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -206,7 +206,7 @@ export class AddressService {
       return serviceOk<void>(undefined);
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId, addressId: id },
+        { err: error, userId: authenticated.userId, addressId: id },
         'Exception occurred in AddressService.deleteAddress',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -227,7 +227,7 @@ export class AddressService {
       return AddressService.toAddressResponse(await this.repository.promoteDefault(owner.data, id));
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: authenticated.supabaseUserId, addressId: id },
+        { err: error, userId: authenticated.userId, addressId: id },
         'Exception occurred in AddressService.setDefaultAddress',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);

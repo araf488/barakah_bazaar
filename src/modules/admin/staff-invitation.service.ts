@@ -136,7 +136,7 @@ export class StaffInvitationService {
     dto: AcceptInvitationDto,
   ): Promise<ServiceResponse<StaffInvitationDto>> {
     try {
-      const account = await this.users.findBySupabaseId(user.supabaseUserId);
+      const account = await this.users.findById(user.userId);
 
       if (account === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
@@ -161,7 +161,7 @@ export class StaffInvitationService {
       return await this.grant(invitation as StaffInvitation, account);
     } catch (error) {
       this.logger.error(
-        { err: error, supabaseUserId: user.supabaseUserId },
+        { err: error, userId: user.userId },
         'Exception occurred in StaffInvitationService.accept',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -373,7 +373,7 @@ export class StaffInvitationService {
   }
 
   private async resolveActor(user: AuthenticatedUser): Promise<ServiceResponse<Actor>> {
-    const account = await this.users.findBySupabaseId(user.supabaseUserId);
+    const account = await this.users.findById(user.userId);
 
     if (account === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
@@ -428,7 +428,11 @@ export class StaffInvitationService {
   ): AuditLogWriteData {
     return {
       actorId: actor.id,
-      actorEmail: actor.email,
+      // `Actor.email` is already `string | null` off the `users` row today, so this is
+      // defensive rather than live — but it keeps this call site consistent with every other
+      // audited write, all of which normalize a falsy actor email to `null` rather than
+      // persisting `''`.
+      actorEmail: actor.email || null,
       actorRole: actor.role,
       action,
       entityType: AdminAuditEntities.StaffInvitation,

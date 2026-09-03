@@ -62,10 +62,9 @@ describe('Degraded boot (no Supabase, no database)', () => {
       expect(response.body.checks.database).toBe('down');
     });
 
-    it('reports the unconfigured dependencies as disabled, not down', async () => {
+    it('reports the unconfigured third parties as disabled, not down', async () => {
       const response = await request(app.getHttpServer()).get('/api/v1/health');
 
-      expect(response.body.checks.authentication).toBe('disabled');
       expect(response.body.checks.storage).toBe('disabled');
       expect(response.body.checks.queue).toBe('disabled');
       // Every third-party capability defaults to noop, so a fresh clone reports all of them
@@ -73,6 +72,15 @@ describe('Degraded boot (no Supabase, no database)', () => {
       expect(response.body.checks.sms).toBe('disabled');
       expect(response.body.checks.email).toBe('disabled');
       expect(response.body.checks.payment).toBe('disabled');
+    });
+
+    it('reports authentication as down, not disabled, with no JWT_SECRET configured', async () => {
+      // Unlike the third parties above, this is not a deliberately-off feature: the app still
+      // boots and issues working sessions on a random per-boot secret, but every one of them
+      // dies silently on the next restart. That is a real operational hazard, not a noop.
+      const response = await request(app.getHttpServer()).get('/api/v1/health');
+
+      expect(response.body.checks.authentication).toBe('down');
     });
 
     it('fails the readiness probe, so a deploy gate would hold', async () => {
@@ -163,11 +171,14 @@ describe('Degraded boot (no Supabase, no database)', () => {
   });
 
   describe('protected routes stay protected', () => {
-    const AUTH_UNAVAILABLE = 'Authentication is temporarily unavailable. Please try again later.';
+    const MISSING_TOKEN = 'Authentication is required to access this resource.';
+    const INVALID_TOKEN = 'Your session is invalid or has expired. Please sign in again.';
 
-    // 503 from *authentication*, which is unconfigured in this suite. The point of each is
-    // that the request never reaches the service — and that it is not a 404, which would
-    // mean the route was never registered at all.
+    // 401, not 503: SessionAuthGuard's stage one — verifying the access token — runs on CPU
+    // alone and needs neither Supabase nor a database, so "no credential presented" is a
+    // definite answer even with every piece of infrastructure down. The point of each case is
+    // that the request never reaches the service, and that it is not a 404, which would mean
+    // the route was never registered at all.
     it.each([
       ['the current profile', '/api/v1/auth/me'],
       ['the address book', '/api/v1/users/me/addresses'],
@@ -180,8 +191,8 @@ describe('Degraded boot (no Supabase, no database)', () => {
     ])('refuses %s with no token', async (_label, path) => {
       const response = await request(app.getHttpServer()).get(path);
 
-      expect(response.status).toBe(503);
-      expect(response.body.message).toBe(AUTH_UNAVAILABLE);
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe(MISSING_TOKEN);
     });
 
     it('refuses a profile update with no token', async () => {
@@ -189,8 +200,8 @@ describe('Degraded boot (no Supabase, no database)', () => {
         .patch('/api/v1/users/me')
         .send({ fullName: 'Rahim Uddin' });
 
-      expect(response.status).toBe(503);
-      expect(response.body.message).toBe(AUTH_UNAVAILABLE);
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe(MISSING_TOKEN);
     });
 
     it('routes the default-promotion endpoint rather than 404ing it', async () => {
@@ -198,27 +209,22 @@ describe('Degraded boot (no Supabase, no database)', () => {
         '/api/v1/users/me/addresses/11111111-1111-1111-1111-111111111111/default',
       );
 
-      // A 404 here would mean the route was never registered; 503 means it was registered
+      // A 404 here would mean the route was never registered; 401 means it was registered
       // and the auth guard rejected the request first.
-      expect(response.status).toBe(503);
-    });
-
-    it('refuses the admin audit trail with no token', async () => {
-      const response = await request(app.getHttpServer()).get('/api/v1/admin/audit-log');
-
-      // 503 from authentication, not 404 — the route is registered and guarded.
-      expect(response.status).toBe(503);
-      expect(response.body.message).toBe(
-        'Authentication is temporarily unavailable. Please try again later.',
-      );
+      expect(response.status).toBe(401);
     });
 
     it('refuses /auth/me with a bearer token it cannot verify', async () => {
       const response = await request(app.getHttpServer())
         .get('/api/v1/auth/me')
-        .set('Authorization', 'Bearer a.forged.token');
+        .set('Authorization', 'Bearer a.forged.token')
+        .set('x-device-id', 'device-1');
 
-      expect(response.status).toBe(503);
+      // Nothing was ever signed with this boot's random fallback JWT secret (JWT_SECRET is
+      // unset in this suite), so a forged token fails verification the same way it would with
+      // a real secret configured — still no database access required.
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe(INVALID_TOKEN);
     });
   });
 

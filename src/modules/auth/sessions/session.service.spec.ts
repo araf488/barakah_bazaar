@@ -326,6 +326,39 @@ describe('SessionService', () => {
       );
     });
 
+    it('warns that strict IP binding needs a trusted proxy, the first time it applies', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ user: makeUser({ role: UserRole.OPS }) }),
+      );
+
+      await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, IP);
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Strict IP binding is enabled for at least one role, but this check only works if the ' +
+          'app trusts its reverse proxy (see "trust proxy" in the bootstrap config); without ' +
+          "it, every request reports the proxy's own address and this binding can never fire",
+      );
+    });
+
+    it('does not warn again once it has already fired once for this process', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ user: makeUser({ role: UserRole.OPS }) }),
+      );
+
+      await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, IP);
+      logger.warn.mockClear();
+      await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, IP);
+
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('never warns when no role in play has strict binding on', async () => {
+      // Default settings: only staff roles are strict; this session's role (CUSTOMER) is not.
+      await service.validate(makeClaims(), DEVICE, IP);
+
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
     it('slides the idle deadline forward when lastUsedAt is older than the interval', async () => {
       repository.findByIdWithUser.mockResolvedValue(
         makeSession({

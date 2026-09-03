@@ -7,8 +7,18 @@ import { AuthService } from '../auth/auth.service';
 import { ReviewRepository } from './review.repository';
 import { ReviewService } from './review.service';
 
-const customer: AuthenticatedUser = { supabaseUserId: 'sub-1', role: UserRole.CUSTOMER };
-const staff: AuthenticatedUser = { supabaseUserId: 'sub-2', role: UserRole.MARKETING };
+const customer: AuthenticatedUser = {
+  userId: 'sub-1',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.CUSTOMER,
+};
+const staff: AuthenticatedUser = {
+  userId: 'sub-2',
+  sessionId: 'session-1',
+  email: 'test@example.com',
+  role: UserRole.MARKETING,
+};
 
 const line = (overrides = {}) => ({
   id: 'line-1',

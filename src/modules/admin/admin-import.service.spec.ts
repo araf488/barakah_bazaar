@@ -9,7 +9,8 @@ import { AdminImportService } from './admin-import.service';
 import { ImportProductsDto } from './dto/import.dto';
 
 const actor: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
+  userId: '11111111-1111-1111-1111-111111111111',
+  sessionId: 'session-1',
   email: 'buyer@barakahbazaar.com.bd',
   role: UserRole.MARKETING,
 };
