@@ -255,8 +255,6 @@ model AuthSettings {
   staffMfaRequired               Boolean  @default(true) @map("staff_mfa_required")
   emailVerificationGraceHours    Int      @default(168) @map("email_verification_grace_hours")
   refreshReuseGraceSeconds       Int      @default(30) @map("refresh_reuse_grace_seconds")
-  staffStrictIpBinding           Boolean  @default(true) @map("staff_strict_ip_binding")
-  customerStrictIpBinding        Boolean  @default(false) @map("customer_strict_ip_binding")
   updatedAt                      DateTime @updatedAt @map("updated_at")
 
   @@map("auth_settings")

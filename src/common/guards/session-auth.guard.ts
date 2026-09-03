@@ -73,7 +73,7 @@ export class SessionAuthGuard implements CanActivate {
     }
 
     // Stage two: the row is the authority on revocation, disablement and role.
-    const validated = await this.sessions.validate(claims, deviceId, SessionAuthGuard.ip(request));
+    const validated = await this.sessions.validate(claims, deviceId);
     if (!validated.ok) {
       throw new HttpException(validated.message, validated.status);
     }
@@ -129,9 +129,5 @@ export class SessionAuthGuard implements CanActivate {
     }
 
     return value;
-  }
-
-  private static ip(request: Request): string | null {
-    return request.ip ?? null;
   }
 }

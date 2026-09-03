@@ -67,6 +67,14 @@ describe('validateEnv', () => {
       expect(env.SESSION_TOUCH_INTERVAL_MINUTES).toBe(5);
       expect(env.APP_PUBLIC_BASE_URL).toBe('http://localhost:3000');
     });
+
+    it('defaults the write rate limit, so writes are bounded without configuration', () => {
+      expect(validateEnv({}).WRITE_RATE_LIMIT).toBe(60);
+    });
+
+    it('rejects a write rate limit of zero rather than silently blocking every write', () => {
+      expect(() => validateEnv({ WRITE_RATE_LIMIT: '0' })).toThrow();
+    });
   });
 
   describe('coercion', () => {

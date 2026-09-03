@@ -110,6 +110,16 @@ const baseEnvSchema = z.object({
   SESSION_TOUCH_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(5),
   /** Base for verification and reset links. NEVER derived from the request Host header. */
   APP_PUBLIC_BASE_URL: z.url().default('http://localhost:3000'),
+
+  // ── API rate limiting ─────────────────────────────────────────────────────
+  /**
+   * Requests per minute, per caller, per endpoint, allowed against any state-changing
+   * method — POST, PATCH, PUT, DELETE. Reads are deliberately unlimited here: a storefront
+   * browses far faster than it writes, and the abuse worth stopping at the app layer (order
+   * spam, review flooding, repeated credential changes) is all writes. An endpoint needing a
+   * tighter bound names its own bucket instead; `auth` already does.
+   */
+  WRITE_RATE_LIMIT: z.coerce.number().int().positive().default(60),
 });
 
 export type Env = z.infer<typeof baseEnvSchema>;

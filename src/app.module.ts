@@ -57,15 +57,17 @@ import { UserModule } from './modules/user/user.module';
         }),
     }),
 
-    // Named rate-limit buckets, checked by AuthThrottlerGuard below for every request unless a
-    // route opts out with @SkipThrottle. 'geocoding' guards the outbound map-search proxies;
-    // 'auth' guards login and MFA verification against brute force.
+    // Named rate-limit buckets, applied by AuthThrottlerGuard below. 'geocoding' guards the
+    // outbound map-search proxies and 'auth' guards login and MFA verification against brute
+    // force, both only where a route asks with @RateLimit; 'writes' is the baseline ceiling
+    // on every state-changing request, and reads are left unlimited at this layer.
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>) =>
         buildThrottlerOptions({
           GEOCODING_RATE_LIMIT: config.get('GEOCODING_RATE_LIMIT', { infer: true }),
           AUTH_RATE_LIMIT: config.get('AUTH_RATE_LIMIT', { infer: true }),
+          WRITE_RATE_LIMIT: config.get('WRITE_RATE_LIMIT', { infer: true }),
         }),
     }),
 
@@ -95,6 +97,7 @@ import { UserModule } from './modules/user/user.module';
     // a token verification, and the geocoding proxies are @Public(). AuthThrottlerGuard
     // replaces the library's default ThrottlerGuard so every named bucket — 'geocoding' and
     // 'auth' alike — is tracked by IP+email rather than IP alone; see its class comment.
+    // It runs on every request, but each bucket applies only where @RateLimit names it.
     { provide: APP_GUARD, useClass: AuthThrottlerGuard },
     { provide: APP_GUARD, useClass: SessionAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },

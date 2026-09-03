@@ -24,6 +24,7 @@ export const ApplicationConstants = {
 export const MetadataKeys = {
   IsPublic: 'barakah:is-public',
   Roles: 'barakah:roles',
+  RateLimitBuckets: 'barakah:rate-limit-buckets',
 } as const;
 
 /** Paging defaults for every list endpoint. */

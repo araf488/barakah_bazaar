@@ -21,6 +21,12 @@ process.env.LOG_LEVEL = 'silent';
 process.env.SWAGGER_ENABLED = 'false';
 process.env.QUEUE_ENABLED = 'false';
 process.env.GEOCODING_PROVIDER = 'noop';
+// This suite makes far more than a handful of requests to one endpoint, so it states the
+// limits it needs rather than inheriting whatever a suite earlier in the same jest worker
+// left in process.env. See rate-limiting.e2e-spec.ts, which deliberately sets tiny ones.
+process.env.AUTH_RATE_LIMIT = '1000';
+process.env.WRITE_RATE_LIMIT = '1000';
+process.env.GEOCODING_RATE_LIMIT = '1000';
 delete process.env.DATABASE_URL;
 delete process.env.SUPABASE_URL;
 delete process.env.SUPABASE_JWKS_URL;

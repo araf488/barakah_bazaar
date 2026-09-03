@@ -10,14 +10,15 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator';
 import { ErrorMessages } from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
+import { ThrottleBuckets } from '../../config/throttler.config';
 import { AuthConstants, AuthMessages } from './auth.constants';
 import { AuthMapper } from './auth.mapper';
 import { AuthService } from './auth.service';
@@ -66,7 +67,7 @@ export class AuthController {
    * when staff policy requires one that has not been set up yet.
    */
   @Public()
-  @Throttle({ auth: {} })
+  @RateLimit(ThrottleBuckets.Auth)
   @HttpCode(HttpStatus.OK)
   @Post('login')
   @ApiOperation({ summary: 'Sign in with an email and password' })
@@ -97,7 +98,7 @@ export class AuthController {
    * or a recovery code for a session.
    */
   @Public()
-  @Throttle({ auth: {} })
+  @RateLimit(ThrottleBuckets.Auth)
   @HttpCode(HttpStatus.OK)
   @Post('login/mfa')
   @ApiOperation({ summary: 'Complete a login with a second factor' })
@@ -137,7 +138,7 @@ export class AuthController {
    * already rotated away from signs you out at the next refresh.
    */
   @Public()
-  @Throttle({ auth: {} })
+  @RateLimit(ThrottleBuckets.Auth)
   @HttpCode(HttpStatus.OK)
   @Post('refresh')
   @ApiOperation({ summary: 'Rotate a refresh token for a new access token' })

@@ -25,10 +25,15 @@ export const createMockConfig = (values: Record<string, unknown>): AppConfigServ
 interface ExecutionContextOptions {
   headers?: Record<string, string>;
   user?: unknown;
-  handlerMetadata?: Record<string, unknown>;
-  classMetadata?: Record<string, unknown>;
-  /** Simulated client address, read by guards that bind a session to an IP. */
-  ip?: string;
+  /** HTTP method on the request, for anything that branches on read versus write. */
+  method?: string;
+  /**
+   * Reflection targets returned by `getHandler()` and `getClass()`. Typed as `object` because
+   * the real context hands back a method and a class constructor — pass the decorated
+   * `Class.prototype.method` and `Class` themselves when a test asserts on route metadata.
+   */
+  handlerMetadata?: object;
+  classMetadata?: object;
 }
 
 /** Minimal HTTP ExecutionContext for guard tests. */
@@ -41,7 +46,7 @@ export const createExecutionContext = (
 } => {
   const request: Record<string, unknown> = {
     headers: options.headers ?? {},
-    ip: options.ip,
+    ...(options.method === undefined ? {} : { method: options.method }),
     ...(options.user === undefined ? {} : { user: options.user }),
   };
 

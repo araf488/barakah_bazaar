@@ -13,8 +13,6 @@ const row = (overrides = {}) => ({
   staffMfaRequired: true,
   emailVerificationGraceHours: 168,
   refreshReuseGraceSeconds: 30,
-  staffStrictIpBinding: true,
-  customerStrictIpBinding: false,
   updatedAt: new Date(),
   ...overrides,
 });

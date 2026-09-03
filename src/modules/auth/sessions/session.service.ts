@@ -57,13 +57,6 @@ interface SignedAccess {
  */
 @Injectable()
 export class SessionService {
-  /**
-   * Whether `warnIfProxyUntrusted` has already fired for this instance. An instance field, not
-   * a module-level one: each test constructs its own `SessionService`, and a module-level flag
-   * would let one test's warning silence every test that runs after it in the same process.
-   */
-  private warnedAboutUnproxiedStrictIp = false;
-
   constructor(
     private readonly repository: SessionRepository,
     private readonly tokens: AccessTokenService,
@@ -78,8 +71,8 @@ export class SessionService {
 
   /**
    * Everyone but a customer is staff, so a role added later gets the *shorter* staff windows
-   * and strict ip binding by default. The other polarity would silently grant a new role the
-   * customer's 30-day session.
+   * by default. The other polarity would silently grant a new role the customer's 30-day
+   * session.
    */
   private static isStaff(role: UserRole): boolean {
     return role !== UserRole.CUSTOMER;
@@ -148,7 +141,6 @@ export class SessionService {
   async validate(
     claims: AccessTokenClaims,
     deviceId: string,
-    ip: string | null,
   ): Promise<ServiceResponse<ValidatedSession>> {
     try {
       const session = await this.repository.findByIdWithUser(claims.sessionId);
@@ -173,13 +165,7 @@ export class SessionService {
       }
 
       const settings = await this.settings.current();
-      const failure = await this.assertUsable(
-        session,
-        deviceId,
-        ip,
-        settings,
-        ErrorMessages.InvalidAccessToken,
-      );
+      const failure = await this.assertUsable(session, deviceId, ErrorMessages.InvalidAccessToken);
 
       if (failure) {
         return failure;
@@ -239,13 +225,7 @@ export class SessionService {
         return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
       }
 
-      const failure = await this.assertUsable(
-        session,
-        deviceId,
-        ip,
-        settings,
-        AuthMessages.InvalidCredentials,
-      );
+      const failure = await this.assertUsable(session, deviceId, AuthMessages.InvalidCredentials);
 
       if (failure) {
         return failure;
@@ -326,8 +306,6 @@ export class SessionService {
   private async assertUsable(
     session: SessionWithUser,
     deviceId: string,
-    ip: string | null,
-    settings: ResolvedAuthSettings,
     unauthorizedMessage: string,
   ): Promise<ServiceResponse<never> | null> {
     if (session.revokedAt !== null) {
@@ -363,69 +341,7 @@ export class SessionService {
       return serviceFail(HttpStatus.FORBIDDEN, ErrorMessages.AccountDisabled);
     }
 
-    if (this.ipRejected(session, ip, settings)) {
-      this.logger.warn(
-        { sessionId: session.id },
-        'Session ip address changed while strict binding is on',
-      );
-      return serviceFail(HttpStatus.UNAUTHORIZED, unauthorizedMessage);
-    }
-
     return null;
-  }
-
-  /**
-   * Whether a strict-ip-bound session is being used from somewhere it was not opened.
-   *
-   * Strict binding is on for staff and off for customers by default, and that asymmetry is
-   * the point: a customer on mobile data changes address constantly, while an admin session
-   * jumping networks mid-life is worth refusing. A request that arrives with no address at
-   * all is refused too when the row has one — an address that cannot be compared has not
-   * been shown to match.
-   */
-  private ipRejected(
-    session: SessionWithUser,
-    ip: string | null,
-    settings: ResolvedAuthSettings,
-  ): boolean {
-    const strict = SessionService.isStaff(session.user.role)
-      ? settings.staffStrictIpBinding
-      : settings.customerStrictIpBinding;
-
-    if (strict) {
-      this.warnIfProxyUntrusted();
-    }
-
-    // Nothing was recorded to bind to, so there is nothing this check can assert. It is the
-    // login path's job to capture an address, not this one's to invent one.
-    if (!strict || session.ipAddress === null) {
-      return false;
-    }
-
-    return ip !== session.ipAddress;
-  }
-
-  /**
-   * Strict IP binding compares the address on the request against the one stored at login —
-   * but Express reports `request.ip` as whatever the immediate connection's address is, which
-   * behind any reverse proxy (a load balancer, nginx, Cloud Run) is the *proxy's* constant
-   * address unless the app is explicitly configured to trust it and extract the real client
-   * address from `X-Forwarded-For`. Nothing here can detect that configuration from inside a
-   * request — `app.set('trust proxy', ...)` lives in bootstrap, not here — so this can only
-   * make the resulting inertness visible, once per process, rather than fix it: a hop count
-   * always depends on the deployment topology, and trusting `X-Forwarded-For` blindly would
-   * make the address client-controllable, turning a merely-inert check into a bypassable one.
-   */
-  private warnIfProxyUntrusted(): void {
-    if (this.warnedAboutUnproxiedStrictIp) {
-      return;
-    }
-    this.warnedAboutUnproxiedStrictIp = true;
-    this.logger.warn(
-      'Strict IP binding is enabled for at least one role, but this check only works if the ' +
-        'app trusts its reverse proxy (see "trust proxy" in the bootstrap config); without ' +
-        "it, every request reports the proxy's own address and this binding can never fire",
-    );
   }
 
   /**

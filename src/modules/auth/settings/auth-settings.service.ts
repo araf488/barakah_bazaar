@@ -14,8 +14,6 @@ export interface ResolvedAuthSettings {
   readonly staffMfaRequired: boolean;
   readonly emailVerificationGraceHours: number;
   readonly refreshReuseGraceSeconds: number;
-  readonly staffStrictIpBinding: boolean;
-  readonly customerStrictIpBinding: boolean;
 }
 
 /** Mirrors the Prisma `AuthSettings` model's `@default`s exactly. */
@@ -28,8 +26,6 @@ export const AUTH_SETTINGS_DEFAULTS: ResolvedAuthSettings = Object.freeze({
   staffMfaRequired: true,
   emailVerificationGraceHours: 168,
   refreshReuseGraceSeconds: 30,
-  staffStrictIpBinding: true,
-  customerStrictIpBinding: false,
 });
 
 /**
@@ -193,22 +189,6 @@ export class AuthSettingsService {
       this.logger,
     );
 
-    const staffStrictIpBinding = AuthSettingsService.pick(
-      row.staffStrictIpBinding,
-      (value) => typeof value === 'boolean',
-      AUTH_SETTINGS_DEFAULTS.staffStrictIpBinding,
-      'staffStrictIpBinding',
-      this.logger,
-    );
-
-    const customerStrictIpBinding = AuthSettingsService.pick(
-      row.customerStrictIpBinding,
-      (value) => typeof value === 'boolean',
-      AUTH_SETTINGS_DEFAULTS.customerStrictIpBinding,
-      'customerStrictIpBinding',
-      this.logger,
-    );
-
     return {
       accessTokenMinutes,
       customerRefreshIdleMinutes,
@@ -218,8 +198,6 @@ export class AuthSettingsService {
       staffMfaRequired,
       emailVerificationGraceHours,
       refreshReuseGraceSeconds,
-      staffStrictIpBinding,
-      customerStrictIpBinding,
     };
   }
 

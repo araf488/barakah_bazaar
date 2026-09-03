@@ -1,9 +1,10 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Public } from '../../common/decorators/public.decorator';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator';
 import { unwrapOrThrow } from '../../common/types/service-response';
+import { ThrottleBuckets } from '../../config/throttler.config';
 import { GeoAreaListDto, GeoDistrictDto, GeoDivisionDto, GeoUnitDto } from './dto/geo-response.dto';
 import {
   GeoResolveLinkDto,
@@ -26,9 +27,6 @@ import { GeoService } from './geo.service';
  * Synchronous, because GeoService reads an in-memory dataset.
  */
 @ApiTags('Geo')
-// The dataset routes below read an in-memory constant and cost nothing; only the outbound
-// proxies opt back in via @Throttle.
-@SkipThrottle()
 @Controller(GeoConstants.RouteBase)
 export class GeoController {
   constructor(
@@ -98,8 +96,7 @@ export class GeoController {
   }
 
   @Public()
-  @SkipThrottle({ geocoding: false })
-  @Throttle({ geocoding: {} })
+  @RateLimit(ThrottleBuckets.Geocoding)
   @Get('search')
   @ApiOperation({ summary: 'Search places for the map pin' })
   @ApiResponse({ status: HttpStatus.OK, type: [GeocodedPlaceDto] })
@@ -117,8 +114,7 @@ export class GeoController {
   }
 
   @Public()
-  @SkipThrottle({ geocoding: false })
-  @Throttle({ geocoding: {} })
+  @RateLimit(ThrottleBuckets.Geocoding)
   @Get('reverse')
   @ApiOperation({ summary: 'Reverse-geocode a dropped pin' })
   @ApiResponse({ status: HttpStatus.OK, type: GeocodedPlaceDto })
@@ -137,8 +133,7 @@ export class GeoController {
    * survive a query string cleanly. It has no side effects.
    */
   @Public()
-  @SkipThrottle({ geocoding: false })
-  @Throttle({ geocoding: {} })
+  @RateLimit(ThrottleBuckets.Geocoding)
   @Post('resolve-link')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Resolve a pasted Google Maps link to coordinates' })

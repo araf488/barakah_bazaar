@@ -227,7 +227,7 @@ describe('SessionService', () => {
     };
 
     it('accepts a live session and returns its user', async () => {
-      const result = validated(await service.validate(makeClaims(), DEVICE, IP));
+      const result = validated(await service.validate(makeClaims(), DEVICE));
 
       expect(result.sessionId).toBe('session-1');
       expect(result.user.id).toBe('user-1');
@@ -238,7 +238,7 @@ describe('SessionService', () => {
         makeSession({ revokedAt: new Date(NOW.getTime() - MINUTE) }),
       );
 
-      expect(failure(await service.validate(makeClaims(), DEVICE, IP))).toEqual({
+      expect(failure(await service.validate(makeClaims(), DEVICE))).toEqual({
         status: 401,
         message: 'Your session is invalid or has expired. Please sign in again.',
       });
@@ -249,7 +249,7 @@ describe('SessionService', () => {
         makeSession({ expiresAt: new Date(NOW.getTime() - MINUTE) }),
       );
 
-      expect(failure(await service.validate(makeClaims(), DEVICE, IP)).status).toBe(401);
+      expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(401);
     });
 
     it('refuses a session past its absolute cap even if the idle window is open', async () => {
@@ -260,22 +260,20 @@ describe('SessionService', () => {
         }),
       );
 
-      expect(failure(await service.validate(makeClaims(), DEVICE, IP)).status).toBe(401);
+      expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(401);
     });
 
     it('refuses when the device id differs from the row, and revokes the session', async () => {
-      expect(failure(await service.validate(makeClaims(), 'device-2', IP)).status).toBe(401);
+      expect(failure(await service.validate(makeClaims(), 'device-2')).status).toBe(401);
       expect(repository.revoke).toHaveBeenCalledWith('session-1');
       expect(logger.warn).toHaveBeenCalled();
     });
 
     it('refuses a token whose subject does not own the session it names', async () => {
-      expect(failure(await service.validate(makeClaims({ userId: 'user-2' }), DEVICE, IP))).toEqual(
-        {
-          status: 401,
-          message: 'Your session is invalid or has expired. Please sign in again.',
-        },
-      );
+      expect(failure(await service.validate(makeClaims({ userId: 'user-2' }), DEVICE))).toEqual({
+        status: 401,
+        message: 'Your session is invalid or has expired. Please sign in again.',
+      });
     });
 
     it('refuses a disabled account with 403, not 401', async () => {
@@ -283,80 +281,10 @@ describe('SessionService', () => {
         makeSession({ user: makeUser({ isActive: false }) }),
       );
 
-      expect(failure(await service.validate(makeClaims(), DEVICE, IP))).toEqual({
+      expect(failure(await service.validate(makeClaims(), DEVICE))).toEqual({
         status: 403,
         message: 'This account has been disabled. Please contact support.',
       });
-    });
-
-    it('refuses when the ip changed and strict binding is on for that role', async () => {
-      repository.findByIdWithUser.mockResolvedValue(
-        makeSession({ user: makeUser({ role: UserRole.OPS }) }),
-      );
-
-      expect(
-        failure(await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, OTHER_IP))
-          .status,
-      ).toBe(401);
-    });
-
-    it('allows an ip change when strict binding is off for that role', async () => {
-      const result = await service.validate(makeClaims(), DEVICE, OTHER_IP);
-
-      expect(result.ok).toBe(true);
-    });
-
-    it('refuses a strictly bound session whose request carries no ip at all', async () => {
-      repository.findByIdWithUser.mockResolvedValue(
-        makeSession({ user: makeUser({ role: UserRole.OPS }) }),
-      );
-
-      expect(
-        failure(await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, null)).status,
-      ).toBe(401);
-    });
-
-    it('allows a strictly bound session that never recorded an ip to be used', async () => {
-      repository.findByIdWithUser.mockResolvedValue(
-        makeSession({ user: makeUser({ role: UserRole.OPS }), ipAddress: null }),
-      );
-
-      expect((await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, IP)).ok).toBe(
-        true,
-      );
-    });
-
-    it('warns that strict IP binding needs a trusted proxy, the first time it applies', async () => {
-      repository.findByIdWithUser.mockResolvedValue(
-        makeSession({ user: makeUser({ role: UserRole.OPS }) }),
-      );
-
-      await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, IP);
-
-      expect(logger.warn).toHaveBeenCalledWith(
-        'Strict IP binding is enabled for at least one role, but this check only works if the ' +
-          'app trusts its reverse proxy (see "trust proxy" in the bootstrap config); without ' +
-          "it, every request reports the proxy's own address and this binding can never fire",
-      );
-    });
-
-    it('does not warn again once it has already fired once for this process', async () => {
-      repository.findByIdWithUser.mockResolvedValue(
-        makeSession({ user: makeUser({ role: UserRole.OPS }) }),
-      );
-
-      await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, IP);
-      logger.warn.mockClear();
-      await service.validate(makeClaims({ role: UserRole.OPS }), DEVICE, IP);
-
-      expect(logger.warn).not.toHaveBeenCalled();
-    });
-
-    it('never warns when no role in play has strict binding on', async () => {
-      // Default settings: only staff roles are strict; this session's role (CUSTOMER) is not.
-      await service.validate(makeClaims(), DEVICE, IP);
-
-      expect(logger.warn).not.toHaveBeenCalled();
     });
 
     it('slides the idle deadline forward when lastUsedAt is older than the interval', async () => {
@@ -367,7 +295,7 @@ describe('SessionService', () => {
         }),
       );
 
-      await service.validate(makeClaims(), DEVICE, IP);
+      await service.validate(makeClaims(), DEVICE);
 
       expect(repository.touch).toHaveBeenCalledWith(
         'session-1',
@@ -380,7 +308,7 @@ describe('SessionService', () => {
         makeSession({ lastUsedAt: new Date(NOW.getTime() - MINUTE) }),
       );
 
-      await service.validate(makeClaims(), DEVICE, IP);
+      await service.validate(makeClaims(), DEVICE);
 
       expect(repository.touch).not.toHaveBeenCalled();
     });
@@ -389,23 +317,23 @@ describe('SessionService', () => {
       const ceiling = new Date(NOW.getTime() + HOUR);
       repository.findByIdWithUser.mockResolvedValue(makeSession({ absoluteExpiresAt: ceiling }));
 
-      await service.validate(makeClaims(), DEVICE, IP);
+      await service.validate(makeClaims(), DEVICE);
 
       expect(repository.touch).toHaveBeenCalledWith('session-1', ceiling);
     });
 
     it('reports 503 when the lookup fails, and 401 when the row is simply absent', async () => {
       repository.findByIdWithUser.mockResolvedValue(null);
-      expect(failure(await service.validate(makeClaims(), DEVICE, IP)).status).toBe(503);
+      expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(503);
 
       repository.findByIdWithUser.mockResolvedValue(undefined);
-      expect(failure(await service.validate(makeClaims(), DEVICE, IP)).status).toBe(401);
+      expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(401);
     });
 
     it('reports 500 when the lookup throws outright', async () => {
       repository.findByIdWithUser.mockRejectedValue(new Error('boom'));
 
-      expect(failure(await service.validate(makeClaims(), DEVICE, IP)).status).toBe(500);
+      expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(500);
       expect(logger.error).toHaveBeenCalled();
     });
   });
