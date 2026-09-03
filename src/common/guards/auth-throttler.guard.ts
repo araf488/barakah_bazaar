@@ -5,28 +5,23 @@ import { ThrottlerGuard, ThrottlerLimitDetail } from '@nestjs/throttler';
 const RETRY_AFTER_HEADER = 'Retry-After';
 
 /**
- * Registered as the sole global throttler guard (see `app.module.ts`), replacing the library's
- * default so every named bucket — `geocoding` and `auth` alike — is tracked by this key rather
- * than by IP alone.
+ * Registered as the sole global throttler guard (see `app.module.ts`).
  *
- * Per-IP alone does nothing against a distributed attempt on one account, and per-email alone
- * does nothing against credential stuffing across many. The tracker combines both.
+ * Tracking is no longer done here: each named bucket in `throttler.config.ts` carries its own
+ * `getTracker` — `auth-ip` and `geocoding` by an explicit per-bucket IP reader, `auth-account`
+ * by the submitted email, and `writes` (which sets none) by the library's own IP default. A
+ * single concatenated `ip|email` key (this class's previous approach) combines the two
+ * properties' *strings*, not their protections: a hundred IPs attacking one account still land
+ * in a hundred separate combined-key buckets, and a single IP trying a hundred accounts does
+ * too. Splitting into two buckets, each with its own tracker, is what actually bounds each
+ * property (see `throttler.config.ts`'s `optInAccountBucket`).
  *
- * Body-parsing middleware runs before guards in Nest, so `request.body` is populated here —
- * this is not the impossibility it first looks like.
- *
- * A route with no email in its body still gets a stable, IP-only key: `email` resolves to
- * `''`. That matters less than it looks, because buckets are opt-in (see `RateLimit`) — a
- * route that never asked for one is not counted at all, whatever its key would have been.
+ * What this class still does is fix the library's `Retry-After` header below — that has
+ * nothing to do with tracking, so the guard survives even though `getTracker` no longer needs
+ * an override here.
  */
 @Injectable()
 export class AuthThrottlerGuard extends ThrottlerGuard {
-  protected async getTracker(req: Record<string, unknown>): Promise<string> {
-    const body = (req.body ?? {}) as { email?: unknown };
-    const email = typeof body.email === 'string' ? body.email.toLowerCase() : '';
-    return Promise.resolve(`${req.ip as string}|${email}`);
-  }
-
   /**
    * Adds the unsuffixed `Retry-After` before handing off to the library's own rejection.
    *

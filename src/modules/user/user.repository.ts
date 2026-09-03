@@ -20,6 +20,10 @@ export class UserRepository {
    * Returns null on failure, including the race where the row was deleted between the caller
    * resolving it and this write — the service turns that into a 503 rather than pretending
    * the update landed.
+   *
+   * No session-cache invalidation: this writes only `fullName`, which is not in
+   * `CachedSessionValue` and does not affect authorisation. Confirmed, not assumed — see
+   * task-16-report.md.
    */
   async updateFullName(userId: string, fullName: string): Promise<User | null> {
     try {

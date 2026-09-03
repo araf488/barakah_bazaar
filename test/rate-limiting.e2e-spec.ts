@@ -21,10 +21,14 @@ delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 /**
  * Deliberately tiny, so a test crosses a limit in a handful of requests instead of sixty.
- * AUTH is set *below* WRITE so the two can be told apart: login is a POST and therefore sits
- * in both buckets, and only the auth limit biting first proves which one is in charge.
+ * AUTH_IP is set *below* WRITE so the two can be told apart: login is a POST and therefore
+ * sits in both buckets, and only the auth-ip limit biting first proves which one is in charge.
+ * AUTH_ACCOUNT is set *above* AUTH_IP so a same-email-same-IP flood is bounded by auth-ip
+ * first, which keeps that existing case deterministic while auth-account gets its own tests
+ * below with a different caller shape (same account, many IPs).
  */
 const AUTH_LIMIT = 3;
+const AUTH_ACCOUNT_LIMIT = 5;
 const WRITE_LIMIT = 4;
 const GEOCODING_LIMIT = 2;
 
@@ -35,19 +39,26 @@ const GEOCODING_LIMIT = 2;
  */
 const originalLimits = {
   AUTH_RATE_LIMIT: process.env.AUTH_RATE_LIMIT,
+  AUTH_ACCOUNT_RATE_LIMIT: process.env.AUTH_ACCOUNT_RATE_LIMIT,
   WRITE_RATE_LIMIT: process.env.WRITE_RATE_LIMIT,
   GEOCODING_RATE_LIMIT: process.env.GEOCODING_RATE_LIMIT,
 };
 
 process.env.AUTH_RATE_LIMIT = String(AUTH_LIMIT);
+process.env.AUTH_ACCOUNT_RATE_LIMIT = String(AUTH_ACCOUNT_LIMIT);
 process.env.WRITE_RATE_LIMIT = String(WRITE_LIMIT);
 process.env.GEOCODING_RATE_LIMIT = String(GEOCODING_LIMIT);
 
 const HEALTH = '/api/v1/health';
 const CART_ITEMS = '/api/v1/cart/items';
 const LOGIN = '/api/v1/auth/login';
+const REFRESH = '/api/v1/auth/refresh';
 const GEO_SEARCH = '/api/v1/geo/search';
 const GEO_DIVISIONS = '/api/v1/geo/divisions';
+
+/** A stand-in caller IP used whenever a test does not care which IP it is, so requests do
+ *  not depend on whatever address the local socket happens to report. */
+const DEFAULT_IP = '198.51.100.1';
 
 /** Comfortably past every limit above, so "unlimited" means unlimited and not merely roomy. */
 const WELL_PAST_EVERY_LIMIT = 12;
@@ -75,6 +86,13 @@ describe('Rate limiting (HTTP)', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
 
     app = moduleRef.createNestApplication();
+    // Test-only: lets X-Forwarded-For stand in for distinct caller IPs below, so the
+    // per-IP and per-account buckets can be told apart without real distributed callers.
+    // Never mirrored in main.ts — this suite never runs behind a real proxy to spoof.
+    const expressInstance = app.getHttpAdapter().getInstance() as {
+      set: (key: string, value: unknown) => void;
+    };
+    expressInstance.set('trust proxy', true);
     app.setGlobalPrefix('api/v1');
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
@@ -107,13 +125,35 @@ describe('Rate limiting (HTTP)', () => {
     return statuses;
   };
 
+  /** Like `fire`, but each call gets its own index — for a run where every attempt needs a
+   *  distinct email or IP rather than repeating the same one. */
+  const fireEach = async (
+    times: number,
+    send: (attempt: number) => request.Test,
+  ): Promise<number[]> => {
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < times; attempt += 1) {
+      statuses.push((await send(attempt)).status);
+    }
+    return statuses;
+  };
+
   const postCartItem = () => request(app.getHttpServer()).post(CART_ITEMS).send(CART_BODY);
 
-  const postLogin = (email: string) =>
+  const postLogin = (email: string, ip: string = DEFAULT_IP) =>
     request(app.getHttpServer())
       .post(LOGIN)
       .set('x-device-id', 'rate-limit-device')
+      .set('X-Forwarded-For', ip)
       .send({ email, password: REJECTED_PASSWORD });
+
+  /** Carries no email at all — the shape the account bucket must stay out of. */
+  const postRefresh = (ip: string) =>
+    request(app.getHttpServer())
+      .post(REFRESH)
+      .set('x-device-id', 'rate-limit-device')
+      .set('X-Forwarded-For', ip)
+      .send({ refreshToken: 'not-a-real-token' });
 
   describe('the write baseline', () => {
     it('caps a write route that carries no rate-limit decorator at all', async () => {
@@ -170,21 +210,47 @@ describe('Rate limiting (HTTP)', () => {
     });
   });
 
-  describe('the auth bucket', () => {
-    it('holds login to the tighter auth limit rather than the write baseline', async () => {
-      // AUTH_LIMIT < WRITE_LIMIT, so a 429 here can only have come from the auth bucket.
+  describe('the auth-ip and auth-account buckets', () => {
+    it('holds login to the tighter auth-ip limit rather than the write baseline', async () => {
+      // AUTH_LIMIT < WRITE_LIMIT, so a 429 here can only have come from an auth bucket, and
+      // AUTH_LIMIT < AUTH_ACCOUNT_LIMIT makes auth-ip specifically the one that bites first.
       const statuses = await fire(AUTH_LIMIT + 1, () => postLogin('shopper@example.com'));
 
       expect(statuses.slice(0, AUTH_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
       expect(statuses[AUTH_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
     });
 
-    it('counts per account, so guessing at one email cannot lock another out', async () => {
-      await fire(AUTH_LIMIT + 1, () => postLogin('victim@example.com'));
+    // This is the case a single concatenated `ip|email` tracker cannot catch: one attacker
+    // cycling through accounts from one address, each account seen for the first time.
+    it('blocks one IP working through many accounts, the property auth-ip exists for', async () => {
+      const statuses = await fireEach(AUTH_LIMIT + 1, (attempt) =>
+        postLogin(`account-${attempt}@example.com`, DEFAULT_IP),
+      );
 
-      const other = await postLogin('bystander@example.com');
+      expect(statuses.slice(0, AUTH_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+      expect(statuses[AUTH_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
 
-      expect(other.status).not.toBe(HttpStatus.TOO_MANY_REQUESTS);
+    // The other half of the same gap: a hundred IPs attacking one account each land under a
+    // combined key's own ten-attempt allowance. Keying a bucket on the email alone closes it.
+    it('blocks many IPs attacking a single account, the property auth-account exists for', async () => {
+      const statuses = await fireEach(AUTH_ACCOUNT_LIMIT + 1, (attempt) =>
+        postLogin('victim@example.com', `203.0.113.${attempt + 1}`),
+      );
+
+      expect(statuses.slice(0, AUTH_ACCOUNT_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+      expect(statuses[AUTH_ACCOUNT_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('does not sweep a route with no email in its body into the account bucket', async () => {
+      // Refresh carries no email. If a missing email fell back to one shared '' key, these
+      // callers — each a distinct IP, each comfortably under its own auth-ip limit — would
+      // throttle each other on the account bucket despite having nothing in common.
+      const statuses = await fireEach(AUTH_ACCOUNT_LIMIT + 1, (attempt) =>
+        postRefresh(`203.0.113.${100 + attempt}`),
+      );
+
+      expect(statuses).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
     });
   });
 

@@ -14,6 +14,7 @@ import { LoginService } from './login.service';
 import { MfaCryptoSupport, MfaService } from './mfa.service';
 import { AuthSettingsRepository } from './settings/auth-settings.repository';
 import { AuthSettingsService } from './settings/auth-settings.service';
+import { createSessionCache } from './sessions/session-cache.factory';
 import { SessionRepository } from './sessions/session.repository';
 import { SessionService } from './sessions/session.service';
 import { AccessTokenService } from './tokens/access-token.service';
@@ -44,6 +45,11 @@ import { AccessTokenService } from './tokens/access-token.service';
       provide: AuthTokens.SmsGateway,
       inject: [ConfigService, PinoLogger],
       useFactory: createSmsGateway,
+    },
+    {
+      provide: AuthTokens.SessionCache,
+      inject: [ConfigService, PinoLogger],
+      useFactory: createSessionCache,
     },
 
     // Password, TOTP and at-rest-secret crypto. Stateless beyond their own config, so plain
@@ -87,7 +93,18 @@ import { AccessTokenService } from './tokens/access-token.service';
   //
   // AccessTokenService and SessionService are exported for SessionAuthGuard — see the class
   // comment above.
-  exports: [AuthService, AuthRepository, AccessTokenService, SessionService],
+  //
+  // AuthTokens.SessionCache is exported so AdminUserRepository (a different module) can bump a
+  // user's cache generation on the same admin-side role/isActive writes that already run
+  // through it, without a second Redis client or a second no-op default disagreeing with this
+  // one.
+  exports: [
+    AuthService,
+    AuthRepository,
+    AccessTokenService,
+    SessionService,
+    AuthTokens.SessionCache,
+  ],
 })
 export class AuthModule {
   /** Re-exported so consumers do not import the constants file directly. */

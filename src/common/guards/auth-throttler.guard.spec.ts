@@ -3,12 +3,8 @@ import { ThrottlerException, ThrottlerLimitDetail, ThrottlerStorage } from '@nes
 import { Reflector } from '@nestjs/core';
 import { AuthThrottlerGuard } from './auth-throttler.guard';
 
-/** Exposes the protected methods under test without weakening the production class's API. */
+/** Exposes the protected method under test without weakening the production class's API. */
 class TestableAuthThrottlerGuard extends AuthThrottlerGuard {
-  track(req: Record<string, unknown>): Promise<string> {
-    return this.getTracker(req);
-  }
-
   reject(context: ExecutionContext, detail: ThrottlerLimitDetail): Promise<void> {
     return this.throwThrottlingException(context, detail);
   }
@@ -31,7 +27,7 @@ const limitDetail = (overrides: Partial<ThrottlerLimitDetail> = {}): ThrottlerLi
   limit: 10,
   ttl: 60_000,
   key: 'key',
-  tracker: '203.0.113.7|',
+  tracker: '203.0.113.7',
   totalHits: 11,
   timeToExpire: 42,
   isBlocked: true,
@@ -44,39 +40,14 @@ describe('AuthThrottlerGuard', () => {
 
   beforeEach(() => {
     // The guard's own constructor only stores these; onModuleInit (never called here) is what
-    // reads them, so empty/stub values are sufficient for exercising getTracker in isolation.
+    // reads them, so empty/stub values are sufficient for exercising throwThrottlingException
+    // in isolation.
     guard = new TestableAuthThrottlerGuard([], {} as ThrottlerStorage, {} as Reflector);
   });
 
-  it('tracks two different emails from the same IP separately', async () => {
-    const first = await guard.track({ ip: '203.0.113.7', body: { email: 'a@example.com' } });
-    const second = await guard.track({ ip: '203.0.113.7', body: { email: 'b@example.com' } });
-
-    expect(first).not.toEqual(second);
-  });
-
-  it('tracks the same email from different IPs as distinct combinations, not one shared bucket', async () => {
-    const first = await guard.track({ ip: '203.0.113.7', body: { email: 'a@example.com' } });
-    const second = await guard.track({ ip: '198.51.100.4', body: { email: 'a@example.com' } });
-
-    expect(first).not.toEqual(second);
-  });
-
-  it('treats an email as the same attacker regardless of case', async () => {
-    const lower = await guard.track({ ip: '203.0.113.7', body: { email: 'a@example.com' } });
-    const upper = await guard.track({ ip: '203.0.113.7', body: { email: 'A@EXAMPLE.COM' } });
-
-    expect(lower).toEqual(upper);
-  });
-
-  it('falls back to the IP alone when the body has no email', async () => {
-    await expect(guard.track({ ip: '203.0.113.7', body: {} })).resolves.toBe('203.0.113.7|');
-  });
-
-  it('does not throw when the body is missing entirely', async () => {
-    await expect(guard.track({ ip: '203.0.113.7' })).resolves.toBe('203.0.113.7|');
-  });
-
+  // Tracking is no longer this class's job: each named bucket in throttler.config.ts carries
+  // its own getTracker (auth-ip by IP, auth-account by email), tested there. This class now
+  // exists solely for the Retry-After fix below.
   describe('rejecting a request over the limit', () => {
     // The library suffixes the header with the bucket name for every bucket but 'default',
     // so a 429 from 'writes' would otherwise carry only Retry-After-writes and a client

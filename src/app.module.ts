@@ -58,15 +58,18 @@ import { UserModule } from './modules/user/user.module';
     }),
 
     // Named rate-limit buckets, applied by AuthThrottlerGuard below. 'geocoding' guards the
-    // outbound map-search proxies and 'auth' guards login and MFA verification against brute
-    // force, both only where a route asks with @RateLimit; 'writes' is the baseline ceiling
-    // on every state-changing request, and reads are left unlimited at this layer.
+    // outbound map-search proxies; 'auth-ip' and 'auth-account' together guard login and MFA
+    // verification against brute force — one keyed by caller IP, the other by the submitted
+    // email, so neither a distributed attempt on one account nor one IP working many accounts
+    // slips past — both only where a route asks with @RateLimit. 'writes' is the baseline
+    // ceiling on every state-changing request, and reads are left unlimited at this layer.
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>) =>
         buildThrottlerOptions({
           GEOCODING_RATE_LIMIT: config.get('GEOCODING_RATE_LIMIT', { infer: true }),
           AUTH_RATE_LIMIT: config.get('AUTH_RATE_LIMIT', { infer: true }),
+          AUTH_ACCOUNT_RATE_LIMIT: config.get('AUTH_ACCOUNT_RATE_LIMIT', { infer: true }),
           WRITE_RATE_LIMIT: config.get('WRITE_RATE_LIMIT', { infer: true }),
         }),
     }),
@@ -95,9 +98,10 @@ import { UserModule } from './modules/user/user.module';
   providers: [
     // Ahead of authentication: an unauthenticated flood should be rejected before it costs
     // a token verification, and the geocoding proxies are @Public(). AuthThrottlerGuard
-    // replaces the library's default ThrottlerGuard so every named bucket — 'geocoding' and
-    // 'auth' alike — is tracked by IP+email rather than IP alone; see its class comment.
-    // It runs on every request, but each bucket applies only where @RateLimit names it.
+    // replaces the library's default ThrottlerGuard purely to fix the Retry-After header on
+    // a 429 (see its class comment); each bucket's own tracker and skipIf, registered in
+    // throttler.config.ts, decide who is counted and where. It runs on every request, but
+    // each bucket applies only where @RateLimit names it.
     { provide: APP_GUARD, useClass: AuthThrottlerGuard },
     { provide: APP_GUARD, useClass: SessionAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },

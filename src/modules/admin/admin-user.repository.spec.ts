@@ -3,6 +3,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { userFixture } from '../../../test/support/user-fixtures';
 import { UserRole } from '../../infra/prisma/prisma-client';
+import { SessionCachePort } from '../auth/sessions/session-cache.port';
 import { AdminUserRepository } from './admin-user.repository';
 import { AuditLogRepository } from './audit-log.repository';
 import { AdminUserQueryDto } from './dto/admin-user.dto';
@@ -14,6 +15,7 @@ describe('AdminUserRepository', () => {
   let user: { findUnique: jest.Mock; findMany: jest.Mock; count: jest.Mock; update: jest.Mock };
   let prisma: { user: typeof user; $transaction: jest.Mock };
   let auditLog: { appendWithin: jest.Mock };
+  let sessionCache: { invalidateUser: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let repository: AdminUserRepository;
 
@@ -28,10 +30,12 @@ describe('AdminUserRepository', () => {
       ),
     };
     auditLog = { appendWithin: jest.fn().mockResolvedValue(undefined) };
+    sessionCache = { invalidateUser: jest.fn().mockResolvedValue(undefined) };
     logger = createMockLogger();
     repository = new AdminUserRepository(
       prisma as unknown as PrismaService,
       auditLog as unknown as AuditLogRepository,
+      sessionCache as unknown as SessionCachePort,
       logger,
     );
   });
@@ -109,6 +113,39 @@ describe('AdminUserRepository', () => {
       await expect(
         repository.updateAudited('user-2', { isActive: false }, () => ({}) as never),
       ).resolves.toBeNull();
+    });
+
+    it('bumps the session-cache generation once the transaction commits', async () => {
+      user.update.mockResolvedValue(userFixture());
+
+      await repository.updateAudited('user-2', { isActive: false }, () => ({}) as never);
+
+      expect(sessionCache.invalidateUser).toHaveBeenCalledWith('user-2');
+    });
+
+    it('bumps the generation on a role change too — the demotion case', async () => {
+      user.update.mockResolvedValue(userFixture({ role: UserRole.OPS }));
+
+      await repository.updateAudited('user-2', { role: UserRole.OPS }, () => ({}) as never);
+
+      expect(sessionCache.invalidateUser).toHaveBeenCalledWith('user-2');
+    });
+
+    it('does not bump the cache when the transaction fails', async () => {
+      user.update.mockRejectedValue(new Error('connection refused'));
+
+      await repository.updateAudited('user-2', { isActive: false }, () => ({}) as never);
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+
+    it('does not bump the cache when the audit write fails the transaction', async () => {
+      user.update.mockResolvedValue(userFixture());
+      auditLog.appendWithin.mockRejectedValue(new Error('audit insert failed'));
+
+      await repository.updateAudited('user-2', { isActive: false }, () => ({}) as never);
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
     });
   });
 

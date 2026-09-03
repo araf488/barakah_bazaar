@@ -101,12 +101,22 @@ export const AuthConstants = {
   /** Unit conversions for the token and session deadlines, all of which are configured in minutes. */
   MillisecondsPerMinute: 60_000,
   MillisecondsPerSecond: 1_000,
+  /**
+   * Hard ceiling on how long a cached session validation may live in Redis, regardless of how
+   * far away the session's own `absoluteExpiresAt` is. Kept equal to
+   * `SessionTouchIntervalMinutes`: a cache hit skips the sliding idle-deadline write (it has no
+   * `lastUsedAt` to throttle against), so this ceiling is also what bounds how long that write
+   * can be deferred for a session served entirely from cache — never longer than the interval
+   * the write is already throttled to.
+   */
+  SessionCacheTtlCeilingSeconds: 300,
 } as const;
 
 /** Injection tokens for the auth ports. */
 export const AuthTokens = {
   SmsGateway: Symbol('BARAKAH_SMS_GATEWAY'),
   OtpService: Symbol('BARAKAH_OTP_SERVICE'),
+  SessionCache: Symbol('BARAKAH_SESSION_CACHE'),
 } as const;
 
 /** User-facing auth messages. Changing one of these is an API change. */

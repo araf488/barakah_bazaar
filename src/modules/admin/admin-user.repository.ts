@@ -1,7 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { Prisma, User, UserRole } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuthTokens } from '../auth/auth.constants';
+import { SessionCachePort } from '../auth/sessions/session-cache.port';
 import { AuditLogRepository, AuditLogWriteData } from './audit-log.repository';
 import { AdminUserQueryDto } from './dto/admin-user.dto';
 
@@ -25,6 +27,7 @@ export class AdminUserRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogRepository,
+    @Inject(AuthTokens.SessionCache) private readonly sessionCache: SessionCachePort,
     @InjectPinoLogger(AdminUserRepository.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -81,6 +84,13 @@ export class AdminUserRepository {
    *
    * Same reasoning as the catalog: an account that was disabled, or a role that changed,
    * without a record of who did it is the outcome the trail exists to prevent.
+   *
+   * The single choke point for every admin-side user mutation, which is why the cached
+   * session generation is bumped here rather than in each of `setAccountEnabled` and
+   * `changeRole`: a role change or a disabled account must stop validating from a stale cache
+   * entry on the very next request (Task 9's row-wins guarantee for `role`, and the same
+   * reasoning for `isActive`), and one edit here covers both today and any admin mutation
+   * added here later.
    */
   async updateAudited(
     id: string,
@@ -88,11 +98,20 @@ export class AdminUserRepository {
     audit: (updated: User) => AuditLogWriteData,
   ): Promise<AdminUserResult> {
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const updated = await tx.user.update({ where: { id }, data });
-        await this.auditLog.appendWithin(tx, audit(updated));
-        return updated;
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const row = await tx.user.update({ where: { id }, data });
+        await this.auditLog.appendWithin(tx, audit(row));
+        return row;
       });
+
+      // After the transaction returns, not inside it: bumping before commit leaves a window
+      // where a concurrent read repopulates the cache from the pre-write row. Unconditional
+      // rather than keyed to which fields changed — a spurious bump costs one extra database
+      // read on this user's next request; a missed one leaves a demoted or disabled account
+      // still validating from cache.
+      await this.sessionCache.invalidateUser(id);
+
+      return updated;
     } catch (error) {
       this.logger.error(
         { err: error, userId: id },

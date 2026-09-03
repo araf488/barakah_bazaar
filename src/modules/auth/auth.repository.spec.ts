@@ -2,6 +2,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AuthRepository } from './auth.repository';
+import { SessionCachePort } from './sessions/session-cache.port';
 
 describe('AuthRepository', () => {
   let prisma: {
@@ -14,6 +15,7 @@ describe('AuthRepository', () => {
     };
     $transaction: jest.Mock;
   };
+  let sessionCache: { invalidateUser: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let repository: AuthRepository;
 
@@ -28,8 +30,13 @@ describe('AuthRepository', () => {
       },
       $transaction: jest.fn(),
     };
+    sessionCache = { invalidateUser: jest.fn().mockResolvedValue(undefined) };
     logger = createMockLogger();
-    repository = new AuthRepository(prisma as unknown as PrismaService, logger);
+    repository = new AuthRepository(
+      prisma as unknown as PrismaService,
+      sessionCache as unknown as SessionCachePort,
+      logger,
+    );
   });
 
   describe('findById', () => {
@@ -135,6 +142,23 @@ describe('AuthRepository', () => {
 
       await expect(repository.updatePasswordHash('user-1', 'scrypt$new')).resolves.toBeNull();
     });
+
+    it('bumps the session-cache generation after the write commits', async () => {
+      // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+      prisma.user.update.mockResolvedValue({ id: 'user-1', passwordHash: 'scrypt$new' });
+
+      await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(sessionCache.invalidateUser).toHaveBeenCalledWith('user-1');
+    });
+
+    it('does not bump the cache when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
   });
 
   describe('saveTotpSecret', () => {
@@ -153,6 +177,14 @@ describe('AuthRepository', () => {
       prisma.user.update.mockRejectedValue(new Error('connection refused'));
 
       await expect(repository.saveTotpSecret('user-1', 'sealed')).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — an unconfirmed secret ends no session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.saveTotpSecret('user-1', 'sealed');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
     });
   });
 
@@ -192,6 +224,20 @@ describe('AuthRepository', () => {
 
       await expect(repository.enableTotp('user-1', 5, ['hash-a'])).resolves.toBeNull();
     });
+
+    it('does not bump the session-cache generation — enrolling MFA ends no other session', async () => {
+      const user = { id: 'user-1', totpEnabledAt: new Date() };
+      prisma.$transaction.mockImplementation(
+        async (operations: unknown[]) => await Promise.all(operations),
+      );
+      prisma.mfaRecoveryCode.deleteMany.mockResolvedValue({ count: 0 });
+      prisma.mfaRecoveryCode.createMany.mockResolvedValue({ count: 2 });
+      prisma.user.update.mockResolvedValue(user);
+
+      await repository.enableTotp('user-1', 5, ['hash-a']);
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
   });
 
   describe('disableTotp', () => {
@@ -224,6 +270,19 @@ describe('AuthRepository', () => {
 
       await expect(repository.disableTotp('user-1')).resolves.toBeNull();
     });
+
+    it('does not bump the session-cache generation — disabling MFA ends no other session', async () => {
+      const user = { id: 'user-1', totpEnabledAt: null };
+      prisma.$transaction.mockImplementation(
+        async (operations: unknown[]) => await Promise.all(operations),
+      );
+      prisma.mfaRecoveryCode.deleteMany.mockResolvedValue({ count: 3 });
+      prisma.user.update.mockResolvedValue(user);
+
+      await repository.disableTotp('user-1');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
   });
 
   describe('recordTotpFailure', () => {
@@ -244,6 +303,14 @@ describe('AuthRepository', () => {
 
       await expect(repository.recordTotpFailure('user-1', 1, null)).resolves.toBeNull();
     });
+
+    it('does not bump the session-cache generation — a lockout counter gates login, not a live session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.recordTotpFailure('user-1', 5, null);
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
   });
 
   describe('resetTotpState', () => {
@@ -262,6 +329,14 @@ describe('AuthRepository', () => {
       prisma.user.update.mockRejectedValue(new Error('connection refused'));
 
       await expect(repository.resetTotpState('user-1', 42)).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — clearing a lockout ends no session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.resetTotpState('user-1', 42);
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
     });
   });
 

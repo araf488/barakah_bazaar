@@ -1,7 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { MfaRecoveryCode, User } from '../../infra/prisma/prisma-client';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuthTokens } from './auth.constants';
+import { SessionCachePort } from './sessions/session-cache.port';
 
 /**
  * Persistence for the local `users` row.
@@ -14,6 +16,7 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 export class AuthRepository {
   constructor(
     private readonly prisma: PrismaService,
+    @Inject(AuthTokens.SessionCache) private readonly sessionCache: SessionCachePort,
     @InjectPinoLogger(AuthRepository.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -56,13 +59,29 @@ export class AuthRepository {
     }
   }
 
-  /** Rewrites the stored hash after a successful login at weaker-than-configured parameters. */
+  /**
+   * Rewrites the stored hash after a successful login at weaker-than-configured parameters.
+   *
+   * The only writer of `passwordHash` in this codebase today — there is no user-initiated
+   * "change password" flow yet, so every call here is an automatic rehash of an unchanged
+   * credential, triggered by `LoginService.rehashIfNeeded` on a successful login. It still
+   * bumps the cache generation: the brief's non-negotiable is "password change", stated as a
+   * field, not as a narrower "user-initiated change password" flow, and a spurious bump here
+   * costs at most one extra database read on the account's other live sessions — cheap insurance
+   * against a future password-change endpoint landing on this same method without anyone
+   * remembering to wire the invalidation in a second place.
+   */
   async updatePasswordHash(userId: string, passwordHash: string): Promise<User | null> {
     try {
-      return await this.prisma.user.update({
+      const updated = await this.prisma.user.update({
         where: { id: userId },
         data: { passwordHash, passwordChangedAt: new Date() },
       });
+
+      // After the write commits, not before — see AdminUserRepository.updateAudited for why.
+      await this.sessionCache.invalidateUser(userId);
+
+      return updated;
     } catch (error) {
       this.logger.error(
         { err: error, userId },
@@ -72,7 +91,14 @@ export class AuthRepository {
     }
   }
 
-  /** Stores a freshly generated, encrypted TOTP secret. Not yet enrolled — see `enableTotp`. */
+  /**
+   * Stores a freshly generated, encrypted TOTP secret. Not yet enrolled — see `enableTotp`.
+   *
+   * No cache invalidation: an unconfirmed secret changes nothing `CachedSessionValue` carries
+   * and does not itself end any session, exactly like it does not today when the cache does
+   * not exist. TOTP enrolment does not revoke a caller's other sessions in this codebase, and
+   * caching read validation does not change that decision — it only mirrors it.
+   */
   async saveTotpSecret(userId: string, encryptedSecret: string): Promise<User | null> {
     try {
       return await this.prisma.user.update({
@@ -94,6 +120,10 @@ export class AuthRepository {
    *
    * One transaction, because a user who saw the recovery codes but whose `totpEnabledAt` write
    * failed (or vice versa) is left unable to sign in with a factor the client believes is live.
+   *
+   * No cache invalidation, same reasoning as `saveTotpSecret`: enabling MFA does not revoke the
+   * caller's other live sessions today, and none of `totpEnabledAt`/`totpLastUsedStep`/
+   * `totpFailedAttempts`/`totpLockedUntil` are in `CachedSessionValue`.
    */
   async enableTotp(
     userId: string,
@@ -123,7 +153,12 @@ export class AuthRepository {
     }
   }
 
-  /** Turns TOTP off: clears the secret and every recovery code in one transaction. */
+  /**
+   * Turns TOTP off: clears the secret and every recovery code in one transaction.
+   *
+   * No cache invalidation, same reasoning as `saveTotpSecret` — disabling a second factor
+   * changes no field the cache carries and ends no session, before or after this task.
+   */
   async disableTotp(userId: string): Promise<User | null> {
     try {
       const [, user] = await this.prisma.$transaction([
@@ -146,7 +181,13 @@ export class AuthRepository {
     }
   }
 
-  /** Records a failed TOTP/recovery-code attempt, and the lockout deadline once one is set. */
+  /**
+   * Records a failed TOTP/recovery-code attempt, and the lockout deadline once one is set.
+   *
+   * No cache invalidation: a lockout counter is exactly the kind of field the brief calls out
+   * as not belonging in the cached value at all, and it gates a future *login* attempt, not an
+   * existing session's validity.
+   */
   async recordTotpFailure(
     userId: string,
     failedAttempts: number,
@@ -166,7 +207,12 @@ export class AuthRepository {
     }
   }
 
-  /** Clears the lockout and records the spent step after a successful code or recovery code. */
+  /**
+   * Clears the lockout and records the spent step after a successful code or recovery code.
+   *
+   * No cache invalidation, same reasoning as `recordTotpFailure` — the fields it writes are
+   * MFA-verification bookkeeping, not anything `CachedSessionValue` carries.
+   */
   async resetTotpState(userId: string, lastUsedStep: number): Promise<User | null> {
     try {
       return await this.prisma.user.update({

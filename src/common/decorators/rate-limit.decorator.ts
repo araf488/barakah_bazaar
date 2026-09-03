@@ -13,7 +13,7 @@ import { MetadataKeys } from '../constants/app.constants';
  * Each bucket's `skipIf` (see `buildThrottlerOptions`) consults this metadata instead, so a
  * bucket applies exactly where a route asks for it and nowhere else.
  *
- * @example `@RateLimit(ThrottleBuckets.Auth)`
+ * @example `@RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)`
  */
 export const RateLimit = (...buckets: readonly string[]): MethodDecorator & ClassDecorator =>
   SetMetadata(MetadataKeys.RateLimitBuckets, buckets);

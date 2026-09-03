@@ -59,6 +59,13 @@ const baseEnvSchema = z.object({
   REDIS_PORT: z.coerce.number().int().positive().max(65535).default(6379),
   REDIS_PASSWORD: z.string().min(1).optional(),
   REDIS_TLS: boolFlag('false'),
+  /**
+   * Caches `SessionRepository.findByIdWithUser`, the one database read `SessionService.validate`
+   * runs on every authenticated request. Off by default, same shape as QUEUE_ENABLED: local
+   * development and CI need no Redis. Revocation is never left to the TTL alone — see
+   * `SessionCachePort`.
+   */
+  SESSION_CACHE_ENABLED: boolFlag('false'),
 
   // ── Email sender ──────────────────────────────────────────────────────────
   // Defaults to noop, which logs the recipient and reports success. While it is noop the
@@ -105,7 +112,14 @@ const baseEnvSchema = z.object({
   SCRYPT_COST_LOG2: z.coerce.number().int().min(12).max(20).default(15),
   SCRYPT_BLOCK_SIZE: z.coerce.number().int().min(1).max(32).default(8),
   SCRYPT_PARALLELISM: z.coerce.number().int().min(1).max(16).default(3),
+  /** Requests per minute, per caller IP, allowed against login, MFA verification and refresh. */
   AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(10),
+  /**
+   * Requests per minute, per submitted account (email), allowed against the same routes —
+   * bounds a distributed attempt against one account spread across many IPs, which
+   * AUTH_RATE_LIMIT alone cannot see since it counts each IP separately.
+   */
+  AUTH_ACCOUNT_RATE_LIMIT: z.coerce.number().int().positive().default(20),
   AUTH_SETTINGS_CACHE_SECONDS: z.coerce.number().int().min(0).default(60),
   SESSION_TOUCH_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(5),
   /** Base for verification and reset links. NEVER derived from the request Host header. */
@@ -117,7 +131,7 @@ const baseEnvSchema = z.object({
    * method — POST, PATCH, PUT, DELETE. Reads are deliberately unlimited here: a storefront
    * browses far faster than it writes, and the abuse worth stopping at the app layer (order
    * spam, review flooding, repeated credential changes) is all writes. An endpoint needing a
-   * tighter bound names its own bucket instead; `auth` already does.
+   * tighter bound names its own bucket instead; the `auth-ip`/`auth-account` pair already does.
    */
   WRITE_RATE_LIMIT: z.coerce.number().int().positive().default(60),
 });

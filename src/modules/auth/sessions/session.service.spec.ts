@@ -9,6 +9,7 @@ import {
   ResolvedAuthSettings,
 } from '../settings/auth-settings.service';
 import { AccessTokenService } from '../tokens/access-token.service';
+import { CachedSessionValue } from './session-cache.port';
 import { SessionRepository, SessionWithUser } from './session.repository';
 import { IssuedSession, SessionService, ValidatedSession } from './session.service';
 
@@ -32,6 +33,7 @@ const makeUser = (overrides: Record<string, unknown> = {}): User =>
   ({
     id: 'user-1',
     email: 'shopper@example.com',
+    phone: null,
     fullName: 'Aisha Rahman',
     role: UserRole.CUSTOMER,
     isActive: true,
@@ -66,6 +68,19 @@ const makeClaims = (overrides: Record<string, unknown> = {}) =>
     ...overrides,
   }) as Parameters<SessionService['validate']>[0];
 
+const makeCachedValue = (overrides: Partial<CachedSessionValue> = {}): CachedSessionValue => ({
+  userId: 'user-1',
+  role: UserRole.CUSTOMER,
+  email: 'shopper@example.com',
+  phone: null,
+  isActive: true,
+  deviceId: DEVICE,
+  expiresAt: new Date(NOW.getTime() + HOUR).toISOString(),
+  absoluteExpiresAt: new Date(NOW.getTime() + 48 * HOUR).toISOString(),
+  revokedAt: null,
+  ...overrides,
+});
+
 const issued = (response: ServiceResponse<IssuedSession>): IssuedSession => {
   if (!response.ok) {
     throw new Error(`expected a session, got ${response.status}: ${response.message}`);
@@ -91,6 +106,12 @@ describe('SessionService', () => {
     revokeAllForUser: jest.Mock;
   };
   let settings: { current: jest.Mock };
+  let cache: {
+    read: jest.Mock;
+    write: jest.Mock;
+    invalidateSession: jest.Mock;
+    invalidateUser: jest.Mock;
+  };
   let tokens: AccessTokenService;
   let logger: jest.Mocked<PinoLogger>;
   let service: SessionService;
@@ -130,6 +151,14 @@ describe('SessionService', () => {
       revokeAllForUser: jest.fn().mockResolvedValue(2),
     };
     settings = { current: jest.fn().mockResolvedValue(resolvedSettings()) };
+    // Defaults to a miss on every read, so every pre-existing `validate` test below continues
+    // to exercise the database path exactly as it did before this cache existed.
+    cache = {
+      read: jest.fn().mockResolvedValue(null),
+      write: jest.fn().mockResolvedValue(undefined),
+      invalidateSession: jest.fn().mockResolvedValue(undefined),
+      invalidateUser: jest.fn().mockResolvedValue(undefined),
+    };
     // The real token service, not a stub: "returns a working access token" is only worth
     // asserting if the thing that verifies it is the thing that will verify it in production.
     tokens = new AccessTokenService(
@@ -145,6 +174,7 @@ describe('SessionService', () => {
       repository as unknown as SessionRepository,
       tokens,
       settings as unknown as AuthSettingsService,
+      cache,
       logger,
     );
   });
@@ -335,6 +365,164 @@ describe('SessionService', () => {
 
       expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(500);
       expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('validate — session cache', () => {
+    const validated = (response: ServiceResponse<ValidatedSession>): ValidatedSession => {
+      if (!response.ok) {
+        throw new Error(`expected a validated session, got ${response.status}`);
+      }
+      return response.data;
+    };
+
+    it('accepts a cache hit without touching the database', async () => {
+      cache.read.mockResolvedValue(makeCachedValue());
+
+      const result = validated(await service.validate(makeClaims(), DEVICE));
+
+      expect(result.sessionId).toBe('session-1');
+      expect(result.user).toEqual({
+        id: 'user-1',
+        email: 'shopper@example.com',
+        phone: null,
+        role: UserRole.CUSTOMER,
+        isActive: true,
+      });
+      expect(repository.findByIdWithUser).not.toHaveBeenCalled();
+      expect(cache.read).toHaveBeenCalledWith('session-1', 'user-1');
+    });
+
+    it('refuses a cached session marked revoked, without consulting the database', async () => {
+      cache.read.mockResolvedValue(makeCachedValue({ revokedAt: NOW.toISOString() }));
+
+      expect(failure(await service.validate(makeClaims(), DEVICE))).toEqual({
+        status: 401,
+        message: 'Your session is invalid or has expired. Please sign in again.',
+      });
+      expect(repository.findByIdWithUser).not.toHaveBeenCalled();
+    });
+
+    it('refuses a cached session past its idle deadline', async () => {
+      cache.read.mockResolvedValue(
+        makeCachedValue({ expiresAt: new Date(NOW.getTime() - MINUTE).toISOString() }),
+      );
+
+      expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(401);
+    });
+
+    it('refuses a cached session past its absolute cap even if the idle window is open', async () => {
+      cache.read.mockResolvedValue(
+        makeCachedValue({
+          expiresAt: new Date(NOW.getTime() + HOUR).toISOString(),
+          absoluteExpiresAt: new Date(NOW.getTime() - MINUTE).toISOString(),
+        }),
+      );
+
+      expect(failure(await service.validate(makeClaims(), DEVICE)).status).toBe(401);
+    });
+
+    it('refuses a cache hit from a different device, revokes it, and drops the cache entry', async () => {
+      cache.read.mockResolvedValue(makeCachedValue());
+
+      expect(failure(await service.validate(makeClaims(), 'device-2')).status).toBe(401);
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+      expect(cache.invalidateSession).toHaveBeenCalledWith('session-1');
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('refuses a cached disabled account with 403, not 401', async () => {
+      cache.read.mockResolvedValue(makeCachedValue({ isActive: false }));
+
+      expect(failure(await service.validate(makeClaims(), DEVICE))).toEqual({
+        status: 403,
+        message: 'This account has been disabled. Please contact support.',
+      });
+    });
+
+    it('falls back to the database when the cache errors, rather than accepting the session', async () => {
+      cache.read.mockRejectedValue(new Error('redis unreachable'));
+
+      const result = validated(await service.validate(makeClaims(), DEVICE));
+
+      expect(result.sessionId).toBe('session-1');
+      expect(repository.findByIdWithUser).toHaveBeenCalledWith('session-1');
+    });
+
+    it('populates the cache after a database-served validation succeeds', async () => {
+      await service.validate(makeClaims(), DEVICE);
+
+      expect(cache.write).toHaveBeenCalledTimes(1);
+      const [sessionId, value, ttlSeconds] = cache.write.mock.calls[0] as [
+        string,
+        CachedSessionValue,
+        number,
+      ];
+      expect(sessionId).toBe('session-1');
+      expect(value).toEqual(makeCachedValue());
+      expect(ttlSeconds).toBe(300);
+    });
+
+    it('caps the cache TTL at the session ceiling, not at the (much larger) absolute expiry', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ absoluteExpiresAt: new Date(NOW.getTime() + 48 * HOUR) }),
+      );
+
+      await service.validate(makeClaims(), DEVICE);
+
+      const ttlSeconds = cache.write.mock.calls[0][2] as number;
+      expect(ttlSeconds).toBe(300);
+    });
+
+    it('caps the cache TTL at the remaining absolute life when that is shorter than the ceiling', async () => {
+      const almostOver = new Date(NOW.getTime() + 90_000);
+      repository.findByIdWithUser.mockResolvedValue(makeSession({ absoluteExpiresAt: almostOver }));
+
+      await service.validate(makeClaims(), DEVICE);
+
+      const ttlSeconds = cache.write.mock.calls[0][2] as number;
+      expect(ttlSeconds).toBe(90);
+    });
+
+    it('never writes to the cache once the session is already past its absolute expiry', async () => {
+      // Rejected by `assertUsable` before `cacheSession` is ever reached, so this mostly
+      // documents the ordinary case. The genuinely load-bearing guard is the next test.
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({
+          expiresAt: new Date(NOW.getTime() + HOUR),
+          absoluteExpiresAt: new Date(NOW.getTime() - MINUTE),
+        }),
+      );
+
+      await service.validate(makeClaims(), DEVICE);
+
+      expect(cache.write).not.toHaveBeenCalled();
+    });
+
+    it('never writes to the cache when less than a second of absolute life remains, even though the session is still valid', async () => {
+      // A session with sub-second remaining life passes `assertUsable` (its absolute deadline
+      // has not yet arrived) but must still not be cached: `Math.floor` on the remaining
+      // milliseconds rounds this down to a TTL of 0, and `cacheSession` must treat that exactly
+      // like a negative TTL rather than caching it for one full ceiling-length TTL by accident.
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ absoluteExpiresAt: new Date(NOW.getTime() + 500) }),
+      );
+
+      await service.validate(makeClaims(), DEVICE);
+
+      expect(cache.write).not.toHaveBeenCalled();
+    });
+
+    it('never populates refreshTokenHash or previousRefreshTokenHash into the cache', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ previousRefreshTokenHash: sha256('some-previous-token') }),
+      );
+
+      await service.validate(makeClaims(), DEVICE);
+
+      const value = cache.write.mock.calls[0][1] as Record<string, unknown>;
+      expect(value.refreshTokenHash).toBeUndefined();
+      expect(value.previousRefreshTokenHash).toBeUndefined();
     });
   });
 
@@ -571,6 +759,7 @@ describe('SessionService', () => {
         repository as unknown as SessionRepository,
         tokens,
         settings as unknown as AuthSettingsService,
+        cache,
         logger,
       );
 
@@ -621,6 +810,20 @@ describe('SessionService', () => {
       expect(failure(await service.revoke('session-1')).status).toBe(500);
       expect(logger.error).toHaveBeenCalled();
     });
+
+    it('drops the cached entry once the database revoke commits', async () => {
+      await service.revoke('session-1');
+
+      expect(cache.invalidateSession).toHaveBeenCalledWith('session-1');
+    });
+
+    it('does not touch the cache when the database write failed', async () => {
+      repository.revoke.mockResolvedValue(false);
+
+      await service.revoke('session-1');
+
+      expect(cache.invalidateSession).not.toHaveBeenCalled();
+    });
   });
 
   describe('revokeAll', () => {
@@ -643,6 +846,20 @@ describe('SessionService', () => {
 
       expect(failure(await service.revokeAll('user-1')).status).toBe(500);
       expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('bumps the user generation once every live session is revoked', async () => {
+      await service.revokeAll('user-1');
+
+      expect(cache.invalidateUser).toHaveBeenCalledWith('user-1');
+    });
+
+    it('does not bump the generation when the database write failed', async () => {
+      repository.revokeAllForUser.mockResolvedValue(null);
+
+      await service.revokeAll('user-1');
+
+      expect(cache.invalidateUser).not.toHaveBeenCalled();
     });
   });
 

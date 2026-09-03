@@ -27,6 +27,10 @@ interface ExecutionContextOptions {
   user?: unknown;
   /** HTTP method on the request, for anything that branches on read versus write. */
   method?: string;
+  /** Caller IP, for anything that tracks or branches on it (e.g. a per-IP rate-limit bucket). */
+  ip?: string;
+  /** Parsed request body, for anything that reads a submitted field (e.g. an email). */
+  body?: unknown;
   /**
    * Reflection targets returned by `getHandler()` and `getClass()`. Typed as `object` because
    * the real context hands back a method and a class constructor — pass the decorated
@@ -48,6 +52,8 @@ export const createExecutionContext = (
     headers: options.headers ?? {},
     ...(options.method === undefined ? {} : { method: options.method }),
     ...(options.user === undefined ? {} : { user: options.user }),
+    ...(options.ip === undefined ? {} : { ip: options.ip }),
+    ...(options.body === undefined ? {} : { body: options.body }),
   };
 
   const response = { setHeader: jest.fn() };

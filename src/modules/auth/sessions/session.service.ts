@@ -1,12 +1,13 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ErrorMessages } from '../../../common/constants/error-messages.constants';
 import { ServiceResponse, serviceFail, serviceOk } from '../../../common/types/service-response';
 import { User, UserRole } from '../../../infra/prisma/prisma-client';
-import { AuthConstants, AuthMessages } from '../auth.constants';
+import { AuthConstants, AuthMessages, AuthTokens } from '../auth.constants';
 import { ResolvedAuthSettings, AuthSettingsService } from '../settings/auth-settings.service';
 import { AccessTokenClaims, AccessTokenService } from '../tokens/access-token.service';
+import { CachedSessionValue, SessionCachePort, toCachedSessionValue } from './session-cache.port';
 import { SessionRepository, SessionSighting, SessionWithUser } from './session.repository';
 
 /** A signed-in device's credentials. The refresh token is raw here and nowhere else. */
@@ -20,9 +21,16 @@ export interface IssuedSession {
   readonly user: User;
 }
 
+/**
+ * The subset of `User` the guard actually reads off a validated session (see
+ * `SessionAuthGuard.canActivate`). Narrower than `User` on purpose: a cache hit reconstructs
+ * this from `CachedSessionValue`, which does not carry the rest of the row.
+ */
+export type ValidatedSessionUser = Pick<User, 'id' | 'email' | 'phone' | 'role' | 'isActive'>;
+
 /** What the guard learns from a session that is still allowed to act. */
 export interface ValidatedSession {
-  readonly user: User;
+  readonly user: ValidatedSessionUser;
   readonly sessionId: string;
 }
 
@@ -61,6 +69,7 @@ export class SessionService {
     private readonly repository: SessionRepository,
     private readonly tokens: AccessTokenService,
     private readonly settings: AuthSettingsService,
+    @Inject(AuthTokens.SessionCache) private readonly cache: SessionCachePort,
     @InjectPinoLogger(SessionService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -143,6 +152,12 @@ export class SessionService {
     deviceId: string,
   ): Promise<ServiceResponse<ValidatedSession>> {
     try {
+      const cached = await this.tryFromCache(claims, deviceId);
+
+      if (cached) {
+        return cached;
+      }
+
       const session = await this.repository.findByIdWithUser(claims.sessionId);
 
       if (session === null) {
@@ -172,6 +187,7 @@ export class SessionService {
       }
 
       await this.slideIdleDeadline(session, settings);
+      await this.cacheSession(session);
 
       return serviceOk({ user: session.user, sessionId: session.id });
     } catch (error) {
@@ -262,6 +278,10 @@ export class SessionService {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
 
+      // After the write commits, not before: invalidating first would leave a window where a
+      // concurrent read repopulates the cache from the still-live row.
+      await this.invalidateCachedSession(sessionId);
+
       return serviceOk<void>(undefined);
     } catch (error) {
       this.logger.error({ err: error, sessionId }, 'Exception occurred in SessionService.revoke');
@@ -283,12 +303,161 @@ export class SessionService {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
 
+      // Bumps the per-user generation rather than touching each session's own cache entry —
+      // this is what makes a session cached *before* this call, under any sessionId, unreadable
+      // on its very next lookup without enumerating them.
+      await this.invalidateCachedUser(userId);
+
       this.logger.info({ userId, revoked }, 'Revoked every live session for a user');
 
       return serviceOk(revoked);
     } catch (error) {
       this.logger.error({ err: error, userId }, 'Exception occurred in SessionService.revokeAll');
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  // ── Session cache ────────────────────────────────────────────────────────
+
+  /**
+   * The cache-hit half of `validate`: everything `assertUsable` checks, decided from
+   * `CachedSessionValue` alone. Returns `null` on a miss, which sends the caller to the
+   * database exactly as it would if this cache did not exist.
+   *
+   * Deliberately does not call `slideIdleDeadline`: that write is throttled by comparing
+   * against `lastUsedAt`, which is not in the cached value (see `CachedSessionValue`'s class
+   * comment), so a cache hit cannot decide whether the throttle window has elapsed. The write
+   * is only ever deferred, never lost — `AuthConstants.SessionCacheTtlCeilingSeconds` bounds
+   * how long a session can be served from cache before the next request falls through to the
+   * database and either performs the write or finds it was not yet due.
+   */
+  private async tryFromCache(
+    claims: AccessTokenClaims,
+    deviceId: string,
+  ): Promise<ServiceResponse<ValidatedSession> | null> {
+    const cached = await this.readCache(claims.sessionId, claims.userId);
+
+    if (!cached) {
+      return null;
+    }
+
+    // Defense in depth, same reasoning as the equivalent check on the database path: the
+    // generation key `read` compared against is itself keyed by `claims.userId`, so this can
+    // only fire if a cached payload's own `userId` field disagrees with the key it was
+    // filed under — which would mean the cache was corrupted or shared, not that the token
+    // lied (the signature already rules that out).
+    if (cached.userId !== claims.userId) {
+      this.logger.warn(
+        { sessionId: claims.sessionId },
+        'Access token subject does not own the cached session it names',
+      );
+      return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
+    }
+
+    return this.assertCachedUsable(claims.sessionId, cached, deviceId);
+  }
+
+  /** `assertUsable`'s checks, run against a `CachedSessionValue` instead of a `SessionWithUser`. */
+  private async assertCachedUsable(
+    sessionId: string,
+    cached: CachedSessionValue,
+    deviceId: string,
+  ): Promise<ServiceResponse<ValidatedSession>> {
+    if (cached.revokedAt !== null) {
+      return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
+    }
+
+    const now = Date.now();
+
+    if (new Date(cached.absoluteExpiresAt).getTime() <= now) {
+      return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
+    }
+
+    if (new Date(cached.expiresAt).getTime() <= now) {
+      return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
+    }
+
+    if (cached.deviceId !== deviceId) {
+      // Same response as the database path, and the same side effect: a token bound to one
+      // device presented by another is never legitimate, so the session is revoked outright
+      // rather than merely refused. The cache entry is invalidated too, rather than left for
+      // its TTL — explicit invalidation is the mechanism, the TTL only ever a backstop.
+      await this.repository.revoke(sessionId);
+      await this.invalidateCachedSession(sessionId);
+      this.logger.warn({ sessionId }, 'Session device mismatch, session revoked');
+      return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
+    }
+
+    if (!cached.isActive) {
+      this.logger.warn({ sessionId }, 'Disabled account presented a live session');
+      return serviceFail(HttpStatus.FORBIDDEN, ErrorMessages.AccountDisabled);
+    }
+
+    return serviceOk({
+      user: {
+        id: cached.userId,
+        email: cached.email,
+        phone: cached.phone,
+        role: cached.role,
+        isActive: cached.isActive,
+      },
+      sessionId,
+    });
+  }
+
+  /**
+   * Populates the cache after a database-served `validate` succeeds. Never past
+   * `absoluteExpiresAt`, and bounded by `SessionCacheTtlCeilingSeconds` besides — see
+   * `tryFromCache` for why that ceiling also matters for the sliding idle deadline.
+   */
+  private async cacheSession(session: SessionWithUser): Promise<void> {
+    const remainingSeconds = Math.floor(
+      (session.absoluteExpiresAt.getTime() - Date.now()) / AuthConstants.MillisecondsPerSecond,
+    );
+    const ttlSeconds = Math.min(remainingSeconds, AuthConstants.SessionCacheTtlCeilingSeconds);
+
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    try {
+      await this.cache.write(session.id, toCachedSessionValue(session.user, session), ttlSeconds);
+    } catch (error) {
+      // A write fault here must not turn a validation that already succeeded against the
+      // database into a failed request — this is bookkeeping for the *next* request, not
+      // something this one depends on.
+      this.logger.warn({ err: error, sessionId: session.id }, 'Session-cache write failed');
+    }
+  }
+
+  /** Wraps `SessionCachePort.read` so a violation of its no-throw contract still degrades to a miss. */
+  private async readCache(sessionId: string, userId: string): Promise<CachedSessionValue | null> {
+    try {
+      return await this.cache.read(sessionId, userId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, sessionId },
+        'Session-cache read failed; falling back to the database',
+      );
+      return null;
+    }
+  }
+
+  /** Wraps `SessionCachePort.invalidateSession` the same way `readCache` wraps `read`. */
+  private async invalidateCachedSession(sessionId: string): Promise<void> {
+    try {
+      await this.cache.invalidateSession(sessionId);
+    } catch (error) {
+      this.logger.warn({ err: error, sessionId }, 'Session-cache invalidation failed');
+    }
+  }
+
+  /** Wraps `SessionCachePort.invalidateUser` the same way `readCache` wraps `read`. */
+  private async invalidateCachedUser(userId: string): Promise<void> {
+    try {
+      await this.cache.invalidateUser(userId);
+    } catch (error) {
+      this.logger.warn({ err: error, userId }, 'Session-cache user-generation bump failed');
     }
   }
 

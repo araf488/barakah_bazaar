@@ -67,7 +67,7 @@ export class AuthController {
    * when staff policy requires one that has not been set up yet.
    */
   @Public()
-  @RateLimit(ThrottleBuckets.Auth)
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
   @HttpCode(HttpStatus.OK)
   @Post('login')
   @ApiOperation({ summary: 'Sign in with an email and password' })
@@ -98,7 +98,7 @@ export class AuthController {
    * or a recovery code for a session.
    */
   @Public()
-  @RateLimit(ThrottleBuckets.Auth)
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
   @HttpCode(HttpStatus.OK)
   @Post('login/mfa')
   @ApiOperation({ summary: 'Complete a login with a second factor' })
@@ -138,7 +138,7 @@ export class AuthController {
    * already rotated away from signs you out at the next refresh.
    */
   @Public()
-  @RateLimit(ThrottleBuckets.Auth)
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
   @HttpCode(HttpStatus.OK)
   @Post('refresh')
   @ApiOperation({ summary: 'Rotate a refresh token for a new access token' })
