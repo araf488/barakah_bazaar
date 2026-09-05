@@ -1,10 +1,15 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { ErrorMessages } from '../../../common/constants/error-messages.constants';
+import {
+  ErrorMessages,
+  ErrorMessageTemplates,
+  formatMessage,
+} from '../../../common/constants/error-messages.constants';
 import { ServiceResponse, serviceFail, serviceOk } from '../../../common/types/service-response';
-import { User, UserRole } from '../../../infra/prisma/prisma-client';
+import { Session, User, UserRole } from '../../../infra/prisma/prisma-client';
 import { AuthConstants, AuthMessages, AuthTokens } from '../auth.constants';
+import { AuthEventActor, AuthEventsService } from '../auth-events.service';
 import { ResolvedAuthSettings, AuthSettingsService } from '../settings/auth-settings.service';
 import { AccessTokenClaims, AccessTokenService } from '../tokens/access-token.service';
 import { CachedSessionValue, SessionCachePort, toCachedSessionValue } from './session-cache.port';
@@ -69,6 +74,7 @@ export class SessionService {
     private readonly repository: SessionRepository,
     private readonly tokens: AccessTokenService,
     private readonly settings: AuthSettingsService,
+    private readonly events: AuthEventsService,
     @Inject(AuthTokens.SessionCache) private readonly cache: SessionCachePort,
     @InjectPinoLogger(SessionService.name) private readonly logger: PinoLogger,
   ) {}
@@ -120,6 +126,8 @@ export class SessionService {
         // handed back. A credential the server cannot later kill is worse than a failed login.
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
+
+      await this.recordSignIn(user, session.id, deviceId, userAgent, ip);
 
       const access = await this.signAccessToken(user, session.id, deviceId, settings);
 
@@ -266,8 +274,14 @@ export class SessionService {
     }
   }
 
-  /** Ends one session. Idempotent: revoking an already-revoked session is a success. */
-  async revoke(sessionId: string): Promise<ServiceResponse<void>> {
+  /**
+   * Ends one session. Idempotent: revoking an already-revoked session is a success.
+   *
+   * `actor` is the caller signing themselves out, when there is one — the route already
+   * verified them, so passing it here records the event without a second lookup. Omitted by
+   * the internal paths, which record their own event with the reason it happened.
+   */
+  async revoke(sessionId: string, actor?: AuthEventActor): Promise<ServiceResponse<void>> {
     try {
       const revoked = await this.repository.revoke(sessionId);
 
@@ -282,6 +296,10 @@ export class SessionService {
       // concurrent read repopulates the cache from the still-live row.
       await this.invalidateCachedSession(sessionId);
 
+      if (actor) {
+        await this.events.recordLogout(actor, sessionId);
+      }
+
       return serviceOk<void>(undefined);
     } catch (error) {
       this.logger.error({ err: error, sessionId }, 'Exception occurred in SessionService.revoke');
@@ -295,7 +313,7 @@ export class SessionService {
    * A password change and a lockout both depend on this actually happening, so a failed write
    * is a failure here rather than a cheerful zero.
    */
-  async revokeAll(userId: string): Promise<ServiceResponse<number>> {
+  async revokeAll(userId: string, actor?: AuthEventActor): Promise<ServiceResponse<number>> {
     try {
       const revoked = await this.repository.revokeAllForUser(userId);
 
@@ -310,9 +328,77 @@ export class SessionService {
 
       this.logger.info({ userId, revoked }, 'Revoked every live session for a user');
 
+      if (actor) {
+        await this.events.recordSessionRevoked(actor, userId, 'all_sessions_ended');
+      }
+
       return serviceOk(revoked);
     } catch (error) {
       this.logger.error({ err: error, userId }, 'Exception occurred in SessionService.revokeAll');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * The caller's own live sessions, newest first — "where am I signed in".
+   *
+   * `null` from the repository means the read itself failed and must not be reported as "no
+   * sessions": that would tell someone with several live sessions they have none, which is a
+   * worse answer than an error.
+   */
+  async listForUser(userId: string): Promise<ServiceResponse<Session[]>> {
+    try {
+      const sessions = await this.repository.listLiveForUser(userId);
+
+      if (sessions === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      return serviceOk(sessions);
+    } catch (error) {
+      this.logger.error({ err: error, userId }, 'Exception occurred in SessionService.listForUser');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * Ends one session the caller owns.
+   *
+   * A session that does not exist and a session that exists but belongs to someone else
+   * answer with the same 404: a 403 would confirm to whoever holds the id that it is real,
+   * which is exactly what a caller enumerating ids wants to learn. `revoke` itself is
+   * idempotent, so ending an already-revoked session of the caller's own is still a success.
+   */
+  async revokeOwned(userId: string, sessionId: string): Promise<ServiceResponse<void>> {
+    try {
+      const session = await this.repository.findByIdWithUser(sessionId);
+
+      if (session === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      if (session === undefined || session.userId !== userId) {
+        return serviceFail(
+          HttpStatus.NOT_FOUND,
+          formatMessage(ErrorMessageTemplates.NotFound, AuthConstants.SessionResourceName),
+        );
+      }
+
+      const result = await this.revoke(sessionId);
+
+      if (result.ok) {
+        // Not `recordLogout`: the caller is ending a session that is not the one they are
+        // making this request with, which is the "I do not recognise that device" action and
+        // reads very differently in an incident review.
+        await this.events.recordSessionRevoked(session.user, sessionId, 'owner_revoked');
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId, sessionId },
+        'Exception occurred in SessionService.revokeOwned',
+      );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
   }
@@ -384,6 +470,11 @@ export class SessionService {
       // its TTL — explicit invalidation is the mechanism, the TTL only ever a backstop.
       await this.repository.revoke(sessionId);
       await this.invalidateCachedSession(sessionId);
+      await this.events.recordSessionRevoked(
+        { id: cached.userId, email: cached.email, role: cached.role },
+        sessionId,
+        'device_mismatch',
+      );
       this.logger.warn({ sessionId }, 'Session device mismatch, session revoked');
       return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
     }
@@ -443,6 +534,38 @@ export class SessionService {
     }
   }
 
+  /**
+   * Records the sign-in, and separately records the device when this account has no earlier
+   * session from it.
+   *
+   * The history read is skipped for customers, whose events are never recorded — there is no
+   * reason to spend a query establishing a fact nothing will write down. A `null` from the
+   * repository means the read failed, and is treated as "cannot tell": an unknown device is
+   * not asserted, because a database hiccup must not raise a new-device alert on a laptop the
+   * user has had for a year.
+   */
+  private async recordSignIn(
+    user: User,
+    sessionId: string,
+    deviceId: string,
+    userAgent: string | null,
+    ip: string | null,
+  ): Promise<void> {
+    const context = { sessionId, deviceId, userAgent, ip };
+
+    await this.events.recordLogin(user, context);
+
+    if (!SessionService.isStaff(user.role)) {
+      return;
+    }
+
+    const seenBefore = await this.repository.hasDeviceHistory(user.id, deviceId, sessionId);
+
+    if (seenBefore === false) {
+      await this.events.recordNewDevice(user, context);
+    }
+  }
+
   /** Wraps `SessionCachePort.invalidateSession` the same way `readCache` wraps `read`. */
   private async invalidateCachedSession(sessionId: string): Promise<void> {
     try {
@@ -499,6 +622,7 @@ export class SessionService {
       // device — so a token minted for one client is being presented by a different one.
       // Nothing legitimate does that, which makes refusing the request too small a response.
       await this.repository.revoke(session.id);
+      await this.events.recordSessionRevoked(session.user, session.id, 'device_mismatch');
       this.logger.warn({ sessionId: session.id }, 'Session device mismatch, session revoked');
       return serviceFail(HttpStatus.UNAUTHORIZED, unauthorizedMessage);
     }

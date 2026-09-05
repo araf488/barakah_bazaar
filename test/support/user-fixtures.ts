@@ -2,7 +2,6 @@ import { Address, Language, User, UserRole } from '../../src/infra/prisma/prisma
 
 export const userFixture = (overrides: Partial<User> = {}): User => ({
   id: 'user-1',
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
   email: 'customer@barakahbazaar.com.bd',
   phone: '+8801711111111',
   fullName: 'Rahim Uddin',

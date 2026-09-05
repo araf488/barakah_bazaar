@@ -56,6 +56,10 @@ jobs:
         run: npm run test:e2e
         env:
           NODE_ENV: test
+          # Matches the Dockerfile. Password hashing runs on libuv's threadpool, which
+          # defaults to 4 threads shared with all file and DNS work; the e2e suite signs in
+          # concurrently and would otherwise measure that contention rather than the app.
+          UV_THREADPOOL_SIZE: 16
 
       - name: Build
         run: npm run build

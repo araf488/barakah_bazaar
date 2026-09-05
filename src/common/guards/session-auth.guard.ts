@@ -81,10 +81,7 @@ export class SessionAuthGuard implements CanActivate {
     request.user = {
       userId: validated.data.user.id,
       sessionId: validated.data.sessionId,
-      // Phone-only accounts have no email; empty is honest about that rather than widening
-      // AuthenticatedUser.email to optional for every one of its ~40 call sites. Matches the
-      // same convention SessionService uses for the access token's own `email` claim.
-      email: validated.data.user.email ?? '',
+      email: validated.data.user.email,
       phone: validated.data.user.phone ?? undefined,
       role: validated.data.user.role,
     };

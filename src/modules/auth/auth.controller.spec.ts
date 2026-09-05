@@ -4,9 +4,11 @@ import {
   HttpStatus,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { Request } from 'express';
+import { MetadataKeys } from '../../common/constants/app.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { UserRole } from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
@@ -28,7 +30,6 @@ const authenticated: AuthenticatedUser = {
 
 const profile: UserProfileDto = {
   id: 'user-1',
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
   email: 'customer@example.com',
   phone: null,
   fullName: null,
@@ -43,7 +44,6 @@ const issuedSession = {
   refreshExpiresAt: new Date('2026-10-03T00:00:00.000Z'),
   user: {
     id: 'user-1',
-    supabaseUserId: '11111111-1111-1111-1111-111111111111',
     email: 'customer@example.com',
     phone: null,
     fullName: null,
@@ -57,18 +57,41 @@ const buildRequest = (
   ip: string | null = '203.0.113.7',
 ): Request => ({ headers, ip: ip ?? undefined }) as unknown as Request;
 
+const makeSession = (overrides: Record<string, unknown> = {}) => ({
+  id: 'session-1',
+  userId: 'user-1',
+  deviceId: 'device-1',
+  userAgent: 'Chrome/141',
+  ipAddress: '203.0.113.42',
+  createdAt: new Date('2026-08-29T00:00:00.000Z'),
+  lastUsedAt: new Date('2026-09-02T08:00:00.000Z'),
+  ...overrides,
+});
+
 describe('AuthController', () => {
   let authService: { resolveProfile: jest.Mock };
   let loginService: { login: jest.Mock };
   let mfaService: { verifyLogin: jest.Mock };
-  let sessionService: { refresh: jest.Mock };
+  let sessionService: {
+    refresh: jest.Mock;
+    revoke: jest.Mock;
+    revokeAll: jest.Mock;
+    listForUser: jest.Mock;
+    revokeOwned: jest.Mock;
+  };
   let controller: AuthController;
 
   beforeEach(() => {
     authService = { resolveProfile: jest.fn() };
     loginService = { login: jest.fn() };
     mfaService = { verifyLogin: jest.fn() };
-    sessionService = { refresh: jest.fn() };
+    sessionService = {
+      refresh: jest.fn(),
+      revoke: jest.fn(),
+      revokeAll: jest.fn(),
+      listForUser: jest.fn(),
+      revokeOwned: jest.fn(),
+    };
     controller = new AuthController(
       authService as unknown as AuthService,
       loginService as unknown as LoginService,
@@ -264,6 +287,193 @@ describe('AuthController', () => {
       await expect(
         controller.refresh(dto, buildRequest({ 'x-device-id': 'device-1' })),
       ).rejects.toMatchObject({ status: HttpStatus.UNAUTHORIZED });
+    });
+
+    it('is public, so an expired access token is not needed to renew', () => {
+      const isPublic = new Reflector().get<boolean>(
+        MetadataKeys.IsPublic,
+        AuthController.prototype.refresh,
+      );
+
+      expect(isPublic).toBe(true);
+    });
+  });
+
+  describe('route protection', () => {
+    // The counterpart to the refresh assertion above: `@CurrentUser()` is only ever undefined
+    // on a `@Public()` route, so a session route that picked up the decorator would hand any
+    // unauthenticated caller a listing rather than a 401.
+    it.each([
+      ['logout', AuthController.prototype.logout],
+      ['logoutAll', AuthController.prototype.logoutAll],
+      ['listSessions', AuthController.prototype.listSessions],
+      ['deleteSession', AuthController.prototype.deleteSession],
+    ])('%s is not public', (_name, handler) => {
+      const isPublic = new Reflector().get<boolean>(MetadataKeys.IsPublic, handler);
+
+      expect(isPublic).toBeUndefined();
+    });
+  });
+
+  describe('logout', () => {
+    it('revokes the caller own session and answers 204', async () => {
+      sessionService.revoke.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.logout(authenticated)).resolves.toBeUndefined();
+      // The verified caller is handed along so the session service can record who signed
+      // out without a second lookup.
+      expect(sessionService.revoke).toHaveBeenCalledWith('session-1', {
+        id: 'user-1',
+        email: 'customer@example.com',
+        role: UserRole.CUSTOMER,
+      });
+    });
+
+    it('rejects a request with no verified caller', async () => {
+      await expect(controller.logout(undefined)).rejects.toThrow(UnauthorizedException);
+      expect(sessionService.revoke).not.toHaveBeenCalled();
+    });
+
+    it('propagates a service failure as the status the service reported', async () => {
+      sessionService.revoke.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+
+      await expect(controller.logout(authenticated)).rejects.toMatchObject({
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+      });
+    });
+  });
+
+  describe('logoutAll', () => {
+    it('reports how many sessions were revoked', async () => {
+      sessionService.revokeAll.mockResolvedValue({ ok: true, data: 3 });
+
+      await expect(controller.logoutAll(authenticated)).resolves.toEqual({ revoked: 3 });
+      expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1', {
+        id: 'user-1',
+        email: 'customer@example.com',
+        role: UserRole.CUSTOMER,
+      });
+    });
+
+    it('honestly reports zero when nothing was live', async () => {
+      sessionService.revokeAll.mockResolvedValue({ ok: true, data: 0 });
+
+      await expect(controller.logoutAll(authenticated)).resolves.toEqual({ revoked: 0 });
+    });
+
+    it('rejects a request with no verified caller', async () => {
+      await expect(controller.logoutAll(undefined)).rejects.toThrow(UnauthorizedException);
+      expect(sessionService.revokeAll).not.toHaveBeenCalled();
+    });
+
+    it('propagates a service failure as the status the service reported', async () => {
+      sessionService.revokeAll.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+
+      await expect(controller.logoutAll(authenticated)).rejects.toMatchObject({
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+      });
+    });
+  });
+
+  describe('listSessions', () => {
+    it('lists only the caller live sessions, mapped to the summary contract', async () => {
+      const rows = [makeSession({ id: 'session-1' }), makeSession({ id: 'session-2' })];
+      sessionService.listForUser.mockResolvedValue({ ok: true, data: rows });
+
+      const response = await controller.listSessions(authenticated);
+
+      expect(sessionService.listForUser).toHaveBeenCalledWith('user-1');
+      expect(response).toHaveLength(2);
+    });
+
+    it('marks the caller current session, and only that one', async () => {
+      const rows = [makeSession({ id: 'session-1' }), makeSession({ id: 'session-2' })];
+      sessionService.listForUser.mockResolvedValue({ ok: true, data: rows });
+
+      const response = await controller.listSessions(authenticated);
+
+      expect(response.find((s) => s.id === 'session-1')?.current).toBe(true);
+      expect(response.find((s) => s.id === 'session-2')?.current).toBe(false);
+    });
+
+    it('truncates the ip in the listing', async () => {
+      sessionService.listForUser.mockResolvedValue({
+        ok: true,
+        data: [makeSession({ ipAddress: '203.0.113.42' })],
+      });
+
+      const response = await controller.listSessions(authenticated);
+
+      expect(response[0].ipAddress).toBe('203.0.113.0');
+    });
+
+    it('returns no hash of any kind in a session listing', async () => {
+      sessionService.listForUser.mockResolvedValue({
+        ok: true,
+        data: [
+          makeSession({
+            refreshTokenHash: 'sekrit-current',
+            previousRefreshTokenHash: 'sekrit-previous',
+          }),
+        ],
+      });
+
+      const response = await controller.listSessions(authenticated);
+
+      expect(JSON.stringify(response)).not.toContain('sekrit');
+    });
+
+    it('rejects a request with no verified caller', async () => {
+      await expect(controller.listSessions(undefined)).rejects.toThrow(UnauthorizedException);
+      expect(sessionService.listForUser).not.toHaveBeenCalled();
+    });
+
+    it('propagates a service failure as the status the service reported, and never returns a stale list', async () => {
+      sessionService.listForUser.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+
+      await expect(controller.listSessions(authenticated)).rejects.toMatchObject({
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+      });
+    });
+  });
+
+  describe('deleteSession', () => {
+    it('revokes the caller own session and answers 204', async () => {
+      sessionService.revokeOwned.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.deleteSession(authenticated, 'session-1')).resolves.toBeUndefined();
+      expect(sessionService.revokeOwned).toHaveBeenCalledWith('user-1', 'session-1');
+    });
+
+    it('deleting another user session answers 404, not 403', async () => {
+      sessionService.revokeOwned.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.NOT_FOUND,
+        message: 'Session was not found.',
+      });
+
+      await expect(
+        controller.deleteSession(authenticated, 'someone-elses-session'),
+      ).rejects.toMatchObject({ status: HttpStatus.NOT_FOUND });
+    });
+
+    it('rejects a request with no verified caller, and never calls the service', async () => {
+      await expect(controller.deleteSession(undefined, 'session-1')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(sessionService.revokeOwned).not.toHaveBeenCalled();
     });
   });
 

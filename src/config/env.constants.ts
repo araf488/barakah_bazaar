@@ -3,12 +3,17 @@
  * first thing an operator sees when a deploy refuses to boot, so they are named
  * constants rather than inline literals.
  */
+/** Fixed values the environment rules compare against. */
+export const EnvConstants = {
+  /** The only scheme a deployed public base URL may use: links in emails carry credentials. */
+  HttpsScheme: 'https://',
+} as const;
+
 export const EnvValidationMessages = {
   /** Raised when a deployed environment has no CORS allowlist configured. */
   CorsAllowlistEmpty: 'CORS_ALLOWED_ORIGINS must list the storefront and admin origins',
-  /** Raised when no JWKS URL, project URL or legacy HS256 secret is configured. */
-  JwtVerificationUnconfigured:
-    'JWT verification is unconfigured: set SUPABASE_JWKS_URL, SUPABASE_URL or SUPABASE_JWT_SECRET',
+  /** Raised when a deployed environment would build email links over plain http. */
+  PublicBaseUrlNotHttps: 'APP_PUBLIC_BASE_URL must begin with https:// in a deployed environment',
   /** Raised when Swagger is left enabled in production. Staging may enable it. */
   SwaggerEnabledInProduction: 'SWAGGER_ENABLED must be false in production',
 } as const;

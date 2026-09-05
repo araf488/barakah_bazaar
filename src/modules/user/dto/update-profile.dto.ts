@@ -6,9 +6,9 @@ import { UserConstants } from '../user.constants';
 /**
  * The editable half of a profile.
  *
- * `email` and `phone` are mirrored from the Supabase token on every `/auth/me` call, so
- * writing them here would be undone by the caller's next request; changing them is an Auth
- * operation, not a profile one.
+ * `email` and `phone` are credentials — one signs in, the other receives an OTP — so
+ * changing either is an authentication operation with its own verification step, not a
+ * profile edit.
  */
 export class UpdateProfileDto {
   @ApiProperty({ maxLength: UserConstants.MaxFullNameLength, example: 'Rahim Uddin' })

@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { PinoLogger } from 'nestjs-pino';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { StaffInvitationStatus, UserRole } from '../../infra/prisma/prisma-client';
-import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
 import { createMockConfig, createMockLogger } from '../../../test/support/mocks';
 import { userFixture } from '../../../test/support/user-fixtures';
 import { AuthRepository } from '../auth/auth.repository';
@@ -53,13 +52,13 @@ describe('StaffInvitationService', () => {
   let repository: {
     createAudited: jest.Mock;
     settleAudited: jest.Mock;
+    acceptAudited: jest.Mock;
     findByTokenHash: jest.Mock;
     findById: jest.Mock;
     findOpenForEmail: jest.Mock;
     findPage: jest.Mock;
   };
   let users: { findById: jest.Mock; findByEmail: jest.Mock };
-  let supabaseAdmin: { setUserRole: jest.Mock };
   let email: RealEmailSender;
   let logger: jest.Mocked<PinoLogger>;
   let service: StaffInvitationService;
@@ -68,7 +67,6 @@ describe('StaffInvitationService', () => {
     new StaffInvitationService(
       repository as unknown as StaffInvitationRepository,
       users as unknown as AuthRepository,
-      supabaseAdmin as unknown as SupabaseAdminService,
       sender,
       createMockConfig({ EMAIL_PROVIDER: provider }),
       logger,
@@ -78,6 +76,7 @@ describe('StaffInvitationService', () => {
     repository = {
       createAudited: jest.fn().mockResolvedValue(invitation()),
       settleAudited: jest.fn().mockResolvedValue(invitation()),
+      acceptAudited: jest.fn().mockResolvedValue(invitation()),
       findByTokenHash: jest.fn(),
       findById: jest.fn(),
       findOpenForEmail: jest.fn().mockResolvedValue(undefined),
@@ -89,7 +88,6 @@ describe('StaffInvitationService', () => {
         .mockResolvedValue(userFixture({ id: 'user-1', role: UserRole.SUPER_ADMIN })),
       findByEmail: jest.fn().mockResolvedValue(undefined),
     };
-    supabaseAdmin = { setUserRole: jest.fn().mockResolvedValue(true) };
     email = new RealEmailSender();
     logger = createMockLogger();
     service = build();
@@ -230,7 +228,7 @@ describe('StaffInvitationService', () => {
         userFixture({ id: 'user-2', email: 'ops@barakahbazaar.com.bd', role: UserRole.CUSTOMER }),
       );
       repository.findByTokenHash.mockResolvedValue(invitation());
-      repository.settleAudited.mockResolvedValue(
+      repository.acceptAudited.mockResolvedValue(
         invitation({ status: StaffInvitationStatus.ACCEPTED, acceptedBy: 'user-2' }),
       );
     });
@@ -243,16 +241,20 @@ describe('StaffInvitationService', () => {
       );
     });
 
-    it('grants the role in Supabase before closing the invitation', async () => {
+    it('closes the invitation and grants the role on the invitee own row together', async () => {
+      // One call, so one transaction: an invitation cannot close without its role landing,
+      // and that column is now the only place the grant exists.
       await service.accept(invitee, { token: 'plain-token' });
 
-      expect(supabaseAdmin.setUserRole.mock.invocationCallOrder[0]).toBeLessThan(
-        repository.settleAudited.mock.invocationCallOrder[0],
-      );
-      expect(supabaseAdmin.setUserRole).toHaveBeenCalledWith(
-        '11111111-1111-1111-1111-111111111111',
-        UserRole.OPS,
-      );
+      expect(repository.acceptAudited).toHaveBeenCalledTimes(1);
+      expect(repository.acceptAudited.mock.calls[0][1]).toMatchObject({
+        status: StaffInvitationStatus.ACCEPTED,
+        acceptedBy: 'user-2',
+      });
+      expect(repository.acceptAudited.mock.calls[0][2]).toEqual({
+        userId: 'user-2',
+        role: UserRole.OPS,
+      });
     });
 
     it('refuses when the signed-in email is not the invited one', async () => {
@@ -269,7 +271,7 @@ describe('StaffInvitationService', () => {
         message:
           'This invitation was sent to a different email address. Sign in as that address to accept it.',
       });
-      expect(supabaseAdmin.setUserRole).not.toHaveBeenCalled();
+      expect(repository.acceptAudited).not.toHaveBeenCalled();
     });
 
     it('matches the invited email case-insensitively', async () => {
@@ -280,15 +282,6 @@ describe('StaffInvitationService', () => {
       const result = await service.accept(invitee, { token: 'plain-token' });
 
       expect(result.ok).toBe(true);
-    });
-
-    it('refuses an account with no email at all', async () => {
-      users.findById.mockResolvedValue(userFixture({ id: 'user-2', email: null }));
-
-      const result = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(result.ok).toBe(false);
-      expect(supabaseAdmin.setUserRole).not.toHaveBeenCalled();
     });
 
     it('answers a revoked invitation exactly as it answers an unknown token', async () => {
@@ -319,30 +312,21 @@ describe('StaffInvitationService', () => {
         status: HttpStatus.GONE,
         message: 'This invitation has expired. Ask for a new one.',
       });
-      expect(supabaseAdmin.setUserRole).not.toHaveBeenCalled();
+      expect(repository.acceptAudited).not.toHaveBeenCalled();
     });
 
-    it('leaves the invitation open when the identity provider refuses the role', async () => {
-      supabaseAdmin.setUserRole.mockResolvedValue(false);
-
-      const result = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(result.ok).toBe(false);
-      expect(repository.settleAudited).not.toHaveBeenCalled();
-    });
-
-    it('reports a partial grant loudly when the role landed but the row did not', async () => {
-      repository.settleAudited.mockResolvedValue(null);
+    it('grants nothing when the transaction fails, and says so as a conflict', async () => {
+      // Either someone else accepted first or the write rolled back. Both leave the account
+      // exactly as it was, so there is no partial grant to report and nothing to reconcile.
+      repository.acceptAudited.mockResolvedValue(null);
 
       const result = await service.accept(invitee, { token: 'plain-token' });
 
       expect(result).toEqual({
         ok: false,
-        status: HttpStatus.INTERNAL_SERVER_ERROR,
-        message:
-          'The role was granted but the invitation could not be closed. Contact a super admin.',
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
       });
-      expect(logger.error).toHaveBeenCalled();
     });
 
     it('reports 503 rather than an invalid token when the lookup failed', async () => {

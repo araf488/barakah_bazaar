@@ -13,8 +13,8 @@ import { User, UserRole } from '../../../infra/prisma/prisma-client';
 export interface CachedSessionValue {
   readonly userId: string;
   readonly role: UserRole;
-  /** `User.email`, nullable for phone-only accounts. */
-  readonly email: string | null;
+  /** `User.email`. Every account has one — it is the login credential. */
+  readonly email: string;
   /** `User.phone`, nullable for email-only accounts. Read by `SessionAuthGuard`. */
   readonly phone: string | null;
   readonly isActive: boolean;

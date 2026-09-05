@@ -19,7 +19,7 @@ export const setupSwagger = (app: INestApplication, path: string): void => {
         type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT',
-        description: 'Supabase Auth access token',
+        description: 'Access token from POST /auth/login or /auth/refresh',
       })
       .addTag('Health', 'Liveness and readiness probes')
       .addTag('Auth', 'Session exchange and the current user')

@@ -9,7 +9,6 @@ import { PaginatedResponseDto } from '../../common/dto/pagination.dto';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
 import { User, UserRole } from '../../infra/prisma/prisma-client';
-import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
 import { AuthService } from '../auth/auth.service';
 import {
   AdminAuditActions,
@@ -40,7 +39,6 @@ export class AdminUserService {
   constructor(
     private readonly repository: AdminUserRepository,
     private readonly authService: AuthService,
-    private readonly supabaseAdmin: SupabaseAdminService,
     @InjectPinoLogger(AdminUserService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -120,15 +118,15 @@ export class AdminUserService {
   /**
    * Changes a staff role.
    *
-   * Supabase `app_metadata` is written FIRST, ahead of the local `role` column, purely for
-   * which failure is survivable: the two writes cannot share a transaction, since one is an
-   * HTTP call to another system. If Supabase fails, nothing changed locally either.
+   * One write, and the `role` column is the whole of it: `SessionAuthGuard` reads the role
+   * from that column on every request and no token carries a role claim, so there is no second
+   * system to keep in step and no ordering to get right. The row and its audit entry commit in
+   * one transaction, so a failure here changes nothing — there is no partial state to
+   * reconcile, which is why this reports through the same `written` path as every other
+   * account mutation.
    *
-   * SessionAuthGuard reads `role` straight from Postgres on every request — this application
-   * trusts no other source for it — so if the *local* write fails after Supabase accepts, there
-   * is no self-heal: the AUDIT ROW is lost and the column is stale until someone retries, which
-   * is not survivable silently. That case logs everything needed to reconcile and tells the
-   * operator plainly.
+   * Takes effect on the caller's next request: the repository invalidates the session cache
+   * for this user as part of the write.
    */
   async changeRole(
     user: AuthenticatedUser,
@@ -157,13 +155,16 @@ export class AdminUserService {
         }
       }
 
-      const accepted = await this.supabaseAdmin.setUserRole(target.data.supabaseUserId, dto.role);
+      const updated = await this.repository.updateAudited(targetId, { role: dto.role }, (row) =>
+        AdminUserService.auditRow(actor.data, {
+          action: AdminAuditActions.StaffRoleChanged,
+          entityId: row.id,
+          before: target.data,
+          after: row,
+        }),
+      );
 
-      if (!accepted) {
-        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, AdminMessages.RoleChangeRejected);
-      }
-
-      return await this.mirrorRole(actor.data, target.data, dto.role);
+      return AdminUserService.written(updated);
     } catch (error) {
       this.logger.error(
         { err: error, targetId },
@@ -171,40 +172,6 @@ export class AdminUserService {
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
-  }
-
-  /** The second half of the role change, after the identity provider accepted it. */
-  private async mirrorRole(
-    actor: Actor,
-    target: User,
-    role: UserRole,
-  ): Promise<ServiceResponse<AdminUserDto>> {
-    const updated = await this.repository.updateAudited(target.id, { role }, (row) =>
-      AdminUserService.auditRow(actor, {
-        action: AdminAuditActions.StaffRoleChanged,
-        entityId: row.id,
-        before: target,
-        after: row,
-      }),
-    );
-
-    if (!updated) {
-      // Supabase is already authoritative for the new role. This is the line an operator
-      // greps for to reconcile: everything needed to reconstruct the change is here.
-      this.logger.error(
-        {
-          actorId: actor.id,
-          targetId: target.id,
-          supabaseUserId: target.supabaseUserId,
-          previousRole: target.role,
-          newRole: role,
-        },
-        'Role changed in Supabase but the local record and its audit row failed to write',
-      );
-      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, AdminMessages.RoleChangePartial);
-    }
-
-    return serviceOk(AdminMapper.toAdminUser(updated));
   }
 
   // ── Guards ────────────────────────────────────────────────────────────────

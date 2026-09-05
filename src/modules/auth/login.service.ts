@@ -4,6 +4,7 @@ import { ErrorMessages } from '../../common/constants/error-messages.constants';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
 import { User, UserRole } from '../../infra/prisma/prisma-client';
 import { AuthConstants, AuthMessages } from './auth.constants';
+import { AuthEventsService } from './auth-events.service';
 import { AuthRepository } from './auth.repository';
 import { PasswordHasher } from './crypto/password-hasher';
 import { LoginDto } from './dto/login.dto';
@@ -44,6 +45,7 @@ export class LoginService {
     private readonly settings: AuthSettingsService,
     private readonly tokens: AccessTokenService,
     private readonly sessions: SessionService,
+    private readonly events: AuthEventsService,
     @InjectPinoLogger(LoginService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -74,6 +76,19 @@ export class LoginService {
       );
 
       if (!user || !passwordOk) {
+        if (user) {
+          // Only for an account that exists. An unknown address would record an
+          // attacker-supplied string against no actor, and a log full of those is how the
+          // real signal gets lost. The response is identical either way — this is a
+          // recording decision, not a behavioural one, so it cannot be used to enumerate.
+          await this.events.recordLoginFailed(user, {
+            sessionId: AuthConstants.PendingSessionId,
+            deviceId,
+            userAgent,
+            ip,
+          });
+        }
+
         return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
       }
 

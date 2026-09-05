@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EnvValidationMessages, requiredKeyMessage } from './env.constants';
+import { EnvConstants, EnvValidationMessages, requiredKeyMessage } from './env.constants';
 
 /**
  * Environment contract for the API. Parsed once at boot; a failure here stops
@@ -44,14 +44,13 @@ const baseEnvSchema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   DIRECT_URL: z.string().min(1).optional(),
 
-  // ── Supabase ──────────────────────────────────────────────────────────────
+  // ── Supabase (Storage only) ───────────────────────────────────────────────
+  // No auth keys: this API issues its own tokens and reads roles from its own tables. What
+  // remains is the storage client, which needs a project and the service-role key to sign
+  // uploads.
   SUPABASE_URL: z.url().optional(),
-  SUPABASE_ANON_KEY: z.string().min(1).optional(),
   /** Server-side only. Bypasses RLS — never expose to any client bundle. */
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
-  SUPABASE_JWKS_URL: z.url().optional(),
-  SUPABASE_JWT_SECRET: z.string().min(1).optional(),
-  SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated'),
 
   // ── Redis / BullMQ ────────────────────────────────────────────────────────
   QUEUE_ENABLED: boolFlag('false'),
@@ -72,9 +71,13 @@ const baseEnvSchema = z.object({
   // staff-invitation endpoint returns the raw token in its response so the flow can be
   // completed in development; with a real provider it never leaves the email.
   EMAIL_PROVIDER: z.enum(['noop', 'resend', 'smtp']).default('noop'),
-  EMAIL_API_URL: z.url().optional(),
-  EMAIL_API_KEY: z.string().min(1).optional(),
   EMAIL_FROM: z.string().min(1).optional(),
+  EMAIL_SMTP_HOST: z.string().min(1).optional(),
+  EMAIL_SMTP_PORT: z.coerce.number().int().positive().max(65535).default(587),
+  EMAIL_SMTP_USER: z.string().min(1).optional(),
+  EMAIL_SMTP_PASSWORD: z.string().min(1).optional(),
+  /** Implicit TLS on connect (port 465). Leave false for STARTTLS on 587. */
+  EMAIL_SMTP_SECURE: boolFlag('false'),
 
   // ── Payment gateway ───────────────────────────────────────────────────────
   // Defaults to noop, which REFUSES every charge. Cash on delivery is unaffected: it never
@@ -149,6 +152,11 @@ const DEPLOYED_ENV_REQUIRED_KEYS = [
   'DATABASE_URL',
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
+  // Absent, the app boots with a per-process random signing key: every restart, and every
+  // instance behind a load balancer, invalidates tokens the others issued.
+  'JWT_SECRET',
+  // Absent, TOTP secrets cannot be decrypted, so no staff member with MFA enrolled can sign in.
+  'TOTP_ENCRYPTION_KEY',
 ] as const satisfies readonly (keyof Env)[];
 
 const isDeployedEnv = (nodeEnv: Env['NODE_ENV']): boolean =>
@@ -170,13 +178,10 @@ const enforceDeployedEnvRules = (env: Env, ctx: z.RefinementCtx): void => {
   const missing = DEPLOYED_ENV_REQUIRED_KEYS.filter((key) => env[key] === undefined);
   missing.forEach((key) => addIssue(ctx, key, requiredKeyMessage(key, env.NODE_ENV)));
 
-  // This never fires on its own: SUPABASE_URL is a required key above, so its
-  // absence already raises an issue. It is kept because it names the actual
-  // consequence next to the bare missing-key error, and because it guards the
-  // invariant independently of DEPLOYED_ENV_REQUIRED_KEYS — making SUPABASE_URL
-  // optional later must not silently drop JWT verification. Not dead code.
-  if (!env.SUPABASE_JWT_SECRET && !env.SUPABASE_JWKS_URL && !env.SUPABASE_URL) {
-    addIssue(ctx, 'SUPABASE_JWKS_URL', EnvValidationMessages.JwtVerificationUnconfigured);
+  // Links in verification and reset emails are built from this. Over plain http a token in
+  // the query string travels in clear text, and it is a credential.
+  if (!env.APP_PUBLIC_BASE_URL.startsWith(EnvConstants.HttpsScheme)) {
+    addIssue(ctx, 'APP_PUBLIC_BASE_URL', EnvValidationMessages.PublicBaseUrlNotHttps);
   }
 
   if (env.CORS_ALLOWED_ORIGINS.trim().length === 0) {

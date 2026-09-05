@@ -84,18 +84,29 @@ export const AdminAuditActions = {
   CustomerDisabled: 'customer.disabled',
   CustomerEnabled: 'customer.enabled',
   StaffRoleChanged: 'staff.role_changed',
-  StaffRoleChangePartial: 'staff.role_change_partial',
   StaffInvited: 'staff.invited',
   StaffInvitationResent: 'staff.invitation_resent',
   StaffInvitationRevoked: 'staff.invitation_revoked',
   StaffInvitationAccepted: 'staff.invitation_accepted',
-  StaffInvitationAcceptPartial: 'staff.invitation_accept_partial',
   ZoneCreated: 'delivery_zone.created',
   ZoneUpdated: 'delivery_zone.updated',
   PromotionCreated: 'promotion.created',
   PromotionUpdated: 'promotion.updated',
   SlotCreated: 'delivery_slot.created',
   SlotUpdated: 'delivery_slot.updated',
+
+  // Authentication events, written by AuthEventsService. Staff only — see the class comment
+  // there for why a customer login is deliberately not recorded.
+  AuthLogin: 'auth.login',
+  AuthLoginFailed: 'auth.login_failed',
+  AuthMfaFailed: 'auth.mfa_failed',
+  AuthLogout: 'auth.logout',
+  AuthSessionRevoked: 'auth.session_revoked',
+  // Not a credential: this is the audit action written when someone changes their password,
+  // and the literal is the queryable name of that event.
+  // eslint-disable-next-line sonarjs/no-hardcoded-passwords
+  AuthPasswordChanged: 'auth.password_changed',
+  AuthNewDevice: 'auth.new_device',
 } as const;
 
 export type AdminAuditAction = (typeof AdminAuditActions)[keyof typeof AdminAuditActions];
@@ -111,6 +122,7 @@ export const AdminAuditEntities = {
   DeliveryZone: 'DeliveryZone',
   Promotion: 'Promotion',
   DeliverySlot: 'DeliverySlot',
+  Session: 'Session',
 } as const;
 
 export const AdminMessages = {
@@ -129,24 +141,12 @@ export const AdminMessages = {
     'This invitation was sent to a different email address. Sign in as that address to accept it.',
   /** Acting on an invitation that is already accepted or revoked. */
   InvitationNotPending: 'This invitation is no longer open.',
-  /** The identity provider refused the role that acceptance would grant. */
-  InvitationRoleRejected:
-    'Could not grant the role. The invitation is unchanged; please try again.',
-  /** Supabase took the role but the local record did not follow. */
-  InvitationAcceptPartial:
-    'The role was granted but the invitation could not be closed. Contact a super admin.',
   /** Refusing an action a staff member aimed at their own account. */
   CannotActOnSelf:
     'You cannot change your own account here. Ask another super admin to make this change.',
   /** Refusing to remove the last super admin. */
   LastSuperAdmin:
     'This is the only super admin. Promote someone else before changing this account.',
-  /** Supabase rejected the role write, so nothing was changed. */
-  RoleChangeRejected:
-    'The role could not be updated in the identity provider. Nothing was changed.',
-  /** Supabase accepted the role but the local record failed — needs an operator. */
-  RoleChangePartial:
-    'The role was changed in the identity provider but could not be recorded locally. Contact an administrator before making further changes.',
   /** {0} = the cap. */
   ImageLimitReachedTemplate:
     'A product may have at most {0} images. Remove one before adding another.',

@@ -1,4 +1,5 @@
 import { HttpStatus } from '@nestjs/common';
+import { AuthEventsService } from './auth-events.service';
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
 import { ErrorMessages } from '../../common/constants/error-messages.constants';
@@ -18,7 +19,6 @@ const NOW = new Date('2026-09-03T00:00:00.000Z');
 
 const userRow = (overrides: Partial<User> = {}): User => ({
   id: 'user-1',
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
   email: 'customer@example.com',
   phone: null,
   fullName: 'Rahim Uddin',
@@ -67,6 +67,14 @@ describe('MfaService', () => {
   let tokens: { verify: jest.Mock };
   let sessions: { issue: jest.Mock };
   let settings: { current: jest.Mock };
+  let events: {
+    recordLogin: jest.Mock;
+    recordNewDevice: jest.Mock;
+    recordLoginFailed: jest.Mock;
+    recordMfaFailed: jest.Mock;
+    recordLogout: jest.Mock;
+    recordSessionRevoked: jest.Mock;
+  };
   let logger: jest.Mocked<PinoLogger>;
   let service: MfaService;
 
@@ -117,6 +125,14 @@ describe('MfaService', () => {
       }),
     };
     settings = { current: jest.fn().mockResolvedValue(settingsRow()) };
+    events = {
+      recordLogin: jest.fn().mockResolvedValue(undefined),
+      recordNewDevice: jest.fn().mockResolvedValue(undefined),
+      recordLoginFailed: jest.fn().mockResolvedValue(undefined),
+      recordMfaFailed: jest.fn().mockResolvedValue(undefined),
+      recordLogout: jest.fn().mockResolvedValue(undefined),
+      recordSessionRevoked: jest.fn().mockResolvedValue(undefined),
+    };
     logger = createMockLogger();
 
     service = new MfaService(
@@ -125,6 +141,7 @@ describe('MfaService', () => {
       tokens as unknown as AccessTokenService,
       sessions as unknown as SessionService,
       settings as unknown as AuthSettingsService,
+      events as unknown as AuthEventsService,
       logger,
     );
   });
@@ -224,6 +241,26 @@ describe('MfaService', () => {
       expect(result.ok).toBe(true);
       expect(sessions.issue).toHaveBeenCalledWith(userRow(), DEVICE_ID, 'ua', '203.0.113.7');
       expect(repository.resetTotpState).toHaveBeenCalledWith('user-1', 11);
+    });
+
+    it('records a wrong second factor, which is a stronger signal than a wrong password', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      crypto.totp.verify.mockReturnValue({ ok: false });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, 'ua', '203.0.113.7');
+
+      expect(events.recordMfaFailed).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-1' }),
+        expect.objectContaining({ deviceId: DEVICE_ID, userAgent: 'ua', ip: '203.0.113.7' }),
+      );
+    });
+
+    it('records nothing when the code was right', async () => {
+      repository.findById.mockResolvedValue(userRow());
+
+      await service.verifyLogin('mfa-token', { code: '123456' }, DEVICE_ID, 'ua', null);
+
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
     });
 
     it('rejects an invalid or expired mfa token', async () => {

@@ -2,6 +2,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { StaffInvitationStatus, UserRole } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
+import { SessionCachePort } from '../auth/sessions/session-cache.port';
 import { AuditLogRepository } from './audit-log.repository';
 import { StaffInvitationRepository } from './staff-invitation.repository';
 
@@ -24,6 +25,7 @@ describe('StaffInvitationRepository', () => {
       updateMany: jest.Mock;
       findUniqueOrThrow: jest.Mock;
     };
+    user: { update: jest.Mock };
   };
   let prisma: {
     $transaction: jest.Mock;
@@ -35,6 +37,7 @@ describe('StaffInvitationRepository', () => {
     };
   };
   let auditLog: { appendWithin: jest.Mock };
+  let sessionCache: { invalidateUser: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let repository: StaffInvitationRepository;
 
@@ -45,6 +48,7 @@ describe('StaffInvitationRepository', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'inv-1' }),
       },
+      user: { update: jest.fn().mockResolvedValue({ id: 'user-2' }) },
     };
     prisma = {
       $transaction: jest.fn((arg: unknown) =>
@@ -60,10 +64,12 @@ describe('StaffInvitationRepository', () => {
       },
     };
     auditLog = { appendWithin: jest.fn() };
+    sessionCache = { invalidateUser: jest.fn().mockResolvedValue(undefined) };
     logger = createMockLogger();
     repository = new StaffInvitationRepository(
       prisma as unknown as PrismaService,
       auditLog as unknown as AuditLogRepository,
+      sessionCache as unknown as SessionCachePort,
       logger,
     );
   });
@@ -139,6 +145,69 @@ describe('StaffInvitationRepository', () => {
       await repository.settleAudited('inv-1', {}, () => auditRow());
 
       expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('acceptAudited', () => {
+    const grant = { userId: 'user-2', role: UserRole.OPS };
+
+    it('closes the invitation, grants the role and audits it in one transaction', async () => {
+      await repository.acceptAudited(
+        'inv-1',
+        { status: StaffInvitationStatus.ACCEPTED },
+        grant,
+        () => auditRow(),
+      );
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-2' },
+        data: { role: UserRole.OPS },
+      });
+      expect(auditLog.appendWithin).toHaveBeenCalledWith(tx, auditRow());
+    });
+
+    it('only accepts a row that is still pending', async () => {
+      await repository.acceptAudited('inv-1', {}, grant, () => auditRow());
+
+      expect(tx.staffInvitation.updateMany.mock.calls[0][0].where).toEqual({
+        id: 'inv-1',
+        status: StaffInvitationStatus.PENDING,
+      });
+    });
+
+    it('grants no role when another caller accepted it first', async () => {
+      tx.staffInvitation.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        repository.acceptAudited('inv-1', {}, grant, () => auditRow()),
+      ).resolves.toBeNull();
+
+      expect(tx.user.update).not.toHaveBeenCalled();
+      expect(auditLog.appendWithin).not.toHaveBeenCalled();
+    });
+
+    it('grants no role when the audit row cannot be written', async () => {
+      // The whole point of one transaction: a grant with no record of it never commits.
+      auditLog.appendWithin.mockRejectedValue(new Error('audit table gone'));
+
+      await expect(
+        repository.acceptAudited('inv-1', {}, grant, () => auditRow()),
+      ).resolves.toBeNull();
+    });
+
+    it('invalidates the cached session so the new role applies on the next request', async () => {
+      await repository.acceptAudited('inv-1', {}, grant, () => auditRow());
+
+      expect(sessionCache.invalidateUser).toHaveBeenCalledWith('user-2');
+    });
+
+    it('does not invalidate anything when nothing was granted', async () => {
+      tx.staffInvitation.updateMany.mockResolvedValue({ count: 0 });
+
+      await repository.acceptAudited('inv-1', {}, grant, () => auditRow());
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
     });
   });
 

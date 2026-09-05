@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { AuthEventsService } from '../auth-events.service';
 import { PinoLogger } from 'nestjs-pino';
 import { createMockConfig, createMockLogger } from '../../../../test/support/mocks';
 import { ServiceResponse } from '../../../common/types/service-response';
@@ -104,6 +105,8 @@ describe('SessionService', () => {
     touch: jest.Mock;
     revoke: jest.Mock;
     revokeAllForUser: jest.Mock;
+    listLiveForUser: jest.Mock;
+    hasDeviceHistory: jest.Mock;
   };
   let settings: { current: jest.Mock };
   let cache: {
@@ -113,6 +116,14 @@ describe('SessionService', () => {
     invalidateUser: jest.Mock;
   };
   let tokens: AccessTokenService;
+  let events: {
+    recordLogin: jest.Mock;
+    recordNewDevice: jest.Mock;
+    recordLoginFailed: jest.Mock;
+    recordMfaFailed: jest.Mock;
+    recordLogout: jest.Mock;
+    recordSessionRevoked: jest.Mock;
+  };
   let logger: jest.Mocked<PinoLogger>;
   let service: SessionService;
 
@@ -149,6 +160,8 @@ describe('SessionService', () => {
       touch: jest.fn().mockResolvedValue(undefined),
       revoke: jest.fn().mockResolvedValue(true),
       revokeAllForUser: jest.fn().mockResolvedValue(2),
+      listLiveForUser: jest.fn().mockResolvedValue([makeSession()]),
+      hasDeviceHistory: jest.fn().mockResolvedValue(true),
     };
     settings = { current: jest.fn().mockResolvedValue(resolvedSettings()) };
     // Defaults to a miss on every read, so every pre-existing `validate` test below continues
@@ -169,11 +182,20 @@ describe('SessionService', () => {
       }),
       createMockLogger(),
     );
+    events = {
+      recordLogin: jest.fn().mockResolvedValue(undefined),
+      recordNewDevice: jest.fn().mockResolvedValue(undefined),
+      recordLoginFailed: jest.fn().mockResolvedValue(undefined),
+      recordMfaFailed: jest.fn().mockResolvedValue(undefined),
+      recordLogout: jest.fn().mockResolvedValue(undefined),
+      recordSessionRevoked: jest.fn().mockResolvedValue(undefined),
+    };
     logger = createMockLogger();
     service = new SessionService(
       repository as unknown as SessionRepository,
       tokens,
       settings as unknown as AuthSettingsService,
+      events as unknown as AuthEventsService,
       cache,
       logger,
     );
@@ -203,6 +225,49 @@ describe('SessionService', () => {
       expect(customer.absoluteExpiresAt).toEqual(new Date(NOW.getTime() + 129_600 * MINUTE));
       expect(staff.expiresAt).toEqual(new Date(NOW.getTime() + 720 * MINUTE));
       expect(staff.absoluteExpiresAt).toEqual(new Date(NOW.getTime() + 10_080 * MINUTE));
+    });
+
+    it('records the sign-in against the new session', async () => {
+      const user = makeUser({ role: UserRole.OPS });
+
+      await service.issue(user, DEVICE, 'jest', IP);
+
+      expect(events.recordLogin).toHaveBeenCalledWith(user, {
+        sessionId: 'session-1',
+        deviceId: DEVICE,
+        userAgent: 'jest',
+        ip: IP,
+      });
+    });
+
+    it('records a device this account has not used before, alongside the sign-in', async () => {
+      repository.hasDeviceHistory.mockResolvedValue(false);
+
+      await service.issue(makeUser({ role: UserRole.OPS }), DEVICE, 'jest', IP);
+
+      expect(events.recordNewDevice).toHaveBeenCalledTimes(1);
+      expect(events.recordLogin).toHaveBeenCalledTimes(1);
+    });
+
+    it('excludes the session it just opened from the device history, or every device is old', async () => {
+      await service.issue(makeUser({ role: UserRole.OPS }), DEVICE, 'jest', IP);
+
+      expect(repository.hasDeviceHistory).toHaveBeenCalledWith('user-1', DEVICE, 'session-1');
+    });
+
+    it('claims nothing about the device when the history read failed', async () => {
+      // A database hiccup must not raise a new-device alert on a laptop used for a year.
+      repository.hasDeviceHistory.mockResolvedValue(null);
+
+      await service.issue(makeUser({ role: UserRole.OPS }), DEVICE, 'jest', IP);
+
+      expect(events.recordNewDevice).not.toHaveBeenCalled();
+    });
+
+    it('does not spend a device-history query on a customer, whose events are never recorded', async () => {
+      await service.issue(makeUser(), DEVICE, 'jest', IP);
+
+      expect(repository.hasDeviceHistory).not.toHaveBeenCalled();
     });
 
     it('sets the access token expiry from settings, not from the refresh window', async () => {
@@ -429,6 +494,19 @@ describe('SessionService', () => {
       expect(repository.revoke).toHaveBeenCalledWith('session-1');
       expect(cache.invalidateSession).toHaveBeenCalledWith('session-1');
       expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('records why a cached session was revoked, using the identity the cache already holds', async () => {
+      // No database read to name the actor: the cached value carries id, email and role.
+      cache.read.mockResolvedValue(makeCachedValue({ role: UserRole.OPS }));
+
+      await service.validate(makeClaims(), 'device-2');
+
+      expect(events.recordSessionRevoked).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-1', role: UserRole.OPS }),
+        'session-1',
+        'device_mismatch',
+      );
     });
 
     it('refuses a cached disabled account with 403, not 401', async () => {
@@ -676,6 +754,16 @@ describe('SessionService', () => {
       expect(repository.rotate).not.toHaveBeenCalled();
     });
 
+    it('records the device mismatch that ended the session', async () => {
+      await service.refresh(RAW_TOKEN, 'device-2', 'jest', IP);
+
+      expect(events.recordSessionRevoked).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-1' }),
+        'session-1',
+        'device_mismatch',
+      );
+    });
+
     it('refuses a disabled account', async () => {
       repository.findByRefreshHash.mockResolvedValue(
         makeSession({ user: makeUser({ isActive: false }) }),
@@ -759,6 +847,7 @@ describe('SessionService', () => {
         repository as unknown as SessionRepository,
         tokens,
         settings as unknown as AuthSettingsService,
+        events as unknown as AuthEventsService,
         cache,
         logger,
       );
@@ -790,9 +879,31 @@ describe('SessionService', () => {
   });
 
   describe('revoke', () => {
+    const actor = { id: 'user-1', email: 'ops@example.com', role: UserRole.OPS };
+
     it('ends the session', async () => {
       expect((await service.revoke('session-1')).ok).toBe(true);
       expect(repository.revoke).toHaveBeenCalledWith('session-1');
+    });
+
+    it('records the sign-out when the caller identified themselves', async () => {
+      await service.revoke('session-1', actor);
+
+      expect(events.recordLogout).toHaveBeenCalledWith(actor, 'session-1');
+    });
+
+    it('records nothing when no actor was supplied, so an internal revoke is not a logout', async () => {
+      await service.revoke('session-1');
+
+      expect(events.recordLogout).not.toHaveBeenCalled();
+    });
+
+    it('records no sign-out when the write failed', async () => {
+      repository.revoke.mockResolvedValue(false);
+
+      await service.revoke('session-1', actor);
+
+      expect(events.recordLogout).not.toHaveBeenCalled();
     });
 
     it('reports 503 when the write failed, because the session may still be live', async () => {
@@ -841,6 +952,31 @@ describe('SessionService', () => {
       expect(failure(await service.revokeAll('user-1')).status).toBe(503);
     });
 
+    it('records a full sign-out with its reason, not as a logout', async () => {
+      const actor = { id: 'user-1', email: 'ops@example.com', role: UserRole.OPS };
+
+      await service.revokeAll('user-1', actor);
+
+      expect(events.recordSessionRevoked).toHaveBeenCalledWith(
+        actor,
+        'user-1',
+        'all_sessions_ended',
+      );
+      expect(events.recordLogout).not.toHaveBeenCalled();
+    });
+
+    it('records nothing when the write failed', async () => {
+      repository.revokeAllForUser.mockResolvedValue(null);
+
+      await service.revokeAll('user-1', {
+        id: 'user-1',
+        email: 'ops@example.com',
+        role: UserRole.OPS,
+      });
+
+      expect(events.recordSessionRevoked).not.toHaveBeenCalled();
+    });
+
     it('reports 500 when the repository throws', async () => {
       repository.revokeAllForUser.mockRejectedValue(new Error('boom'));
 
@@ -860,6 +996,111 @@ describe('SessionService', () => {
       await service.revokeAll('user-1');
 
       expect(cache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listForUser', () => {
+    it('returns the live sessions the repository found', async () => {
+      const rows = [makeSession({ id: 'session-1' }), makeSession({ id: 'session-2' })];
+      repository.listLiveForUser.mockResolvedValue(rows);
+
+      const result = await service.listForUser('user-1');
+
+      expect(result).toEqual({ ok: true, data: rows });
+      expect(repository.listLiveForUser).toHaveBeenCalledWith('user-1');
+    });
+
+    it('reports 503, not an empty list, when the repository read failed', async () => {
+      repository.listLiveForUser.mockResolvedValue(null);
+
+      expect(failure(await service.listForUser('user-1'))).toEqual({
+        status: 503,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+    });
+
+    it('reports 500 when the repository throws', async () => {
+      repository.listLiveForUser.mockRejectedValue(new Error('boom'));
+
+      expect(failure(await service.listForUser('user-1')).status).toBe(500);
+      expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('revokeOwned', () => {
+    it('revokes a session the caller owns', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ id: 'session-1', userId: 'user-1' }),
+      );
+
+      const result = await service.revokeOwned('user-1', 'session-1');
+
+      expect(result).toEqual({ ok: true, data: undefined });
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+    });
+
+    it('records ending another of your own devices as a revocation, not a sign-out', async () => {
+      // Reads very differently in an incident review: the caller is ending a session they are
+      // not currently using, which is the "I do not recognise that device" action.
+      const session = makeSession({ id: 'session-1', userId: 'user-1' });
+      repository.findByIdWithUser.mockResolvedValue(session);
+
+      await service.revokeOwned('user-1', 'session-1');
+
+      expect(events.recordSessionRevoked).toHaveBeenCalledWith(
+        session.user,
+        'session-1',
+        'owner_revoked',
+      );
+      expect(events.recordLogout).not.toHaveBeenCalled();
+    });
+
+    it('answers 404, and never revokes, when the session belongs to someone else', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ id: 'session-1', userId: 'user-2' }),
+      );
+
+      expect(failure(await service.revokeOwned('user-1', 'session-1'))).toEqual({
+        status: 404,
+        message: 'Session was not found.',
+      });
+      expect(repository.revoke).not.toHaveBeenCalled();
+    });
+
+    it('answers the same 404, and never revokes, when the session does not exist', async () => {
+      repository.findByIdWithUser.mockResolvedValue(undefined);
+
+      expect(failure(await service.revokeOwned('user-1', 'missing-session'))).toEqual({
+        status: 404,
+        message: 'Session was not found.',
+      });
+      expect(repository.revoke).not.toHaveBeenCalled();
+    });
+
+    it('reports 503 when the lookup itself fails', async () => {
+      repository.findByIdWithUser.mockResolvedValue(null);
+
+      expect(failure(await service.revokeOwned('user-1', 'session-1')).status).toBe(503);
+      expect(repository.revoke).not.toHaveBeenCalled();
+    });
+
+    it('reports 500 when the repository throws', async () => {
+      repository.findByIdWithUser.mockRejectedValue(new Error('boom'));
+
+      expect(failure(await service.revokeOwned('user-1', 'session-1')).status).toBe(500);
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('is idempotent: revoking an already-revoked own session is still a success', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({
+          id: 'session-1',
+          userId: 'user-1',
+          revokedAt: new Date(NOW.getTime() - MINUTE),
+        }),
+      );
+
+      expect((await service.revokeOwned('user-1', 'session-1')).ok).toBe(true);
     });
   });
 

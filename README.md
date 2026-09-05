@@ -5,17 +5,21 @@
 The backend for Barakah Bazaar, Bangladesh's halal-first multi-category commerce
 platform. This one API serves all three clients:
 
-| Client                              | Repo     | Talks to                          |
-| ----------------------------------- | -------- | --------------------------------- |
-| Public storefront (Next.js)         | separate | this API + Supabase Auth/Realtime |
-| Admin portal (React + Vite)         | separate | this API + Supabase Auth/Storage  |
-| Mobile app (Flutter, Android + iOS) | separate | this API + `supabase_flutter`     |
+| Client                              | Repo     | Talks to                      |
+| ----------------------------------- | -------- | ----------------------------- |
+| Public storefront (Next.js)         | separate | this API + Supabase Realtime  |
+| Admin portal (React + Vite)         | separate | this API + Supabase Storage   |
+| Mobile app (Flutter, Android + iOS) | separate | this API + `supabase_flutter` |
+
+Every client signs in against **this API** — see [Authentication](#authentication).
+The Supabase SDK is used only for Realtime subscriptions, Storage and direct
+catalog reads, never for identity.
 
 **Categories:** Dry Fruits · Doi · Rosmalai · Fresh Fruit · Grocery · Health &
 Beauty (Baby / Men / Women)
 
-**Stack:** NestJS 11 (TypeScript) · Supabase (Postgres + Auth + Storage +
-Realtime) · Prisma 7 · Redis/BullMQ · pino
+**Stack:** NestJS 11 (TypeScript) · Supabase (Postgres + Storage + Realtime) ·
+Prisma 7 · Redis/BullMQ · pino
 
 ---
 
@@ -44,18 +48,18 @@ protected — so `git clone && npm install && npm start` works on day one.
         │  (Next.js, SSR/SEO)  │   │  (React + Vite SPA)  │   │  (Android + iOS)     │
         └──────────┬───────────┘   └──────────┬───────────┘   └──────────┬───────────┘
                    │                          │                          │
-                   │  REST /api/v1  (Supabase access token as Bearer)    │
+                   │  REST /api/v1  (this API's access token as Bearer)  │
                    └──────────────┬───────────┴──────────────┬───────────┘
                                   ▼                          │
                   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓           │ Supabase SDK direct:
-                  ┃      THIS REPO — NestJS      ┃           │ auth session, Realtime
-                  ┃                              ┃           │ order tracking, Storage
-                  ┃  Guards → Controller         ┃           │ reads
+                  ┃      THIS REPO — NestJS      ┃           │ Realtime order
+                  ┃                              ┃           │ tracking, Storage,
+                  ┃  Guards → Controller         ┃           │ catalog reads
                   ┃      → Service (rules)       ┃           │
                   ┃      → Repository (Prisma)   ┃           │
                   ┃                              ┃           │
-                  ┃  Verifies JWTs locally.      ┃           │
-                  ┃  Owns every business write.  ┃           │
+                  ┃  Issues and verifies its own ┃           │
+                  ┃  tokens. Owns every write.   ┃           │
                   ┗━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━┛           │
                              │            │                  │
               service_role   │            │ BullMQ           │
@@ -66,7 +70,7 @@ protected — so `git clone && npm install && npm start` works on day one.
                              ▼                               ▼
                   ┌────────────────────────────────────────────────────┐
                   │  SUPABASE (Singapore region)                       │
-                  │  Postgres + RLS · Auth · Storage · Realtime        │
+                  │  Postgres + RLS · Storage · Realtime               │
                   └────────────────────────────────────────────────────┘
 ```
 
@@ -79,7 +83,7 @@ stock or order state goes through this API.
 | Concern                                | Owner                 | Why                                                                                                   |
 | -------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------- |
 | Postgres hosting, backups, PITR        | Supabase              | Managed; no database to operate                                                                       |
-| Authentication, sessions, JWT issuance | Supabase Auth         | Saves weeks vs. hand-rolling refresh tokens                                                           |
+| Authentication, sessions, JWT issuance | **This API only**     | Every access decision reads this API's own tables; no third party is consulted or trusted             |
 | Product / review image storage         | Supabase Storage      | S3-compatible with a CDN; clients upload via signed URL, never through this process                   |
 | Live order status, live stock          | Supabase Realtime     | Clients subscribe to filtered row changes; no custom WebSocket layer needed                           |
 | Catalog reads                          | **Either**            | Direct via RLS, or through this API for caching and search. This API is the recommended path at scale |
@@ -154,18 +158,17 @@ fails with every problem at once, so a bad deploy is diagnosed in one pass.
 | `SWAGGER_ENABLED`            | no                          | Rejected in production                                                         |
 | `DATABASE_URL`               | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container |
 | `DIRECT_URL`                 | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable    |
-| `SUPABASE_URL`               | **in staging & production** | Also used to derive the JWKS URL                                               |
-| `SUPABASE_ANON_KEY`          | no                          | Client-safe                                                                    |
+| `SUPABASE_URL`               | **in staging & production** | Storage only — signing upload URLs                                             |
 | `SUPABASE_SERVICE_ROLE_KEY`  | **in staging & production** | **Bypasses RLS. Server-side only — never in a client bundle**                  |
-| `SUPABASE_JWKS_URL`          | no                          | Explicit key set; wins over everything else                                    |
-| `SUPABASE_JWT_SECRET`        | no                          | Legacy HS256 secret; wins over a URL-derived key set                           |
-| `SUPABASE_JWT_AUDIENCE`      | no                          | Default `authenticated`                                                        |
+| `JWT_SECRET`                 | **in staging & production** | HS256, ≥32 chars. Unset, each process signs with its own random key            |
+| `TOTP_ENCRYPTION_KEY`        | **in staging & production** | base64, 32 bytes. Unset, no staff member with MFA can sign in                  |
+| `APP_PUBLIC_BASE_URL`        | **https in staging & prod** | Base for verification and reset links, which carry a credential                |
 | `QUEUE_ENABLED`, `REDIS_*`   | no                          | BullMQ is off unless enabled                                                   |
 | `SMS_PROVIDER`, `SMS_*`      | no                          | `noop` by default, so tests spend no SMS credits                               |
 
 In any deployed environment (`staging` or `production`) the app additionally
-refuses to start if the CORS allowlist is empty or no JWT verification method is
-configured. In production it also refuses to start if Swagger is enabled.
+refuses to start if the CORS allowlist is empty or `APP_PUBLIC_BASE_URL` is not
+https. In production it also refuses to start if Swagger is enabled.
 
 ### Environment matrix
 
@@ -182,20 +185,22 @@ design, rather than serving QA under the wrong configuration.
 | `CORS_ALLOWED_ORIGINS`               | `http://localhost:3001,http://localhost:3002` | stage storefront + admin origins | production storefront + admin origins |
 | `QUEUE_ENABLED`                      | `false`                                       | `false`                          | `false` until Phase 1                 |
 | `DATABASE_URL` / `DIRECT_URL`        | local Supabase                                | stage Supabase project           | production Supabase project           |
-| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | local                                         | stage project                    | production project                    |
+| `SUPABASE_URL`                       | local                                         | stage project                    | production project                    |
 | `SUPABASE_SERVICE_ROLE_KEY`          | local                                         | stage project                    | production project                    |
+| `JWT_SECRET` / `TOTP_ENCRYPTION_KEY` | unset (per-boot key)                          | stage secrets                    | production secrets                    |
 
 `staging` and `production` are both **deployed environments** and share the same
 required-key checks: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
-a non-empty CORS allowlist, and a configured JWT verification method. Only the
-Swagger rule is production-only, because QA and the client need the docs page.
+`JWT_SECRET`, `TOTP_ENCRYPTION_KEY`, a non-empty CORS allowlist, and an https
+`APP_PUBLIC_BASE_URL`. Only the Swagger rule is production-only, because QA and
+the client need the docs page.
 
 In CI these values live in **GitHub Environments** (`dev`, `stage`, `prod`) as
 environment-scoped entries, never repository-scoped: secrets are `DATABASE_URL`,
-`DIRECT_URL`, `SUPABASE_SERVICE_ROLE_KEY` and the optional
-`SUPABASE_JWT_SECRET`; everything else in the table above is a non-secret
-variable. `SUPABASE_ANON_KEY` is a variable because it is client-safe;
-`SUPABASE_SERVICE_ROLE_KEY` is a secret in every environment without exception.
+`DIRECT_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET` and
+`TOTP_ENCRYPTION_KEY`; everything else in the table above is a non-secret
+variable. Every one of those five is a secret in every environment without
+exception — the two identity keys sign and decrypt live credentials.
 
 ---
 
@@ -233,16 +238,16 @@ src/
     decorators/              @Public, @Roles, @CurrentUser
     dto/                     pagination query + paginated envelope
     filters/                 GlobalExceptionFilter — the single error shape
-    guards/                  SupabaseAuthGuard, RolesGuard
+    guards/                  SessionAuthGuard, RolesGuard, throttler guards
     money/                   poysha integer arithmetic + BigInt JSON safety net
     types/                   AuthenticatedUser, ServiceResponse
   infra/
     prisma/                  PrismaService (pg driver adapter), generated-client barrel
-    supabase/                JWT verifier, service_role admin client
+    supabase/                service_role client — Storage signing only
     redis/                   BullMQ registration, gated by QUEUE_ENABLED
   modules/
     health/       ✅  liveness + readiness with per-dependency detail
-    auth/         ✅  local user mirror, GET /auth/me, SMS/OTP ports
+    auth/         ✅  login, MFA, sessions, tokens, GET /auth/me, SMS/OTP ports
     catalog/      ✅  reference vertical slice — copy this one
     geo/          ✅  vendored geography + map-search proxy (noop/Photon/Geoapify)
     user/         ✅  profile + delivery address book
@@ -373,38 +378,46 @@ those rows. Money and stock tables get no `anon`/`authenticated` policy. Ever.
 
 ## Authentication
 
-Supabase Auth issues tokens; this API verifies them locally and never calls out
-per request.
+This API is its own identity provider. It issues the tokens, stores the
+credentials, and decides every access question from its own tables. No third
+party takes part — Supabase is storage, and nothing it issues is trusted here.
 
-- `SupabaseAuthGuard` is registered **globally** — every route requires a
-  verified token unless marked `@Public()`. Forgetting the decorator fails
-  closed.
-- Verification uses a remote JWKS (cached, auto-rotating) or the legacy HS256
-  secret. Precedence: explicit `SUPABASE_JWKS_URL` → `SUPABASE_JWT_SECRET` →
-  JWKS derived from `SUPABASE_URL`. Checking the secret before the derived URL is
-  what keeps older HS256 projects working when both are set.
-- With nothing configured the verifier reports `disabled` and protected routes
-  answer **503** instead of the app refusing to boot.
-- `app_metadata.role` drives `@Roles(...)`. An absent or unrecognised claim is
-  treated as `CUSTOMER` — privilege is never inferred from an unexpected value.
-- Supabase `app_metadata.role` is the **source of truth**; `users.role` mirrors
-  it on every authenticated request. Role changes go through the Supabase Admin
-  API (Admin module), not a direct column write.
+- `SessionAuthGuard` is registered **globally** — every route requires a valid
+  session unless marked `@Public()`. Forgetting the decorator fails closed.
+- Two stages, cheap one first. Stage 1 verifies the access token's signature,
+  `exp`, `iss`, `aud`, `typ` and its device-binding claim against the presented
+  `X-Device-Id` — CPU only, so a forged or expired token never reaches Postgres.
+  Stage 2 is one indexed lookup of the session row joined to its user.
+- **The role comes from the row, not the token.** A demotion or a disabled
+  account therefore takes effect on the caller's very next request, with no
+  waiting for a token to expire. That is why stage 2 exists at all.
+- Both stages answer 401 with the same message, so a response never reveals
+  whether a well-formed token matched a real session. Every 401 from the guard
+  carries `WWW-Authenticate: Bearer`.
+- Sessions are visible and revocable: `GET /auth/sessions` lists the caller's
+  own live sessions with a truncated IP and no token material of any kind, and
+  `DELETE /auth/sessions/:id` ends one. Someone else's session id answers 404,
+  never 403, so the endpoint cannot be used to discover that an id is real.
+
+Client authors: read [`src/modules/auth/README.md`](src/modules/auth/README.md)
+before writing a request interceptor. It carries the refresh rules that keep a
+client out of an infinite loop or a spurious logout, and they are recorded
+nowhere else in this codebase.
 
 ### Phone OTP — the Bangladesh gotcha
 
-Supabase Auth's built-in phone provider supports only Twilio, MessageBird,
-Vonage and TextLocal — **none** of the local gateways (Alpha SMS, SSL Wireless,
-operator aggregators), which are cheaper and more reliable for BD numbers.
+The hosted phone providers on offer (Twilio, MessageBird, Vonage, TextLocal)
+cover **none** of the local gateways — Alpha SMS, SSL Wireless, operator
+aggregators — which are cheaper and more reliable for BD numbers.
 
 So phone login is a **custom flow in this API**: generate and verify the OTP
-here, send it through a local gateway, then create/sign in the user via the
-Supabase Admin API. The seams already exist —
-[`ports/sms-gateway.port.ts`](src/modules/auth/ports/sms-gateway.port.ts) and
-[`ports/otp.port.ts`](src/modules/auth/ports/otp.port.ts) — with
+here, send it through a local gateway, and create or sign in the user against
+this API's own `users` table, exactly as password login already does. The seams
+exist — [`ports/sms-gateway.port.ts`](src/modules/auth/ports/sms-gateway.port.ts)
+and [`ports/otp.port.ts`](src/modules/auth/ports/otp.port.ts) — with
 `NoopSmsGateway` wired up for development. `OtpService` is deliberately
 **unimplemented**: it needs a chosen gateway plus Redis-backed challenge
-storage, both Phase 1 decisions.
+storage, both decisions for the phone-login sub-project.
 
 ---
 

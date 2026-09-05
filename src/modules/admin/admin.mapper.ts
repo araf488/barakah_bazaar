@@ -37,7 +37,6 @@ export const AdminMapper = {
   toAdminUser(user: User): AdminUserDto {
     return {
       id: user.id,
-      supabaseUserId: user.supabaseUserId,
       email: user.email,
       phone: user.phone,
       fullName: user.fullName,

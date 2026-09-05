@@ -17,7 +17,6 @@ import {
 } from '../../infra/prisma/prisma-client';
 import { ConfigService } from '@nestjs/config';
 import { AppConfigService } from '../../config';
-import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
 import { AuthRepository } from '../auth/auth.repository';
 import { EmailSender } from '../notification/ports/email-sender.port';
 import {
@@ -57,16 +56,14 @@ interface Actor {
  * Without that, the token alone would be enough and a forwarded invitation email would let
  * the wrong person take the role.
  *
- * The grant itself reuses the existing rule: Supabase `app_metadata` is written FIRST because
- * the role reaches this API as a JWT claim that is re-mirrored on every request, so writing
- * only the column would be undone within seconds.
+ * The grant itself is one transaction: the invitation closes and the role lands on the
+ * invitee's row together, because the `role` column is the only place a grant exists.
  */
 @Injectable()
 export class StaffInvitationService {
   constructor(
     private readonly repository: StaffInvitationRepository,
     private readonly users: AuthRepository,
-    private readonly supabaseAdmin: SupabaseAdminService,
     @Inject(AdminTokens.EmailSender) private readonly email: EmailSender,
     @Inject(ConfigService) private readonly config: AppConfigService,
     @InjectPinoLogger(StaffInvitationService.name) private readonly logger: PinoLogger,
@@ -251,25 +248,23 @@ export class StaffInvitationService {
     }
   }
 
-  /** Supabase first, then the local mirror — the order the role-change rule requires. */
+  /**
+   * Closing the invitation and granting its role are one transaction — see
+   * `StaffInvitationRepository.acceptAudited`. A failure therefore changes nothing, so the
+   * caller can simply try again, and the answer is the same conflict a lost race gets.
+   */
   private async grant(
     invitation: StaffInvitation,
     account: User,
   ): Promise<ServiceResponse<StaffInvitationDto>> {
-    const accepted = await this.supabaseAdmin.setUserRole(account.supabaseUserId, invitation.role);
-
-    if (!accepted) {
-      // Nothing has changed anywhere; the invitation is still open and can be retried.
-      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, AdminMessages.InvitationRoleRejected);
-    }
-
-    const settled = await this.repository.settleAudited(
+    const settled = await this.repository.acceptAudited(
       invitation.id,
       {
         status: StaffInvitationStatus.ACCEPTED,
         acceptedBy: account.id,
         acceptedAt: new Date(),
       },
+      { userId: account.id, role: invitation.role },
       (row) =>
         StaffInvitationService.audit(
           // The invitee is the actor here: they are the one taking the role.
@@ -282,18 +277,7 @@ export class StaffInvitationService {
     );
 
     if (!settled) {
-      // Supabase is already authoritative for the new role. This is the line an operator
-      // greps for to reconcile: everything needed to reconstruct the grant is here.
-      this.logger.error(
-        {
-          invitationId: invitation.id,
-          acceptedBy: account.id,
-          supabaseUserId: account.supabaseUserId,
-          grantedRole: invitation.role,
-        },
-        'Role granted in Supabase but the invitation could not be closed',
-      );
-      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, AdminMessages.InvitationAcceptPartial);
+      return serviceFail(HttpStatus.CONFLICT, AdminMessages.InvitationNotPending);
     }
 
     return serviceOk(StaffInvitationMapper.toDto(settled));
@@ -412,7 +396,7 @@ export class StaffInvitationService {
     }
 
     // The check that makes the token safe to email: possession alone is not enough.
-    if (!account.email || account.email.toLowerCase() !== invitation.email) {
+    if (account.email.toLowerCase() !== invitation.email) {
       return serviceFail(HttpStatus.FORBIDDEN, AdminMessages.InvitationEmailMismatch);
     }
 

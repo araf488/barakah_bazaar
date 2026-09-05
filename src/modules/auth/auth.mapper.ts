@@ -1,6 +1,8 @@
-import { User } from '../../infra/prisma/prisma-client';
+import { Session, User } from '../../infra/prisma/prisma-client';
 import { LoginResponseDto } from './dto/login.dto';
+import { SessionSummaryDto } from './dto/session.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
+import { truncateIp } from './ip-truncation';
 import { LoginResult, portalFor } from './login.service';
 import { IssuedSession } from './sessions/session.service';
 
@@ -16,7 +18,6 @@ export const AuthMapper = {
   toProfile(user: User): UserProfileDto {
     return {
       id: user.id,
-      supabaseUserId: user.supabaseUserId,
       email: user.email,
       phone: user.phone,
       fullName: user.fullName,
@@ -51,5 +52,23 @@ export const AuthMapper = {
       return { kind: 'mfa', mfaToken: result.mfaToken };
     }
     return { kind: 'enrolment', enrolmentToken: result.enrolmentToken };
+  },
+
+  /**
+   * A live session row to the "where am I signed in" contract (`GET /auth/sessions`). Built
+   * field by field rather than by spreading the row — see the class comment on
+   * `SessionSummaryDto` for why. `current` compares against the session id the caller's own
+   * access token carries, so exactly one row in a listing is ever `true`.
+   */
+  toSessionSummary(session: Session, currentSessionId: string): SessionSummaryDto {
+    return {
+      id: session.id,
+      deviceId: session.deviceId,
+      userAgent: session.userAgent,
+      ipAddress: truncateIp(session.ipAddress),
+      createdAt: session.createdAt,
+      lastUsedAt: session.lastUsedAt,
+      current: session.id === currentSessionId,
+    };
   },
 } as const;

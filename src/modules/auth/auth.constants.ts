@@ -6,11 +6,6 @@ export const AuthConstants = {
   OtpTtlSeconds: 300,
   /** Maximum verification attempts before an OTP is burned. */
   OtpMaxAttempts: 5,
-  /**
-   * Supabase `app_metadata` key carrying the staff role. Written by the admin
-   * module through the Supabase Admin API; mirrored into `users.role`.
-   */
-  RoleClaimKey: 'role',
   /** Resource label used in not-found messages about the local user row. */
   UserResourceName: 'User',
   /** Stored-hash format: scrypt$N$r$p$salt$hash. */
@@ -98,6 +93,20 @@ export const AuthConstants = {
   SessionResourceName: 'Session',
   /** IPv4 last octet replacement in a session listing. */
   IpTruncationSuffix: '.0',
+  /**
+   * How many of an IPv6 address's eight 16-bit groups survive truncation in a session
+   * listing. Four groups is a /64 — the conventional privacy boundary, since a /64 is
+   * typically one subscriber's line (RFC 4291 §2.5.4) — rather than a /112, which dropping a
+   * single trailing group would give and which still identifies one host.
+   */
+  Ipv6TruncationPrefixGroups: 4,
+  /**
+   * How often `SessionSweeper` deletes sessions past their hard ceiling and the recovery
+   * codes of disabled accounts. Hourly, not by the minute: nothing here is urgent — an
+   * expired session is already refused by the guard, and this only reclaims the row — so a
+   * tighter interval would buy nothing and cost a query on every instance.
+   */
+  SweepIntervalMinutes: 60,
   /** Unit conversions for the token and session deadlines, all of which are configured in minutes. */
   MillisecondsPerMinute: 60_000,
   MillisecondsPerSecond: 1_000,

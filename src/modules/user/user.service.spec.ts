@@ -67,7 +67,6 @@ describe('UserService', () => {
         'id',
         'phone',
         'role',
-        'supabaseUserId',
       ]);
     });
 

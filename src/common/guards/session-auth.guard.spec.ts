@@ -177,18 +177,6 @@ describe('SessionAuthGuard', () => {
       });
     });
 
-    it('falls back to an empty string when the account has no email on file', async () => {
-      // A phone-only account: `User.email` is genuinely null in Postgres.
-      // AuthenticatedUser.email is mandatory, so the guard must supply something honest here.
-      tokens.verify.mockResolvedValue(claims());
-      sessions.validate.mockResolvedValue(validated({ user: userRow({ email: null }) }));
-      const { context, request } = createExecutionContext({ headers: headers() });
-
-      await guard.canActivate(context);
-
-      expect((request.user as { email: string }).email).toBe('');
-    });
-
     it('takes the role from the session row, not the token claim', async () => {
       // The claim says OPS — signed thirty minutes ago — but the row says a demotion to
       // CUSTOMER has since landed. The row must win.

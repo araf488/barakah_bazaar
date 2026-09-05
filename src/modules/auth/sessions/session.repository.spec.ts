@@ -52,7 +52,9 @@ describe('SessionRepository', () => {
       update: jest.Mock;
       updateMany: jest.Mock;
       deleteMany: jest.Mock;
+      findFirst: jest.Mock;
     };
+    mfaRecoveryCode: { deleteMany: jest.Mock };
   };
   let logger: jest.Mocked<PinoLogger>;
   let repository: SessionRepository;
@@ -66,6 +68,10 @@ describe('SessionRepository', () => {
         update: jest.fn().mockResolvedValue(sessionRow()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         deleteMany: jest.fn().mockResolvedValue({ count: 3 }),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      mfaRecoveryCode: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 5 }),
       },
     };
     logger = createMockLogger();
@@ -390,6 +396,64 @@ describe('SessionRepository', () => {
       prisma.session.deleteMany.mockRejectedValue(new Error('boom'));
 
       await expect(repository.deleteExpired(new Date())).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('never filters on revokedAt, so a revoked session survives until its ceiling', async () => {
+      await repository.deleteExpired(new Date());
+
+      const where = (prisma.session.deleteMany.mock.calls[0][0] as { where: object }).where;
+
+      expect(where).not.toHaveProperty('revokedAt');
+    });
+  });
+
+  describe('hasDeviceHistory', () => {
+    it('excludes the session that asked, or a brand-new device looks familiar', async () => {
+      await repository.hasDeviceHistory('user-1', 'device-1', 'session-1');
+
+      expect(prisma.session.findFirst).toHaveBeenCalledWith({
+        where: { userId: 'user-1', deviceId: 'device-1', id: { not: 'session-1' } },
+        select: { id: true },
+      });
+    });
+
+    it('reports false when this device has no other session for the account', async () => {
+      await expect(repository.hasDeviceHistory('user-1', 'device-1', 'session-1')).resolves.toBe(
+        false,
+      );
+    });
+
+    it('reports true for a device with an earlier session, revoked or expired included', async () => {
+      prisma.session.findFirst.mockResolvedValue({ id: 'session-0' });
+
+      await expect(repository.hasDeviceHistory('user-1', 'device-1', 'session-1')).resolves.toBe(
+        true,
+      );
+    });
+
+    it('reports null when the read fails, so no new-device claim is made', async () => {
+      prisma.session.findFirst.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        repository.hasDeviceHistory('user-1', 'device-1', 'session-1'),
+      ).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteRecoveryCodesForDisabledUsers', () => {
+    it('deletes only the codes of accounts that are no longer enabled', async () => {
+      await expect(repository.deleteRecoveryCodesForDisabledUsers()).resolves.toBe(5);
+      expect(prisma.mfaRecoveryCode.deleteMany).toHaveBeenCalledWith({
+        where: { user: { isActive: false } },
+      });
+    });
+
+    it('reports null, not zero, when the delete fails', async () => {
+      prisma.mfaRecoveryCode.deleteMany.mockRejectedValue(new Error('boom'));
+
+      await expect(repository.deleteRecoveryCodesForDisabledUsers()).resolves.toBeNull();
       expect(logger.error).toHaveBeenCalled();
     });
   });

@@ -9,8 +9,6 @@ export const ErrorMessages = {
   MissingAccessToken: 'Authentication is required to access this resource.',
   /** Returned when a token fails signature, audience or expiry verification. */
   InvalidAccessToken: 'Your session is invalid or has expired. Please sign in again.',
-  /** Returned when JWT verification is not configured on the server. */
-  AuthenticationUnavailable: 'Authentication is temporarily unavailable. Please try again later.',
   /** Returned when an authenticated user lacks the role a route requires. */
   InsufficientPermission: 'You do not have permission to perform this action.',
   /** Returned when the caller's local user record is disabled. */

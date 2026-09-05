@@ -1,4 +1,5 @@
 import { HttpStatus } from '@nestjs/common';
+import { AuthEventsService } from './auth-events.service';
 import { PinoLogger } from 'nestjs-pino';
 import { createMockConfig, createMockLogger } from '../../../test/support/mocks';
 import { ErrorMessages } from '../../common/constants/error-messages.constants';
@@ -20,7 +21,6 @@ const NOW = new Date('2026-09-03T00:00:00.000Z');
 
 const userRow = (overrides: Partial<User> = {}): User => ({
   id: 'user-1',
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
   email: 'customer@example.com',
   phone: null,
   fullName: 'Rahim Uddin',
@@ -62,6 +62,14 @@ describe('LoginService', () => {
   let settings: { current: jest.Mock };
   let tokens: { sign: jest.Mock };
   let sessions: { issue: jest.Mock };
+  let events: {
+    recordLogin: jest.Mock;
+    recordNewDevice: jest.Mock;
+    recordLoginFailed: jest.Mock;
+    recordMfaFailed: jest.Mock;
+    recordLogout: jest.Mock;
+    recordSessionRevoked: jest.Mock;
+  };
   let logger: jest.Mocked<PinoLogger>;
   let service: LoginService;
 
@@ -85,6 +93,14 @@ describe('LoginService', () => {
     settings = { current: jest.fn().mockResolvedValue(settingsRow()) };
     tokens = { sign: jest.fn().mockResolvedValue('signed-token') };
     sessions = { issue: jest.fn().mockResolvedValue({ ok: true, data: issuedSession }) };
+    events = {
+      recordLogin: jest.fn().mockResolvedValue(undefined),
+      recordNewDevice: jest.fn().mockResolvedValue(undefined),
+      recordLoginFailed: jest.fn().mockResolvedValue(undefined),
+      recordMfaFailed: jest.fn().mockResolvedValue(undefined),
+      recordLogout: jest.fn().mockResolvedValue(undefined),
+      recordSessionRevoked: jest.fn().mockResolvedValue(undefined),
+    };
     logger = createMockLogger();
 
     service = new LoginService(
@@ -93,6 +109,7 @@ describe('LoginService', () => {
       settings as unknown as AuthSettingsService,
       tokens as unknown as AccessTokenService,
       sessions as unknown as SessionService,
+      events as unknown as AuthEventsService,
       logger,
     );
   });
@@ -144,6 +161,26 @@ describe('LoginService', () => {
       message: AuthMessages.InvalidCredentials,
     });
     expect(wrongPasswordResult).toEqual(unknownEmailResult);
+  });
+
+  it('records a failed password against the account it was aimed at', async () => {
+    repository.findByEmail.mockResolvedValue(userRow());
+    hasher.verify.mockResolvedValue(false);
+
+    await service.login(dto, DEVICE_ID, 'jest', '203.0.113.42');
+
+    expect(events.recordLoginFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'user-1' }),
+      expect.objectContaining({ deviceId: DEVICE_ID, userAgent: 'jest', ip: '203.0.113.42' }),
+    );
+  });
+
+  it('records nothing for an address with no account, so the log is not attacker-writable', async () => {
+    repository.findByEmail.mockResolvedValue(undefined);
+
+    await service.login(dto, DEVICE_ID, null, null);
+
+    expect(events.recordLoginFailed).not.toHaveBeenCalled();
   });
 
   it('still runs a hash when no user is found, so timing does not leak existence', async () => {
@@ -359,6 +396,7 @@ describe('LoginService', () => {
         settings as unknown as AuthSettingsService,
         realTokens,
         sessions as unknown as SessionService,
+        events as unknown as AuthEventsService,
         logger,
       );
       repository.findByEmail.mockResolvedValue(userRow({ totpEnabledAt: new Date() }));

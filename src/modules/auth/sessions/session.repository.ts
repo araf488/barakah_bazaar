@@ -312,6 +312,62 @@ export class SessionRepository {
   }
 
   /**
+   * Whether this account has any earlier session from this device — including revoked and
+   * expired ones, because "have they signed in from here before" is a question about history,
+   * not about what is live now.
+   *
+   * `exceptSessionId` is the session that asked, and excluding it is load-bearing: the caller
+   * runs this *after* opening the new session, so without the exclusion every device would
+   * find its own brand-new row and look familiar.
+   *
+   * `null` on failure, and the caller treats that as "cannot tell" rather than "new": a
+   * database hiccup must not raise a new-device alert on a device the user has used for
+   * months.
+   */
+  async hasDeviceHistory(
+    userId: string,
+    deviceId: string,
+    exceptSessionId: string,
+  ): Promise<boolean | null> {
+    try {
+      const existing = await this.prisma.session.findFirst({
+        where: { userId, deviceId, id: { not: exceptSessionId } },
+        select: { id: true },
+      });
+
+      return existing !== null;
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId },
+        'Exception occurred in SessionRepository.hasDeviceHistory',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Deletes the recovery codes of accounts that are no longer enabled, and reports how many.
+   *
+   * A disabled account cannot sign in at all, so its unused codes are dead weight that is
+   * still a live credential if the row leaks. Used codes go too: `used_at` records that a
+   * code was spent, and the audit trail — not this table — is where that belongs long-term.
+   */
+  async deleteRecoveryCodesForDisabledUsers(): Promise<number | null> {
+    try {
+      const result = await this.prisma.mfaRecoveryCode.deleteMany({
+        where: { user: { isActive: false } },
+      });
+      return result.count;
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'Exception occurred in SessionRepository.deleteRecoveryCodesForDisabledUsers',
+      );
+      return null;
+    }
+  }
+
+  /**
    * Removes rows whose hard ceiling has passed, and reports how many.
    *
    * Keyed on `absoluteExpiresAt`, not `expiresAt`: an idle-expired session is still a record

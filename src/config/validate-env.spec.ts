@@ -6,6 +6,9 @@ const productionEnv = {
   SUPABASE_URL: 'https://project.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
   CORS_ALLOWED_ORIGINS: 'https://barakahbazaar.com.bd',
+  JWT_SECRET: 'a'.repeat(32),
+  TOTP_ENCRYPTION_KEY: 'dGhpcnR5LXR3by1ieXRlcy1vZi1rZXktbWF0ZXJpYWwh',
+  APP_PUBLIC_BASE_URL: 'https://api.barakahbazaar.com.bd',
 };
 
 /** productionEnv minus one key, to prove that key is genuinely required. */
@@ -21,6 +24,9 @@ const stagingEnv = {
   SUPABASE_URL: 'https://project.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
   CORS_ALLOWED_ORIGINS: 'https://stage.barakahbazaar.com.bd',
+  JWT_SECRET: 'a'.repeat(32),
+  TOTP_ENCRYPTION_KEY: 'dGhpcnR5LXR3by1ieXRlcy1vZi1rZXktbWF0ZXJpYWwh',
+  APP_PUBLIC_BASE_URL: 'https://stage-api.barakahbazaar.com.bd',
 };
 
 /** stagingEnv minus one key, to prove that key is genuinely required. */
@@ -66,6 +72,18 @@ describe('validateEnv', () => {
       expect(env.AUTH_SETTINGS_CACHE_SECONDS).toBe(60);
       expect(env.SESSION_TOUCH_INTERVAL_MINUTES).toBe(5);
       expect(env.APP_PUBLIC_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('declares the SMTP settings, unset apart from the port, ahead of any adapter', () => {
+      // No sender reads these yet. They are validated now so the environment contract is in
+      // one place, and so a deploy that sets them is not rejected.
+      const env = validateEnv({});
+
+      expect(env.EMAIL_SMTP_HOST).toBeUndefined();
+      expect(env.EMAIL_SMTP_PORT).toBe(587);
+      expect(env.EMAIL_SMTP_USER).toBeUndefined();
+      expect(env.EMAIL_SMTP_PASSWORD).toBeUndefined();
+      expect(env.EMAIL_SMTP_SECURE).toBe(false);
     });
 
     it('defaults the write rate limit, so writes are bounded without configuration', () => {
@@ -165,9 +183,28 @@ describe('validateEnv', () => {
       );
     });
 
-    it('requires a way to verify JWTs', () => {
-      expect(() => validateEnv(productionEnvWithout('SUPABASE_URL'))).toThrow(
-        /JWT verification is unconfigured/,
+    it('requires a stable signing secret, so tokens survive a restart', () => {
+      // Without it the app still boots on a per-process random key — and every instance
+      // behind the load balancer rejects the tokens the others issued.
+      expect(() => validateEnv(productionEnvWithout('JWT_SECRET'))).toThrow(
+        /JWT_SECRET is required when NODE_ENV=production/,
+      );
+    });
+
+    it('requires the TOTP encryption key, without which enrolled staff cannot sign in', () => {
+      expect(() => validateEnv(productionEnvWithout('TOTP_ENCRYPTION_KEY'))).toThrow(
+        /TOTP_ENCRYPTION_KEY is required when NODE_ENV=production/,
+      );
+    });
+
+    it('refuses a public base URL that is not https', () => {
+      // Verification and reset links are built from it, and a link carries a credential.
+      // The cleartext URL is the input under test: the assertion is that it is rejected.
+      // eslint-disable-next-line sonarjs/no-clear-text-protocols
+      const insecure = 'http://barakahbazaar.com.bd';
+
+      expect(() => validateEnv({ ...productionEnv, APP_PUBLIC_BASE_URL: insecure })).toThrow(
+        /APP_PUBLIC_BASE_URL must begin with https/,
       );
     });
 
@@ -225,18 +262,22 @@ describe('validateEnv', () => {
       expect(message).not.toContain('NODE_ENV=production');
     });
 
-    it('reports the unconfigured-JWT consequence alongside the missing key', () => {
-      // Removing SUPABASE_URL trips both the required-key rule and the JWT rule.
-      // The JWT issue never fires alone, but it names the actual consequence.
-      let message = '';
-      try {
-        validateEnv(stagingEnvWithout('SUPABASE_URL'));
-      } catch (error) {
-        message = (error as Error).message;
-      }
+    it('requires the identity secrets here too, not only in production', () => {
+      expect(() => validateEnv(stagingEnvWithout('JWT_SECRET'))).toThrow(
+        /JWT_SECRET is required when NODE_ENV=staging/,
+      );
+      expect(() => validateEnv(stagingEnvWithout('TOTP_ENCRYPTION_KEY'))).toThrow(
+        /TOTP_ENCRYPTION_KEY is required when NODE_ENV=staging/,
+      );
+    });
 
-      expect(message).toContain('SUPABASE_URL is required when NODE_ENV=staging');
-      expect(message).toContain('JWT verification is unconfigured');
+    it('refuses a public base URL that is not https', () => {
+      // eslint-disable-next-line sonarjs/no-clear-text-protocols
+      const insecure = 'http://stage.barakahbazaar.com.bd';
+
+      expect(() => validateEnv({ ...stagingEnv, APP_PUBLIC_BASE_URL: insecure })).toThrow(
+        /APP_PUBLIC_BASE_URL must begin with https/,
+      );
     });
   });
 });

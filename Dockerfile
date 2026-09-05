@@ -14,6 +14,11 @@ RUN npx prisma generate && npm run build && npm prune --omit=dev
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# Node defaults libuv's threadpool to 4, and crypto.scrypt — which every password check runs —
+# executes on it, sharing those four threads with all filesystem and DNS work. At the default,
+# four concurrent logins stall unrelated requests across the whole app. Not cargo cult: read by
+# the Node runtime at startup, so it cannot be set from application code.
+ENV UV_THREADPOOL_SIZE=16
 
 RUN addgroup -S nodejs && adduser -S nestjs -G nodejs
 

@@ -15,7 +15,6 @@ const authenticated: AuthenticatedUser = {
 
 const persistedUser = (overrides: Partial<User> = {}): User => ({
   id: 'user-1',
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
   email: 'customer@example.com',
   phone: '+8801711111111',
   fullName: 'Test Customer',
@@ -58,7 +57,6 @@ describe('AuthService', () => {
         ok: true,
         data: {
           id: 'user-1',
-          supabaseUserId: '11111111-1111-1111-1111-111111111111',
           email: 'customer@example.com',
           phone: '+8801711111111',
           fullName: 'Test Customer',

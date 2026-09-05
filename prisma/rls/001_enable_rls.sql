@@ -7,8 +7,9 @@
 --   * RLS is ENABLED on every table, with no exceptions.
 --   * `service_role` — the key held only by this NestJS API — bypasses RLS by
 --     design, so all business writes keep working.
---   * `anon` / `authenticated` get READ-ONLY access to published catalog data,
---     plus owner-scoped reads of their own user row and addresses.
+--   * `anon` / `authenticated` get READ-ONLY access to published catalog data
+--     and published reviews. Nothing owner-scoped: ownership is decided by this
+--     API from its own session row, so those reads go through an endpoint.
 --   * Anything money- or stock-related (orders, payments, inventory) gets NO
 --     policy for anon/authenticated at all. Absence of a policy is a deny.
 --
@@ -156,79 +157,26 @@ CREATE POLICY product_images_public_read
   );
 
 -- ── 3. Owner-scoped reads ───────────────────────────────────────────────────
--- A signed-in user may read their own profile row and their own addresses.
--- Writes still go through the API so validation and audit logging happen.
-
--- users_read_own and addresses_read_own are dropped, not replaced: both keyed on
--- auth.uid(), which can never be populated again once no client holds a Supabase JWT.
--- Profile and address reads go through this API now, which resolves ownership from its
--- own session, not a Supabase-issued token.
+-- There are none left.
+--
+-- Every owner-scoped policy this file used to define matched a row by comparing
+-- users.supabase_user_id to auth.uid(). Both halves of that comparison are gone: no client
+-- holds a Supabase JWT any more, so auth.uid() is always null, and the identity-foundation
+-- contract migration drops the column outright. A policy written against a dropped column is
+-- not merely dead — it would refuse the DROP COLUMN itself — so each one is dropped here,
+-- before the migration runs.
+--
+-- Ownership is decided by this API now, from its own session row, and every customer read of
+-- their own cart, order, notification, profile or address goes through an endpoint. Absence
+-- of a policy is a deny, which is the correct posture for a direct PostgREST connection: it
+-- should be able to read none of this.
 DROP POLICY IF EXISTS users_read_own ON public.users;
 DROP POLICY IF EXISTS addresses_read_own ON public.addresses;
-
 DROP POLICY IF EXISTS carts_read_own ON public.carts;
-CREATE POLICY carts_read_own
-  ON public.carts FOR SELECT
-  TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.users u
-      WHERE u.id = carts.user_id
-        AND u.supabase_user_id = auth.uid()
-    )
-  );
-
 DROP POLICY IF EXISTS cart_items_read_own ON public.cart_items;
-CREATE POLICY cart_items_read_own
-  ON public.cart_items FOR SELECT
-  TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.carts c
-      JOIN public.users u ON u.id = c.user_id
-      WHERE c.id = cart_items.cart_id
-        AND u.supabase_user_id = auth.uid()
-    )
-  );
-
 DROP POLICY IF EXISTS orders_read_own ON public.orders;
-CREATE POLICY orders_read_own
-  ON public.orders FOR SELECT
-  TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.users u
-      WHERE u.id = orders.user_id AND u.supabase_user_id = auth.uid()
-    )
-  );
-
 DROP POLICY IF EXISTS order_items_read_own ON public.order_items;
-CREATE POLICY order_items_read_own
-  ON public.order_items FOR SELECT
-  TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.orders o
-      JOIN public.users u ON u.id = o.user_id
-      WHERE o.id = order_items.order_id AND u.supabase_user_id = auth.uid()
-    )
-  );
-
 DROP POLICY IF EXISTS notifications_read_own ON public.notifications;
-CREATE POLICY notifications_read_own
-  ON public.notifications FOR SELECT
-  TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.users u
-      WHERE u.id = notifications.user_id AND u.supabase_user_id = auth.uid()
-    )
-  );
-
--- Note what this policy does NOT expose: last_error and attempts are readable columns on a
--- row a customer owns. That is acceptable because neither carries a credential — the body is
--- never stored — but the API withholds them anyway, so a direct PostgREST read is the only
--- way to see them.
 
 DROP POLICY IF EXISTS reviews_read_published ON public.reviews;
 CREATE POLICY reviews_read_published

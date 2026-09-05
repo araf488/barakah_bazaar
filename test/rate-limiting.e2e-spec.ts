@@ -15,8 +15,6 @@ process.env.QUEUE_ENABLED = 'false';
 process.env.GEOCODING_PROVIDER = 'noop';
 delete process.env.DATABASE_URL;
 delete process.env.SUPABASE_URL;
-delete process.env.SUPABASE_JWKS_URL;
-delete process.env.SUPABASE_JWT_SECRET;
 delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 /**

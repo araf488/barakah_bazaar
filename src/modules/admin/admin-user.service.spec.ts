@@ -2,7 +2,6 @@ import { HttpStatus } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { UserRole } from '../../infra/prisma/prisma-client';
-import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { userFixture } from '../../../test/support/user-fixtures';
 import { AuthService } from '../auth/auth.service';
@@ -20,12 +19,11 @@ const actor: AuthenticatedUser = {
 const listQuery = (): AdminUserQueryDto => new AdminUserQueryDto();
 
 const target = (overrides = {}) =>
-  userFixture({ id: 'user-2', supabaseUserId: 'sub-2', role: UserRole.CUSTOMER, ...overrides });
+  userFixture({ id: 'user-2', role: UserRole.CUSTOMER, ...overrides });
 
 describe('AdminUserService', () => {
   let repository: Record<string, jest.Mock>;
   let authService: { resolveActiveUserId: jest.Mock };
-  let supabaseAdmin: { setUserRole: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let service: AdminUserService;
 
@@ -39,12 +37,10 @@ describe('AdminUserService', () => {
     authService = {
       resolveActiveUserId: jest.fn().mockResolvedValue({ ok: true, data: 'user-1' }),
     };
-    supabaseAdmin = { setUserRole: jest.fn().mockResolvedValue(true) };
     logger = createMockLogger();
     service = new AdminUserService(
       repository as unknown as AdminUserRepository,
       authService as unknown as AuthService,
-      supabaseAdmin as unknown as SupabaseAdminService,
       logger,
     );
   });
@@ -141,61 +137,32 @@ describe('AdminUserService', () => {
   });
 
   describe('changeRole', () => {
-    it('writes Supabase first, because the JWT claim is the source of truth', async () => {
-      // The column alone would be re-mirrored from the token within seconds.
-      await service.changeRole(actor, 'user-2', { role: UserRole.OPS });
-
-      expect(supabaseAdmin.setUserRole).toHaveBeenCalledWith('sub-2', UserRole.OPS);
-      expect(supabaseAdmin.setUserRole.mock.invocationCallOrder[0]).toBeLessThan(
-        repository.updateAudited.mock.invocationCallOrder[0],
-      );
-    });
-
-    it('mirrors the new role locally and audits the change', async () => {
+    it('writes the role to the column, the only place a role now lives', async () => {
       await service.changeRole(actor, 'user-2', { role: UserRole.OPS });
 
       expect(repository.updateAudited.mock.calls[0][1]).toEqual({ role: UserRole.OPS });
       expect(auditOf(repository.updateAudited).action).toBe('staff.role_changed');
     });
 
-    it('changes nothing when the identity provider refuses', async () => {
-      supabaseAdmin.setUserRole.mockResolvedValue(false);
+    it('changes nothing when the write and its audit row roll back', async () => {
+      // Row and audit entry share one transaction, so there is no half-applied role to
+      // reconcile: the failure is total and the caller can simply retry.
+      repository.updateAudited.mockResolvedValue(null);
 
       const result = await service.changeRole(actor, 'user-2', { role: UserRole.OPS });
 
       expect(result).toEqual({
         ok: false,
         status: HttpStatus.SERVICE_UNAVAILABLE,
-        message: 'The role could not be updated in the identity provider. Nothing was changed.',
+        message:
+          'The change could not be recorded in the audit trail and was not applied. Please try again.',
       });
-      expect(repository.updateAudited).not.toHaveBeenCalled();
-    });
-
-    it('reports a partial change and logs everything needed to reconcile', async () => {
-      // Supabase is already authoritative; the audit row is what was lost.
-      repository.updateAudited.mockResolvedValue(null);
-
-      const result = await service.changeRole(actor, 'user-2', { role: UserRole.OPS });
-
-      expect(!result.ok && result.message).toBe(
-        'The role was changed in the identity provider but could not be recorded locally. Contact an administrator before making further changes.',
-      );
-      expect(logger.error).toHaveBeenCalledWith(
-        expect.objectContaining({
-          targetId: 'user-2',
-          supabaseUserId: 'sub-2',
-          previousRole: UserRole.CUSTOMER,
-          newRole: UserRole.OPS,
-        }),
-        'Role changed in Supabase but the local record and its audit row failed to write',
-      );
     });
 
     it('is a no-op when the role already matches', async () => {
       const result = await service.changeRole(actor, 'user-2', { role: UserRole.CUSTOMER });
 
       expect(result.ok).toBe(true);
-      expect(supabaseAdmin.setUserRole).not.toHaveBeenCalled();
       expect(repository.updateAudited).not.toHaveBeenCalled();
     });
 
@@ -203,7 +170,7 @@ describe('AdminUserService', () => {
       const result = await service.changeRole(actor, 'user-1', { role: UserRole.OPS });
 
       expect(!result.ok && result.status).toBe(HttpStatus.FORBIDDEN);
-      expect(supabaseAdmin.setUserRole).not.toHaveBeenCalled();
+      expect(repository.updateAudited).not.toHaveBeenCalled();
     });
 
     it('refuses to demote the last super admin', async () => {
@@ -213,7 +180,7 @@ describe('AdminUserService', () => {
       const result = await service.changeRole(actor, 'user-2', { role: UserRole.OPS });
 
       expect(!result.ok && result.status).toBe(HttpStatus.CONFLICT);
-      expect(supabaseAdmin.setUserRole).not.toHaveBeenCalled();
+      expect(repository.updateAudited).not.toHaveBeenCalled();
     });
 
     it('allows promoting someone to super admin without a lockout check', async () => {

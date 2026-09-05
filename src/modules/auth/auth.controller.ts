@@ -2,9 +2,12 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
+  Param,
+  ParseUUIDPipe,
   Post,
   Req,
   UnauthorizedException,
@@ -20,9 +23,11 @@ import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { ThrottleBuckets } from '../../config/throttler.config';
 import { AuthConstants, AuthMessages } from './auth.constants';
+import { AuthEventsService } from './auth-events.service';
 import { AuthMapper } from './auth.mapper';
 import { AuthService } from './auth.service';
 import { LoginDto, LoginResponseDto, MfaVerifyDto, RefreshDto } from './dto/login.dto';
+import { LogoutAllResponseDto, SessionSummaryDto } from './dto/session.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
 import { LoginService } from './login.service';
 import { MfaService } from './mfa.service';
@@ -161,6 +166,116 @@ export class AuthController {
       this.logger.error({ err: error }, 'Exception occurred in AuthController.refresh');
       throw error;
     }
+  }
+
+  /**
+   * Ends the session the caller is using right now. Idempotent — see `SessionService.revoke`.
+   */
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post('logout')
+  @ApiOperation({ summary: 'End the current session' })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED })
+  async logout(@CurrentUser() user: AuthenticatedUser | undefined): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(
+        await this.sessionService.revoke(
+          authenticated.sessionId,
+          AuthEventsService.actorFrom(authenticated),
+        ),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.logout');
+      throw error;
+    }
+  }
+
+  /**
+   * Ends every live session the caller has — including the one making this request.
+   * `SessionService.revokeAll` makes no exception for the calling session ("ends every live
+   * session a user has"), and this route does not add one: it is a full sign-out everywhere,
+   * not "everywhere but here". The reported count is whatever the service actually revoked.
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post('logout-all')
+  @ApiOperation({ summary: 'End every session for the caller, including this one' })
+  @ApiResponse({ status: HttpStatus.OK, type: LogoutAllResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED })
+  async logoutAll(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<LogoutAllResponseDto> {
+    try {
+      const authenticated = AuthController.require(user);
+      const revoked = unwrapOrThrow(
+        await this.sessionService.revokeAll(
+          authenticated.userId,
+          AuthEventsService.actorFrom(authenticated),
+        ),
+      );
+      return { revoked };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.logoutAll');
+      throw error;
+    }
+  }
+
+  /**
+   * The caller's own live sessions, newest first — "where am I signed in".
+   */
+  @Get('sessions')
+  @ApiOperation({ summary: "List the caller's live sessions" })
+  @ApiResponse({ status: HttpStatus.OK, type: [SessionSummaryDto] })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED })
+  async listSessions(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<SessionSummaryDto[]> {
+    try {
+      const authenticated = AuthController.require(user);
+      const sessions = unwrapOrThrow(await this.sessionService.listForUser(authenticated.userId));
+      return sessions.map((session) =>
+        AuthMapper.toSessionSummary(session, authenticated.sessionId),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.listSessions');
+      throw error;
+    }
+  }
+
+  /**
+   * Ends one session the caller owns. A session that does not exist, or exists but belongs to
+   * someone else, answers 404 either way — see `SessionService.revokeOwned`.
+   */
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Delete('sessions/:id')
+  @ApiOperation({ summary: "End one of the caller's own sessions" })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND })
+  async deleteSession(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(await this.sessionService.revokeOwned(authenticated.userId, id));
+    } catch (error) {
+      this.logger.error(
+        { err: error, sessionId: id },
+        'Exception occurred in AuthController.deleteSession',
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * `@CurrentUser()` is undefined only on `@Public()` routes; none of the session routes are,
+   * so this is a guard-order safety net rather than an expected path.
+   */
+  private static require(user: AuthenticatedUser | undefined): AuthenticatedUser {
+    if (!user) {
+      throw new UnauthorizedException(ErrorMessages.MissingAccessToken);
+    }
+    return user;
   }
 
   /**

@@ -9,8 +9,7 @@ import { AdminConstants } from '../admin.constants';
 /** A user as staff see them — more than the customer's own profile exposes. */
 export class AdminUserDto {
   @ApiProperty({ format: 'uuid' }) id!: string;
-  @ApiProperty({ format: 'uuid' }) supabaseUserId!: string;
-  @ApiPropertyOptional({ nullable: true }) email!: string | null;
+  @ApiProperty() email!: string;
   @ApiPropertyOptional({ nullable: true }) phone!: string | null;
   @ApiPropertyOptional({ nullable: true }) fullName!: string | null;
   @ApiProperty({ enum: UserRole }) role!: UserRole;
@@ -39,7 +38,7 @@ export class AdminUserQueryDto extends PaginationQueryDto {
   isActive?: boolean;
 }
 
-/** Changing a staff role. Writes Supabase first; the local column mirrors it. */
+/** Changing a staff role. One write: the `role` column is where a role lives. */
 export class ChangeRoleDto {
   @ApiProperty({ enum: UserRole })
   @IsEnum(UserRole)

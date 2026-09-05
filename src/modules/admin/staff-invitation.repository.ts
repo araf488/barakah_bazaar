@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import {
   Prisma,
@@ -7,6 +7,8 @@ import {
   UserRole,
 } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuthTokens } from '../auth/auth.constants';
+import { SessionCachePort } from '../auth/sessions/session-cache.port';
 import { AuditLogRepository, AuditLogWriteData } from './audit-log.repository';
 
 /** `undefined` means no such row; `null` means the query itself failed. */
@@ -30,6 +32,7 @@ export class StaffInvitationRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogRepository,
+    @Inject(AuthTokens.SessionCache) private readonly sessionCache: SessionCachePort,
     @InjectPinoLogger(StaffInvitationRepository.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -101,6 +104,64 @@ export class StaffInvitationRepository {
       this.logger.error(
         { err: error, invitationId: id },
         'Exception occurred in StaffInvitationRepository.settleAudited',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Accepts an invitation: closes it, grants its role on the invitee's own row, and writes the
+   * audit entry — all in ONE transaction.
+   *
+   * The role write belongs here rather than in a second call because the invitation and the
+   * role it grants must never be able to disagree. The `role` column is now the only place a
+   * grant exists — no token carries a role claim and no identity provider holds a copy — so a
+   * closed invitation whose role never landed would be an unrecoverable grant: the token is
+   * spent and the invitee has nothing.
+   *
+   * Same PENDING guard as `settleAudited`: the loser of two concurrent acceptances updates
+   * nothing, grants nothing, and gets `null`.
+   */
+  async acceptAudited(
+    id: string,
+    data: Prisma.StaffInvitationUncheckedUpdateManyInput,
+    grant: { userId: string; role: UserRole },
+    audit: (updated: StaffInvitation) => AuditLogWriteData,
+  ): Promise<StaffInvitation | null> {
+    try {
+      const settled = await this.prisma.$transaction(async (tx) => {
+        const affected = await tx.staffInvitation.updateMany({
+          where: { id, status: StaffInvitationStatus.PENDING },
+          data,
+        });
+
+        if (affected.count === 0) {
+          throw new InvitationNoLongerPendingError();
+        }
+
+        await tx.user.update({ where: { id: grant.userId }, data: { role: grant.role } });
+
+        const updated = await tx.staffInvitation.findUniqueOrThrow({ where: { id } });
+        await this.auditLog.appendWithin(tx, audit(updated));
+        return updated;
+      });
+
+      // After the commit rather than inside it, for the reason given in
+      // `AdminUserRepository.updateAudited`: bumping first leaves a window where a concurrent
+      // read repopulates the cache from the pre-grant row, and the new staff member keeps
+      // validating as a customer until the entry expires.
+      await this.sessionCache.invalidateUser(grant.userId);
+
+      return settled;
+    } catch (error) {
+      if (error instanceof InvitationNoLongerPendingError) {
+        this.logger.info({ invitationId: id }, 'Invitation was already settled by someone else');
+        return null;
+      }
+
+      this.logger.error(
+        { err: error, invitationId: id, userId: grant.userId },
+        'Exception occurred in StaffInvitationRepository.acceptAudited',
       );
       return null;
     }

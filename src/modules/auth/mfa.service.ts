@@ -5,6 +5,7 @@ import { ErrorMessages } from '../../common/constants/error-messages.constants';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
 import { User, UserRole } from '../../infra/prisma/prisma-client';
 import { AuthConstants, AuthMessages } from './auth.constants';
+import { AuthEventsService } from './auth-events.service';
 import { AuthRepository } from './auth.repository';
 import { PasswordHasher } from './crypto/password-hasher';
 import { SecretCipher } from './crypto/secret-cipher';
@@ -56,6 +57,7 @@ export class MfaService {
     private readonly tokens: AccessTokenService,
     private readonly sessions: SessionService,
     private readonly settings: AuthSettingsService,
+    private readonly events: AuthEventsService,
     @InjectPinoLogger(MfaService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -154,6 +156,14 @@ export class MfaService {
 
       const verified = await this.verifyCredential(user.data, credential);
       if (!verified.ok) {
+        // The password was already right — only the second factor was not, which is a much
+        // stronger signal than a failed password and is recorded separately for that reason.
+        await this.events.recordMfaFailed(user.data, {
+          sessionId: AuthConstants.PendingSessionId,
+          deviceId,
+          userAgent,
+          ip,
+        });
         return verified;
       }
 

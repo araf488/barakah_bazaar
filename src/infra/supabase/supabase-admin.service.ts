@@ -1,7 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseClient, createClient } from '@supabase/supabase-js';
-import { UserRole } from '../prisma/prisma-client';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '../../config';
 
@@ -20,9 +19,9 @@ const SIGNED_UPLOAD_TTL_SECONDS = 300;
  *
  * This key bypasses Row Level Security, which is exactly why it lives only
  * here: it must never reach the storefront, admin portal or Flutter bundle.
- * Used for the Admin API (creating users during the custom phone-OTP flow) and
- * for minting signed upload URLs so large files go straight to Storage instead
- * of streaming through this process.
+ * Storage only — minting signed upload URLs so large files go straight to a bucket instead
+ * of streaming through this process. Supabase issues no identity this API trusts: accounts,
+ * roles and sessions all live in Postgres and are decided here.
  */
 @Injectable()
 export class SupabaseAdminService {
@@ -37,9 +36,7 @@ export class SupabaseAdminService {
 
     if (!url || !serviceRoleKey) {
       this.client = null;
-      this.logger.warn(
-        'Supabase admin client is not configured; Storage uploads and Admin API calls are unavailable',
-      );
+      this.logger.warn('Supabase admin client is not configured; Storage uploads are unavailable');
       return;
     }
 
@@ -93,41 +90,6 @@ export class SupabaseAdminService {
         'Exception occurred in SupabaseAdminService.createSignedUploadUrl',
       );
       return null;
-    }
-  }
-
-  /**
-   * Writes a staff role into Supabase `app_metadata`, kept in step with the local `role`
-   * column, which the caller writes directly right after this call accepts.
-   *
-   * There is no self-healing path if that local write fails afterwards: SessionAuthGuard
-   * reads `role` straight from Postgres on every request, so the column — not this call — is
-   * this application's own source of truth, and a caller here must reconcile a partial
-   * failure rather than rely on it correcting itself.
-   */
-  async setUserRole(supabaseUserId: string, role: UserRole): Promise<boolean> {
-    try {
-      if (!this.client) {
-        this.logger.error('Cannot change a role: the Supabase admin client is not configured');
-        return false;
-      }
-
-      const { error } = await this.client.auth.admin.updateUserById(supabaseUserId, {
-        app_metadata: { role },
-      });
-
-      if (error) {
-        this.logger.error({ err: error, supabaseUserId }, 'Supabase rejected a role change');
-        return false;
-      }
-
-      return true;
-    } catch (error) {
-      this.logger.error(
-        { err: error, supabaseUserId },
-        'Exception occurred in SupabaseAdminService.setUserRole',
-      );
-      return false;
     }
   }
 

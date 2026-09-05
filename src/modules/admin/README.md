@@ -9,16 +9,16 @@ Order management, catalog and inventory CRUD, promotions, dispatch, reports, sta
 - `admin_audit_log` ✅ — append-only; no update or delete exists anywhere in the codebase
 - `staff_invitations` ✅ — pending permission grants; no RLS policy at all, which is a deny
 
-## Changing a role crosses two systems
+## Changing a role is one write
 
-Supabase `app_metadata` is the source of truth and is written FIRST, because the role reaches
-this API as a JWT claim and `AuthRepository.upsertFromToken` re-mirrors that claim on every
-request — writing only the column would be undone within seconds.
+The `users.role` column is where a role lives, and the only place. `SessionAuthGuard` reads it
+from the session's joined user row on every request, and no token carries a role claim, so
+there is no second system to keep in step and no ordering question to get wrong.
 
-The two writes cannot share a transaction, so the ORDER is chosen for which failure is
-survivable: if Supabase refuses, nothing changed; if the local write fails afterwards, the
-column self-heals on the user's next request but the AUDIT ROW is lost, so that path logs
-actor, target, old role and new role and returns `RoleChangePartial`.
+The column and its audit row commit in one transaction, so a failure changes nothing and there
+is no partial state to reconcile — the caller simply retries. The repository invalidates that
+user's cached session after the commit, so a demotion takes effect on their very next request
+rather than whenever a token would have expired.
 
 A role change does NOT take effect until the user's token refreshes — a JWT already issued
 cannot be edited. To revoke access immediately, disable the account: `isActive` is checked
@@ -54,14 +54,14 @@ staff role yet — granting them one is the point. It lives on its own controlle
 that reason, since a class-level `@Roles(SUPER_ADMIN)` would make it unreachable by the people
 it exists for. It is still authenticated.
 
-Granting reuses the role-change rule unchanged: **Supabase first**, because the role reaches
-this API as a JWT claim that is re-mirrored on every request. If Supabase refuses, nothing
-changed and the invitation stays open. If the local settle fails afterwards, the role is live
-but the invitation is not closed, so that path logs everything needed to reconcile and returns
-`InvitationAcceptPartial`.
+Granting closes the invitation and writes the invitee's role in **one transaction**
+(`StaffInvitationRepository.acceptAudited`). The two must not be able to disagree: the column
+is the only place the grant exists, so a closed invitation whose role never landed would spend
+the token and give the invitee nothing. A failure therefore grants nothing and leaves the
+invitation open, and the caller can retry.
 
-Two invitations racing to accept the same token cannot both win: `settleAudited` filters on
-`status = PENDING` in the `UPDATE`, so the loser writes nothing and gets a conflict rather
+Two invitations racing to accept the same token cannot both win: the `UPDATE` filters on
+`status = PENDING`, so the loser writes nothing, grants nothing, and gets a conflict rather
 than closing an invitation twice.
 
 Expiry is **derived from `expires_at`, never a status value.** A row cannot claim to be open
@@ -104,7 +104,7 @@ global hook `main.ts` installs, so the service behaves identically outside the b
 
 - Every endpoint carries an explicit `@Roles(...)`. There is no default-allow for staff routes.
 - Every write appends to admin_audit_log: actor, entity, before/after, timestamp. Non-negotiable once money and stock are involved.
-- Role changes are written through the Supabase Admin API so `app_metadata.role` stays the source of truth; the local column mirrors it.
+- Role changes are a single write to `users.role`, transactional with their audit row. That column is the source of truth; nothing outside this database holds a copy.
 - Bulk CSV product import: `POST /admin/catalog/import`. One row is one VARIANT; rows sharing
   a slug become one product, which is how a grocery catalog actually arrives (250g / 500g /
   1kg of one item) and lets a buyer maintain the file in a spreadsheet.

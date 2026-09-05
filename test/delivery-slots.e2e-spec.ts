@@ -29,8 +29,6 @@ process.env.WRITE_RATE_LIMIT = '1000';
 process.env.GEOCODING_RATE_LIMIT = '1000';
 delete process.env.DATABASE_URL;
 delete process.env.SUPABASE_URL;
-delete process.env.SUPABASE_JWKS_URL;
-delete process.env.SUPABASE_JWT_SECRET;
 delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const CUSTOMER_ADDRESS = '3f7c1b2e-9a4d-4c11-8f6e-2b5a7d9c0e13';

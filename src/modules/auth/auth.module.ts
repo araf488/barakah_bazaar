@@ -2,8 +2,11 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PinoLogger, getLoggerToken } from 'nestjs-pino';
 import { Env } from '../../config';
+import { AuditLogRepository } from '../admin/audit-log.repository';
 import { AuthConstants, AuthTokens } from './auth.constants';
 import { AuthController } from './auth.controller';
+import { AuthEventsService } from './auth-events.service';
+import { SessionSweeper } from './session-sweeper.service';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { PasswordHasher } from './crypto/password-hasher';
@@ -20,10 +23,9 @@ import { SessionService } from './sessions/session.service';
 import { AccessTokenService } from './tokens/access-token.service';
 
 /**
- * Token verification itself lives in SupabaseModule (the verifier is needed by
- * the globally registered guard); this module owns the application-side
- * identity: the local user mirror, the profile endpoint, and the SMS/OTP ports
- * for the custom phone-login flow.
+ * Everything about who the caller is: the user table, the profile endpoint, the SMS/OTP ports
+ * for the phone-login flow, and the tokens themselves. Nothing outside this module issues or
+ * verifies a credential.
  *
  * It also owns the whole session/token/settings stack — `AccessTokenService`, `SessionService`
  * and their dependencies used to be a stopgap registration in `app.module.ts` (that module has
@@ -82,14 +84,28 @@ import { AccessTokenService } from './tokens/access-token.service';
     },
     SessionService,
 
+    // The audit trail for authentication events.
+    //
+    // AuditLogRepository is registered here rather than imported from AdminModule because
+    // AdminModule already imports THIS module — importing it back would be a circular module
+    // reference. A second instance is harmless in a way a second AuthSettingsService or
+    // AccessTokenService would not be: it holds no cache and no key, only PrismaService (which
+    // is global) and a logger, so both instances write the same rows to the same table.
+    AuditLogRepository,
+    AuthEventsService,
+
+    // Reclaims expired session rows and the recovery codes of disabled accounts. A plain
+    // interval, so it works on a deployment with no Redis — see the class comment.
+    SessionSweeper,
+
     // Login and MFA.
     MfaCryptoSupport,
     LoginService,
     MfaService,
   ],
-  // AuthRepository is exported because it owns the local user mirror, which the admin
-  // module's invitation flow must read (by email, and by Supabase id). Re-providing it there
-  // would create a second instance of the same table's accessor.
+  // AuthRepository is exported because it owns the user table, which the admin module's
+  // invitation flow must read (by id, and by email). Re-providing it there would create a
+  // second instance of the same table's accessor.
   //
   // AccessTokenService and SessionService are exported for SessionAuthGuard — see the class
   // comment above.

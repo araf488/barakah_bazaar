@@ -169,10 +169,8 @@ enum ReviewStatus {
 
 model User {
   id                  String    @id @default(uuid()) @db.Uuid
-  /// Retained until Task 12, which drops it with the code that reads it.
-  supabaseUserId      String    @unique @map("supabase_user_id") @db.Uuid
-  /// Becomes the login credential and NOT NULL in Task 12's contract migration.
-  email               String?   @unique
+  /// The login credential. Required — an account cannot exist without one.
+  email               String    @unique
   phone               String?   @unique
   fullName            String?   @map("full_name")
   /// scrypt, self-describing (see PasswordHasher). Null until a password is set:
