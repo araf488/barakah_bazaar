@@ -11,6 +11,7 @@ const value: CachedSessionValue = {
   phone: null,
   isActive: true,
   deviceId: 'device-1',
+  userAgent: 'Mozilla/5.0 (seed)',
   expiresAt: new Date('2026-09-02T13:00:00.000Z').toISOString(),
   absoluteExpiresAt: new Date('2026-10-02T13:00:00.000Z').toISOString(),
   revokedAt: null,
@@ -117,6 +118,27 @@ describe('RedisSessionCache', () => {
 
       await expect(cache.read('session-1', 'user-1')).resolves.toBeNull();
       expect(logger.warn).toHaveBeenCalled();
+    });
+
+    // The upgrade case: entries written before `userAgent` joined the payload. Rejecting them
+    // sends the caller to the database, which then re-caches the entry complete. Defaulting the
+    // missing field to `null` instead would make every stale entry report a user-agent anomaly
+    // it has no evidence for, repeatedly, until it expired.
+    it('discards an entry written before it carried a user agent, rather than defaulting it', async () => {
+      const stale: Record<string, unknown> = { ...value, generation: 0 };
+      delete stale.userAgent;
+      client.mget.mockResolvedValue([JSON.stringify(stale), null]);
+
+      await expect(cache.read('session-1', 'user-1')).resolves.toBeNull();
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('reads back the user agent the session was issued to', async () => {
+      client.mget.mockResolvedValue([JSON.stringify({ ...value, generation: 0 }), null]);
+
+      await expect(cache.read('session-1', 'user-1')).resolves.toMatchObject({
+        userAgent: 'Mozilla/5.0 (seed)',
+      });
     });
 
     it('falls back to a miss, not a throw, when the client errors', async () => {

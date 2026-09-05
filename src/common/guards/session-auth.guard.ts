@@ -83,7 +83,11 @@ export class SessionAuthGuard implements CanActivate {
     const claims = verified.claims;
 
     // Stage two: the row is the authority on revocation, disablement and role.
-    const validated = await this.sessions.validate(claims, deviceId);
+    const validated = await this.sessions.validate(
+      claims,
+      deviceId,
+      SessionAuthGuard.userAgent(request),
+    );
     if (!validated.ok) {
       throw new HttpException(validated.message, validated.status);
     }
@@ -106,6 +110,16 @@ export class SessionAuthGuard implements CanActivate {
         context.getClass(),
       ]) === true
     );
+  }
+
+  /**
+   * The request's `User-Agent`, for the stage-two anomaly comparison (§5.6). `null` when the
+   * header is absent, which is a value the session row can hold too, so a client that never
+   * sends one compares equal rather than reporting an anomaly on every request.
+   */
+  private static userAgent(request: Request): string | null {
+    const value = request.headers['user-agent'];
+    return typeof value === 'string' ? value : null;
   }
 
   private static bearerToken(request: Request): string | null {

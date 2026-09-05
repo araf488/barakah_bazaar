@@ -19,6 +19,13 @@ export interface CachedSessionValue {
   readonly phone: string | null;
   readonly isActive: boolean;
   readonly deviceId: string;
+  /**
+   * The user agent the session was issued to, compared on every request so a change can be
+   * logged as an anomaly (§5.6). Cached rather than read from the row because the cache
+   * serves the overwhelming majority of validations — comparing only on a miss would make
+   * the signal fire almost nowhere, which is indistinguishable from not building it.
+   */
+  readonly userAgent: string | null;
   /** ISO-8601. The sliding idle deadline as of the moment this value was cached. */
   readonly expiresAt: string;
   /** ISO-8601. The hard ceiling; a value is never cached past this instant. */
@@ -30,7 +37,13 @@ export interface CachedSessionValue {
 /** Builds a `CachedSessionValue` from the row `SessionRepository.findByIdWithUser` returns. */
 export const toCachedSessionValue = (
   user: User,
-  session: { deviceId: string; expiresAt: Date; absoluteExpiresAt: Date; revokedAt: Date | null },
+  session: {
+    deviceId: string;
+    userAgent: string | null;
+    expiresAt: Date;
+    absoluteExpiresAt: Date;
+    revokedAt: Date | null;
+  },
 ): CachedSessionValue => ({
   userId: user.id,
   role: user.role,
@@ -38,6 +51,7 @@ export const toCachedSessionValue = (
   phone: user.phone,
   isActive: user.isActive,
   deviceId: session.deviceId,
+  userAgent: session.userAgent,
   expiresAt: session.expiresAt.toISOString(),
   absoluteExpiresAt: session.absoluteExpiresAt.toISOString(),
   revokedAt: session.revokedAt?.toISOString() ?? null,

@@ -20,6 +20,8 @@ const HOUR = 60 * MINUTE;
 const RAW_TOKEN = 'raw-refresh-token';
 const DEVICE = 'device-1';
 const IP = '203.0.113.7';
+/** The user agent every fixture session was issued to. */
+const USER_AGENT = 'jest';
 const OTHER_IP = '198.51.100.4';
 
 /** Hashed here rather than through the production helper, so the test states the algorithm. */
@@ -52,7 +54,7 @@ const makeSession = (overrides: Record<string, unknown> = {}): SessionWithUser =
   revokedAt: null,
   lastUsedAt: null,
   deviceId: DEVICE,
-  userAgent: 'jest',
+  userAgent: USER_AGENT,
   ipAddress: IP,
   createdAt: NOW,
   user: makeUser(),
@@ -76,6 +78,7 @@ const makeCachedValue = (overrides: Partial<CachedSessionValue> = {}): CachedSes
   phone: null,
   isActive: true,
   deviceId: DEVICE,
+  userAgent: USER_AGENT,
   expiresAt: new Date(NOW.getTime() + HOUR).toISOString(),
   absoluteExpiresAt: new Date(NOW.getTime() + 48 * HOUR).toISOString(),
   revokedAt: null,
@@ -601,6 +604,92 @@ describe('SessionService', () => {
       const value = cache.write.mock.calls[0][1] as Record<string, unknown>;
       expect(value.refreshTokenHash).toBeUndefined();
       expect(value.previousRefreshTokenHash).toBeUndefined();
+    });
+  });
+
+  // §5.6: the user agent is the weakest of the three binding signals, so a change is an
+  // observation and never a rejection. These prove both halves — that it is noticed, and that
+  // noticing it costs the caller nothing.
+  describe('validate — user agent anomaly', () => {
+    /** The one warn line this feature emits, or undefined when it stayed quiet. */
+    const anomaly = (): unknown[] | undefined =>
+      logger.warn.mock.calls.find(
+        (call) => call[1] === 'Session user agent differs from the one it was issued to',
+      );
+
+    it('logs an anomaly when the presented user agent differs from the row', async () => {
+      const result = await service.validate(makeClaims(), DEVICE, 'Chrome/999 (updated)');
+
+      expect(result.ok).toBe(true);
+      expect(anomaly()?.[0]).toEqual({
+        sessionId: 'session-1',
+        storedUserAgent: USER_AGENT,
+        presentedUserAgent: 'Chrome/999 (updated)',
+      });
+    });
+
+    it('allows the request through — a changed user agent is never a rejection', async () => {
+      const result = await service.validate(makeClaims(), DEVICE, 'Chrome/999');
+
+      expect(result).toMatchObject({ ok: true, data: { sessionId: 'session-1' } });
+      expect(repository.revoke).not.toHaveBeenCalled();
+    });
+
+    it('stays quiet when the user agent matches', async () => {
+      await service.validate(makeClaims(), DEVICE, USER_AGENT);
+
+      expect(anomaly()).toBeUndefined();
+    });
+
+    it('stays quiet when the caller supplied nothing to compare', async () => {
+      await service.validate(makeClaims(), DEVICE);
+
+      expect(anomaly()).toBeUndefined();
+    });
+
+    it('treats a session and a request that both carry no user agent as unchanged', async () => {
+      repository.findByIdWithUser.mockResolvedValue(makeSession({ userAgent: null }));
+
+      await service.validate(makeClaims(), DEVICE, null);
+
+      expect(anomaly()).toBeUndefined();
+    });
+
+    it('reports a request that dropped the header it used to send', async () => {
+      await service.validate(makeClaims(), DEVICE, null);
+
+      expect(anomaly()?.[0]).toMatchObject({ presentedUserAgent: null });
+    });
+
+    it('caps an oversized user agent before it reaches the log', async () => {
+      // The literal, not the constant: asserting against `AuthConstants` would pass whatever
+      // that value became, including a value that lets an unbounded header into the log.
+      const huge = 'x'.repeat(1000);
+
+      await service.validate(makeClaims(), DEVICE, huge);
+
+      const logged = (anomaly()?.[0] as { presentedUserAgent: string }).presentedUserAgent;
+      expect(logged).toHaveLength(256);
+    });
+
+    it('compares against the cached user agent on a cache hit, without reading the row', async () => {
+      cache.read.mockResolvedValue(makeCachedValue());
+
+      await service.validate(makeClaims(), DEVICE, 'Chrome/999');
+
+      expect(repository.findByIdWithUser).not.toHaveBeenCalled();
+      expect(anomaly()?.[0]).toMatchObject({
+        storedUserAgent: USER_AGENT,
+        presentedUserAgent: 'Chrome/999',
+      });
+    });
+
+    it('stays quiet on a cache hit whose user agent matches', async () => {
+      cache.read.mockResolvedValue(makeCachedValue());
+
+      await service.validate(makeClaims(), DEVICE, USER_AGENT);
+
+      expect(anomaly()).toBeUndefined();
     });
   });
 

@@ -47,6 +47,12 @@ const isStoredSessionValue = (value: unknown): value is StoredSessionValue => {
     (typeof candidate.phone === 'string' || candidate.phone === null) &&
     typeof candidate.isActive === 'boolean' &&
     typeof candidate.deviceId === 'string' &&
+    // Required, not tolerated as absent: an entry written before this field existed is
+    // rejected here and re-read from the database, which then caches it complete. Defaulting
+    // a missing one to `null` instead would make every such entry report a user-agent anomaly
+    // it has no evidence for — a false security signal, repeated until the entry expires,
+    // which is worse than one "discarding malformed payload" line per stale session.
+    (typeof candidate.userAgent === 'string' || candidate.userAgent === null) &&
     typeof candidate.expiresAt === 'string' &&
     typeof candidate.absoluteExpiresAt === 'string' &&
     (typeof candidate.revokedAt === 'string' || candidate.revokedAt === null) &&
@@ -168,6 +174,7 @@ export class RedisSessionCache implements SessionCachePort {
       phone: parsed.phone,
       isActive: parsed.isActive,
       deviceId: parsed.deviceId,
+      userAgent: parsed.userAgent,
       expiresAt: parsed.expiresAt,
       absoluteExpiresAt: parsed.absoluteExpiresAt,
       revokedAt: parsed.revokedAt,

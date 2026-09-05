@@ -158,9 +158,10 @@ export class SessionService {
   async validate(
     claims: AccessTokenClaims,
     deviceId: string,
+    userAgent?: string | null,
   ): Promise<ServiceResponse<ValidatedSession>> {
     try {
-      const cached = await this.tryFromCache(claims, deviceId);
+      const cached = await this.tryFromCache(claims, deviceId, userAgent);
 
       if (cached) {
         return cached;
@@ -193,6 +194,8 @@ export class SessionService {
       if (failure) {
         return failure;
       }
+
+      this.noteUserAgentChange(session.id, session.userAgent, userAgent);
 
       await this.slideIdleDeadline(session, settings);
       await this.cacheSession(session);
@@ -462,6 +465,7 @@ export class SessionService {
   private async tryFromCache(
     claims: AccessTokenClaims,
     deviceId: string,
+    userAgent?: string | null,
   ): Promise<ServiceResponse<ValidatedSession> | null> {
     const cached = await this.readCache(claims.sessionId, claims.userId);
 
@@ -482,7 +486,48 @@ export class SessionService {
       return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
     }
 
-    return this.assertCachedUsable(claims.sessionId, cached, deviceId);
+    return this.assertCachedUsable(claims.sessionId, cached, deviceId, userAgent);
+  }
+
+  /**
+   * Records that a request arrived with a different user agent than the session was issued to.
+   *
+   * Deliberately observation only — no revocation, no rejection, no write (§5.6). The user
+   * agent is the weakest of the three binding signals: it changes on every browser and OS
+   * update, and an attacker who captured the token almost certainly captured this header in
+   * the same request, so acting on it would log real users out to inconvenience nobody. What
+   * it is worth is a line in the log when a token starts being presented by something else.
+   *
+   * No write, because §5.4 guarantees ordinary requests only read the session row — re-syncing
+   * the stored value here would put a write on the hot path. The row is re-synced by `refresh`
+   * instead, so a genuine change stops being reported within one access-token lifetime rather
+   * than repeating forever.
+   *
+   * `undefined` means the caller had nothing to compare and is not an anomaly; `null` means the
+   * request genuinely carried no `User-Agent`, which is comparable like any other value.
+   */
+  private noteUserAgentChange(
+    sessionId: string,
+    stored: string | null,
+    presented: string | null | undefined,
+  ): void {
+    if (presented === undefined || stored === presented) {
+      return;
+    }
+
+    this.logger.warn(
+      {
+        sessionId,
+        storedUserAgent: SessionService.forLog(stored),
+        presentedUserAgent: SessionService.forLog(presented),
+      },
+      'Session user agent differs from the one it was issued to',
+    );
+  }
+
+  /** Caps an untrusted user agent to what may reach a log line. */
+  private static forLog(userAgent: string | null): string | null {
+    return userAgent === null ? null : userAgent.slice(0, AuthConstants.UserAgentLogMaxLength);
   }
 
   /** `assertUsable`'s checks, run against a `CachedSessionValue` instead of a `SessionWithUser`. */
@@ -490,6 +535,7 @@ export class SessionService {
     sessionId: string,
     cached: CachedSessionValue,
     deviceId: string,
+    userAgent?: string | null,
   ): Promise<ServiceResponse<ValidatedSession>> {
     if (cached.revokedAt !== null) {
       return serviceFail(HttpStatus.UNAUTHORIZED, ErrorMessages.InvalidAccessToken);
@@ -525,6 +571,8 @@ export class SessionService {
       this.logger.warn({ sessionId }, 'Disabled account presented a live session');
       return serviceFail(HttpStatus.FORBIDDEN, ErrorMessages.AccountDisabled);
     }
+
+    this.noteUserAgentChange(sessionId, cached.userAgent, userAgent);
 
     return serviceOk({
       user: {

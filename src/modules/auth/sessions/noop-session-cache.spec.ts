@@ -9,6 +9,7 @@ const value: CachedSessionValue = {
   phone: null,
   isActive: true,
   deviceId: 'device-1',
+  userAgent: 'Mozilla/5.0 (seed)',
   expiresAt: new Date('2026-09-02T13:00:00.000Z').toISOString(),
   absoluteExpiresAt: new Date('2026-10-02T13:00:00.000Z').toISOString(),
   revokedAt: null,

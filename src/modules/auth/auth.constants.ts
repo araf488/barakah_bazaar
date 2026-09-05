@@ -72,6 +72,14 @@ export const AuthConstants = {
   /** Header a client sends its device id in. */
   DeviceIdHeader: 'x-device-id',
   DeviceIdMaxLength: 128,
+  /**
+   * How much of a user agent reaches the anomaly log when it differs from the one a session
+   * was issued to (§5.6). Capped because the header is unbounded attacker-controlled input
+   * and the column that stores it is untyped text: without a ceiling, one client can write
+   * an arbitrarily large string into every log line it provokes. 256 is several times a real
+   * user agent, so a genuine one is never cut.
+   */
+  UserAgentLogMaxLength: 256,
   /** Refresh-token entropy, in bytes, before base64url encoding. */
   RefreshTokenBytes: 32,
   /**

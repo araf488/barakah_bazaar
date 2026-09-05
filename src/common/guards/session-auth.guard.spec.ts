@@ -228,6 +228,31 @@ describe('SessionAuthGuard', () => {
       });
     });
 
+    // §5.6's user-agent comparison happens in stage two, so the guard has to hand the header
+    // down. Without this the anomaly check would compare against `undefined` on every request
+    // and could never fire — the failure would be silent, which is why it is pinned here.
+    it('hands the presented user agent to stage two', async () => {
+      tokens.verify.mockResolvedValue({ ok: true, claims: claims() });
+      sessions.validate.mockResolvedValue(validated());
+      const { context } = createExecutionContext({
+        headers: headers({ 'user-agent': 'Chrome/141' }),
+      });
+
+      await guard.canActivate(context);
+
+      expect(sessions.validate).toHaveBeenCalledWith(expect.anything(), DEVICE_ID, 'Chrome/141');
+    });
+
+    it('passes null rather than undefined when the request carries no user agent', async () => {
+      tokens.verify.mockResolvedValue({ ok: true, claims: claims() });
+      sessions.validate.mockResolvedValue(validated());
+      const { context } = createExecutionContext({ headers: headers() });
+
+      await guard.canActivate(context);
+
+      expect(sessions.validate).toHaveBeenCalledWith(expect.anything(), DEVICE_ID, null);
+    });
+
     it('takes the role from the session row, not the token claim', async () => {
       // The claim says OPS — signed thirty minutes ago — but the row says a demotion to
       // CUSTOMER has since landed. The row must win.
