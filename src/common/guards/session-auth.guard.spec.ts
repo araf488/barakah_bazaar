@@ -55,13 +55,16 @@ const messageOf = (error: HttpException): string => {
 describe('SessionAuthGuard', () => {
   let reflector: Reflector;
   let tokens: { verify: jest.Mock };
-  let sessions: { validate: jest.Mock };
+  let sessions: { validate: jest.Mock; revokeOnDeviceMismatch: jest.Mock };
   let guard: SessionAuthGuard;
 
   beforeEach(() => {
     reflector = new Reflector();
     tokens = { verify: jest.fn() };
-    sessions = { validate: jest.fn() };
+    sessions = {
+      validate: jest.fn(),
+      revokeOnDeviceMismatch: jest.fn().mockResolvedValue(undefined),
+    };
     guard = new SessionAuthGuard(
       reflector,
       tokens as unknown as AccessTokenService,
@@ -121,11 +124,59 @@ describe('SessionAuthGuard', () => {
     });
 
     it('rejects a bad signature WITHOUT any database call', async () => {
-      tokens.verify.mockResolvedValue(null);
+      tokens.verify.mockResolvedValue({ ok: false });
       const { context } = createExecutionContext({ headers: headers() });
 
       await expect(guard.canActivate(context)).rejects.toThrow(INVALID_TOKEN_MESSAGE);
       expect(sessions.validate).not.toHaveBeenCalled();
+    });
+
+    it('ends the session when a valid token arrives from the wrong device', async () => {
+      // §5.6: refusing is too small a response. A token separated from its device id is one
+      // that leaked, and ending the session turns a silent compromise into a logout its owner
+      // can see.
+      tokens.verify.mockResolvedValue({ ok: false, deviceMismatch: { sessionId: 'session-1' } });
+      const { context } = createExecutionContext({ headers: headers() });
+
+      await expect(guard.canActivate(context)).rejects.toThrow(INVALID_TOKEN_MESSAGE);
+      expect(sessions.revokeOnDeviceMismatch).toHaveBeenCalledWith('session-1');
+      // Still stage one: the row is never fetched, so this costs no query on the happy path.
+      expect(sessions.validate).not.toHaveBeenCalled();
+    });
+
+    it('answers a device mismatch exactly as it answers a forgery', async () => {
+      // Telling a caller "wrong device" would confirm the token is otherwise valid.
+      tokens.verify.mockResolvedValue({ ok: false, deviceMismatch: { sessionId: 'session-1' } });
+      const mismatch = createExecutionContext({ headers: headers() });
+      const mismatchError = await guard
+        .canActivate(mismatch.context)
+        .then(() => null)
+        .catch((error: HttpException) => error);
+
+      tokens.verify.mockResolvedValue({ ok: false });
+      const forged = createExecutionContext({ headers: headers() });
+      const forgedError = await guard
+        .canActivate(forged.context)
+        .then(() => null)
+        .catch((error: HttpException) => error);
+
+      expect(mismatchError).not.toBeNull();
+      expect(messageOf(mismatchError as HttpException)).toBe(
+        messageOf(forgedError as HttpException),
+      );
+      expect((mismatchError as HttpException).getStatus()).toBe(
+        (forgedError as HttpException).getStatus(),
+      );
+    });
+
+    it('revokes nothing for a failure that names no session', async () => {
+      // The safety property: only a token this API signed reaches the mismatch branch, so a
+      // forged one can never end a session by naming it.
+      tokens.verify.mockResolvedValue({ ok: false });
+      const { context } = createExecutionContext({ headers: headers() });
+
+      await expect(guard.canActivate(context)).rejects.toThrow(INVALID_TOKEN_MESSAGE);
+      expect(sessions.revokeOnDeviceMismatch).not.toHaveBeenCalled();
     });
 
     it('rejects a missing X-Device-Id without a database call', async () => {
@@ -154,7 +205,7 @@ describe('SessionAuthGuard', () => {
     it('rejects a refresh-typed token presented as a bearer token', async () => {
       // AccessTokenService.verify returns null itself when `typ` does not match `expected`;
       // what this guard must get right is always asking for 'access', never anything looser.
-      tokens.verify.mockResolvedValue(null);
+      tokens.verify.mockResolvedValue({ ok: false });
       const { context } = createExecutionContext({ headers: headers() });
 
       await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
@@ -162,7 +213,7 @@ describe('SessionAuthGuard', () => {
     });
 
     it('attaches userId, sessionId, email and role to the request', async () => {
-      tokens.verify.mockResolvedValue(claims());
+      tokens.verify.mockResolvedValue({ ok: true, claims: claims() });
       sessions.validate.mockResolvedValue(validated());
       const { context, request } = createExecutionContext({ headers: headers() });
 
@@ -180,7 +231,7 @@ describe('SessionAuthGuard', () => {
     it('takes the role from the session row, not the token claim', async () => {
       // The claim says OPS — signed thirty minutes ago — but the row says a demotion to
       // CUSTOMER has since landed. The row must win.
-      tokens.verify.mockResolvedValue(claims({ role: UserRole.OPS }));
+      tokens.verify.mockResolvedValue({ ok: true, claims: claims({ role: UserRole.OPS }) });
       sessions.validate.mockResolvedValue(
         validated({ user: userRow({ role: UserRole.CUSTOMER }) }),
       );
@@ -192,7 +243,7 @@ describe('SessionAuthGuard', () => {
     });
 
     it('answers 403 for a disabled account', async () => {
-      tokens.verify.mockResolvedValue(claims());
+      tokens.verify.mockResolvedValue({ ok: true, claims: claims() });
       sessions.validate.mockResolvedValue({
         ok: false,
         status: HttpStatus.FORBIDDEN,
@@ -206,7 +257,7 @@ describe('SessionAuthGuard', () => {
     });
 
     it('answers 401 for a revoked session', async () => {
-      tokens.verify.mockResolvedValue(claims());
+      tokens.verify.mockResolvedValue({ ok: true, claims: claims() });
       sessions.validate.mockResolvedValue({
         ok: false,
         status: HttpStatus.UNAUTHORIZED,
@@ -220,7 +271,7 @@ describe('SessionAuthGuard', () => {
     });
 
     it('answers 503 when the session lookup fails', async () => {
-      tokens.verify.mockResolvedValue(claims());
+      tokens.verify.mockResolvedValue({ ok: true, claims: claims() });
       sessions.validate.mockResolvedValue({
         ok: false,
         status: HttpStatus.SERVICE_UNAVAILABLE,
@@ -242,13 +293,13 @@ describe('SessionAuthGuard', () => {
 
     it('gives the same body for a stage-one and a stage-two rejection', async () => {
       const { context: stageOneContext } = createExecutionContext({ headers: headers() });
-      tokens.verify.mockResolvedValueOnce(null);
+      tokens.verify.mockResolvedValueOnce({ ok: false });
       const stageOne = await guard
         .canActivate(stageOneContext)
         .catch((error: HttpException) => error);
 
       const { context: stageTwoContext } = createExecutionContext({ headers: headers() });
-      tokens.verify.mockResolvedValueOnce(claims());
+      tokens.verify.mockResolvedValueOnce({ ok: true, claims: claims() });
       sessions.validate.mockResolvedValueOnce({
         ok: false,
         status: HttpStatus.UNAUTHORIZED,

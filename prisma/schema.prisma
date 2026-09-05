@@ -186,6 +186,9 @@ model User {
   /// The last 30-second step spent, so a shoulder-surfed code cannot be reused.
   totpLastUsedStep    Int?      @map("totp_last_used_step")
   totpFailedAttempts  Int       @default(0) @map("totp_failed_attempts")
+  /// When the current run of failures began, so the count above can expire rather than
+  /// accumulate across months. Null when there is no run in progress.
+  totpFirstFailedAt   DateTime? @map("totp_first_failed_at")
   totpLockedUntil     DateTime? @map("totp_locked_until")
   role                UserRole  @default(CUSTOMER)
   /// Which language transactional messages are written in. Not a display preference for the

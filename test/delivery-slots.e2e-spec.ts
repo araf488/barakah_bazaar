@@ -8,6 +8,7 @@ import { AuthConstants } from '../src/modules/auth/auth.constants';
 import {
   AccessTokenClaims,
   AccessTokenService,
+  TokenVerification,
 } from '../src/modules/auth/tokens/access-token.service';
 import { SessionService, ValidatedSession } from '../src/modules/auth/sessions/session.service';
 import { ServiceResponse } from '../src/common/types/service-response';
@@ -62,17 +63,22 @@ const stubTokens = {
     token: string,
     deviceId: string | undefined,
     expected: string,
-  ): Promise<AccessTokenClaims | null> =>
+  ): Promise<TokenVerification> =>
     Promise.resolve(
       deviceId && expected === 'access' && Object.values(UserRole).includes(token as UserRole)
         ? {
-            userId: 'staff-1',
-            sessionId: 'session-1',
-            role: token as UserRole,
-            email: 'staff@example.com',
-            type: 'access' as const,
+            ok: true as const,
+            claims: {
+              userId: 'staff-1',
+              sessionId: 'session-1',
+              role: token as UserRole,
+              email: 'staff@example.com',
+              type: 'access' as const,
+            },
           }
-        : null,
+        : // Never `deviceMismatch`: this suite has nothing to say about binding, and naming a
+          // session here would have the guard revoke one that does not exist.
+          { ok: false as const },
     ),
 };
 

@@ -58,12 +58,22 @@ Every session is pinned to a client-generated install id sent as `X-Device-Id`. 
 recorded in the session row and baked into the access token's `bnd` claim, and the two are
 checked in different places for different reasons:
 
-- **Stage 1** compares `bnd` against the presented header. A token replayed without the
-  matching id is refused — 401, nothing else happens, because a mismatched header is just as
-  likely to be a misconfigured client as an attacker.
+- **Stage 1** compares `bnd` against the presented header. A mismatch **revokes the session**
+  and answers 401. Refusing alone would be too small a response: a token separated from its
+  device id is one that leaked, and ending the session turns a silent compromise into a logout
+  its owner can see. The cost is real and deliberate — the genuine device is signed out too.
 - **Stage 2** compares the presented id against the session row. Reaching here means the token
   verified against _this_ device's binding while the row belongs to another, which nothing
-  legitimate does, so the session is **revoked outright** rather than merely refused.
+  legitimate does, so the session is revoked there as well.
+
+Two things are deliberately **not** revoked. A request with **no** `X-Device-Id` at all
+revokes nothing — nothing was compared, and a client that forgets the header must not sign its
+user out. And a token this API did not sign revokes nothing, whatever session id it names:
+the binding check runs only after the signature, issuer, audience and expiry have been
+accepted, so a forged token can never reach the branch that names a session. Without that
+ordering this control would itself be a way to sign other people out, and there is a test
+holding it in place (`revokes nothing for a token this API did not sign, even when it names a
+real session`).
 
 **Be honest about the limit.** `X-Device-Id` is supplied by the client, so an attacker who has
 stolen a token from a device can usually steal the id alongside it and replay both. What
@@ -71,7 +81,9 @@ binding actually buys is narrower and still worth having: a token leaked _withou
 id — through a log, a proxy, a copied `curl` command, a shared crash report — is inert.
 
 It is a blast-radius control, not an anti-theft control. Treat it as such: it does not replace
-short access-token lifetimes or refresh rotation.
+short access-token lifetimes or refresh rotation. What it does add, now that a mismatch ends
+the session, is that a leak becomes **visible** — the owner is signed out, and staff
+revocations land in the audit trail as `auth.session_revoked` with reason `device_mismatch`.
 
 There is deliberately **no IP binding**. It was built, reviewed and deleted: behind a reverse
 proxy Express reports the proxy's own constant address unless the app is configured to trust

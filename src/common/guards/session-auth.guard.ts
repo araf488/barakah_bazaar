@@ -67,10 +67,20 @@ export class SessionAuthGuard implements CanActivate {
       throw new UnauthorizedException(ErrorMessages.InvalidAccessToken);
     }
 
-    const claims = await this.tokens.verify(token, deviceId, 'access');
-    if (!claims) {
+    const verified = await this.tokens.verify(token, deviceId, 'access');
+    if (!verified.ok) {
+      if (verified.deviceMismatch) {
+        // A token that verified against this API's own signature, presented with the wrong
+        // device id. Ended rather than merely refused — see SessionService.
+        await this.sessions.revokeOnDeviceMismatch(verified.deviceMismatch.sessionId);
+      }
+
+      // The same 401 either way: telling a caller "wrong device" confirms the token is
+      // otherwise valid, which is exactly what someone holding a leaked one wants to learn.
       throw new UnauthorizedException(ErrorMessages.InvalidAccessToken);
     }
+
+    const claims = verified.claims;
 
     // Stage two: the row is the authority on revocation, disablement and role.
     const validated = await this.sessions.validate(claims, deviceId);

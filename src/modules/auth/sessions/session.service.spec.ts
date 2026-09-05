@@ -630,9 +630,8 @@ describe('SessionService', () => {
       const session = issued(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP));
 
       await expect(tokens.verify(session.accessToken, DEVICE, 'access')).resolves.toMatchObject({
-        userId: 'user-1',
-        sessionId: 'session-1',
-        role: UserRole.CUSTOMER,
+        ok: true,
+        claims: { userId: 'user-1', sessionId: 'session-1', role: UserRole.CUSTOMER },
       });
     });
 
@@ -663,7 +662,8 @@ describe('SessionService', () => {
       expect(repository.rotate).not.toHaveBeenCalled();
       expect(session.refreshToken).toBe(RAW_TOKEN);
       await expect(tokens.verify(session.accessToken, DEVICE, 'access')).resolves.toMatchObject({
-        sessionId: 'session-1',
+        ok: true,
+        claims: { sessionId: 'session-1' },
       });
     });
 
@@ -875,6 +875,69 @@ describe('SessionService', () => {
         results.map((result) => lookup(sha256(issued(result).refreshToken))),
       );
       expect(resolvable.every((session) => session !== undefined)).toBe(true);
+    });
+  });
+
+  describe('revokeOnDeviceMismatch', () => {
+    it('ends the session and records why', async () => {
+      const session = makeSession({ id: 'session-1' });
+      repository.findByIdWithUser.mockResolvedValue(session);
+
+      await service.revokeOnDeviceMismatch('session-1');
+
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+      expect(cache.invalidateSession).toHaveBeenCalledWith('session-1');
+      expect(events.recordSessionRevoked).toHaveBeenCalledWith(
+        session.user,
+        'session-1',
+        'device_mismatch',
+      );
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('writes nothing for a session that is already revoked', async () => {
+      // A leaked token replayed in a loop would otherwise write one audit row per attempt,
+      // which is a log-flooding vector handed to whoever holds it.
+      repository.findByIdWithUser.mockResolvedValue(makeSession({ revokedAt: new Date() }));
+
+      await service.revokeOnDeviceMismatch('session-1');
+
+      expect(repository.revoke).not.toHaveBeenCalled();
+      expect(events.recordSessionRevoked).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing for a session that does not exist', async () => {
+      repository.findByIdWithUser.mockResolvedValue(undefined);
+
+      await service.revokeOnDeviceMismatch('session-1');
+
+      expect(repository.revoke).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when the lookup itself failed', async () => {
+      repository.findByIdWithUser.mockResolvedValue(null);
+
+      await service.revokeOnDeviceMismatch('session-1');
+
+      expect(repository.revoke).not.toHaveBeenCalled();
+    });
+
+    it('never throws, because the guard is answering 401 either way', async () => {
+      repository.findByIdWithUser.mockRejectedValue(new Error('connection reset'));
+
+      await expect(service.revokeOnDeviceMismatch('session-1')).resolves.toBeUndefined();
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('never logs anything that could identify the token', async () => {
+      repository.findByIdWithUser.mockResolvedValue(makeSession());
+
+      await service.revokeOnDeviceMismatch('session-1');
+
+      const logged = JSON.stringify(logger.warn.mock.calls);
+
+      expect(logged).toContain('session-1');
+      expect(logged).not.toContain(RAW_TOKEN);
     });
   });
 

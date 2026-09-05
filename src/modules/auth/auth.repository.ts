@@ -192,11 +192,17 @@ export class AuthRepository {
     userId: string,
     failedAttempts: number,
     lockedUntil: Date | null,
+    /** When the current run of failures began, or null to end the run. */
+    firstFailedAt: Date | null,
   ): Promise<User | null> {
     try {
       return await this.prisma.user.update({
         where: { id: userId },
-        data: { totpFailedAttempts: failedAttempts, totpLockedUntil: lockedUntil },
+        data: {
+          totpFailedAttempts: failedAttempts,
+          totpLockedUntil: lockedUntil,
+          totpFirstFailedAt: firstFailedAt,
+        },
       });
     } catch (error) {
       this.logger.error(
@@ -217,7 +223,14 @@ export class AuthRepository {
     try {
       return await this.prisma.user.update({
         where: { id: userId },
-        data: { totpFailedAttempts: 0, totpLockedUntil: null, totpLastUsedStep: lastUsedStep },
+        data: {
+          totpFailedAttempts: 0,
+          totpLockedUntil: null,
+          // Cleared with the count it belongs to: a successful code ends the run, so the next
+          // failure starts a fresh window rather than continuing an old one.
+          totpFirstFailedAt: null,
+          totpLastUsedStep: lastUsedStep,
+        },
       });
     } catch (error) {
       this.logger.error(

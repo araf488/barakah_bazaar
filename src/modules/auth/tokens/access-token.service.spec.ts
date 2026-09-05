@@ -43,11 +43,14 @@ describe('AccessTokenService', () => {
     const verified = await service.verify(token, 'device-1', 'access');
 
     expect(verified).toMatchObject({
-      userId: 'user-1',
-      sessionId: 'session-1',
-      role: UserRole.CUSTOMER,
-      email: 'shopper@example.com',
-      type: 'access',
+      ok: true,
+      claims: {
+        userId: 'user-1',
+        sessionId: 'session-1',
+        role: UserRole.CUSTOMER,
+        email: 'shopper@example.com',
+        type: 'access',
+      },
     });
   });
 
@@ -56,7 +59,7 @@ describe('AccessTokenService', () => {
     const verifier = makeService({ JWT_SECRET: 'b'.repeat(32) });
     const token = await signer.sign(claims(), 30);
 
-    expect(await verifier.verify(token, 'device-1', 'access')).toBeNull();
+    expect(await verifier.verify(token, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
   it('rejects a tampered payload', async () => {
@@ -69,34 +72,24 @@ describe('AccessTokenService', () => {
     const flippedChar = payload[0] === 'a' ? 'b' : 'a';
     const tampered = [header, flippedChar + payload.slice(1), signature].join('.');
 
-    expect(await service.verify(tampered, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(tampered, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
-  it('rejects an expired token', async () => {
+  // One 5-minute token, read at three moments either side of its expiry. The middle row is
+  // the requirement: 30 seconds of clock tolerance, because logging someone out for a handset
+  // that is forty seconds fast is an unexplainable failure.
+  it.each([
+    ['20 seconds past expiry, inside the tolerance', '2026-09-02T00:05:20Z', true],
+    ['1 minute past expiry', '2026-09-02T00:06:00Z', false],
+    ['5 minutes past expiry', '2026-09-02T00:10:00Z', false],
+  ])('%s', async (_label, readAt, accepted) => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-02T00:00:00Z'));
     const service = makeService();
     const token = await service.sign(claims(), 5);
 
-    jest.setSystemTime(new Date('2026-09-02T00:06:00Z')); // 1 minute past a 5-minute expiry
-    expect(await service.verify(token, 'device-1', 'access')).toBeNull();
-  });
+    jest.setSystemTime(new Date(readAt));
 
-  it('accepts a token 20 seconds past expiry, because handset clocks drift', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T00:00:00Z'));
-    const service = makeService();
-    const token = await service.sign(claims(), 5);
-
-    jest.setSystemTime(new Date('2026-09-02T00:05:20Z')); // 20s past a 5-minute expiry
-    expect(await service.verify(token, 'device-1', 'access')).not.toBeNull();
-  });
-
-  it('rejects a token 5 minutes past expiry', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T00:00:00Z'));
-    const service = makeService();
-    const token = await service.sign(claims(), 5);
-
-    jest.setSystemTime(new Date('2026-09-02T00:10:00Z')); // 5 minutes past a 5-minute expiry
-    expect(await service.verify(token, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(token, 'device-1', 'access')).toMatchObject({ ok: accepted });
   });
 
   it('rejects a wrong issuer', async () => {
@@ -104,7 +97,7 @@ describe('AccessTokenService', () => {
     const otherIssuer = makeService({ JWT_ISSUER: 'someone-else' });
     const token = await otherIssuer.sign(claims(), 30);
 
-    expect(await service.verify(token, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(token, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
   it('rejects a wrong audience', async () => {
@@ -112,28 +105,44 @@ describe('AccessTokenService', () => {
     const otherAudience = makeService({ JWT_AUDIENCE: 'someone-else' });
     const token = await otherAudience.sign(claims(), 30);
 
-    expect(await service.verify(token, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(token, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
   it('refuses an mfa token when an access token was expected', async () => {
     const service = makeService();
     const token = await service.sign(claims(), 5, 'mfa');
 
-    expect(await service.verify(token, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(token, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
-  it('refuses a token whose bnd claim does not match the presented device', async () => {
+  it('names the session when the bnd claim does not match the presented device', async () => {
+    // The one failure a caller may act on. It is reachable only after the signature, issuer,
+    // audience and expiry have all passed, which is what makes the session id trustworthy —
+    // a forged token cannot get here and so cannot name somebody else's session.
     const service = makeService();
     const token = await service.sign(claims({ deviceId: 'device-1' }), 30);
 
-    expect(await service.verify(token, 'device-2', 'access')).toBeNull();
+    expect(await service.verify(token, 'device-2', 'access')).toEqual({
+      ok: false,
+      deviceMismatch: { sessionId: 'session-1' },
+    });
+  });
+
+  it('names no session for a forged token, however its device id is presented', async () => {
+    // The safety property: a token this API did not sign must never be able to end a session
+    // by naming it, so every other failure carries no session id at all.
+    const signer = makeService({ JWT_SECRET: 'a'.repeat(32) });
+    const verifier = makeService({ JWT_SECRET: 'b'.repeat(32) });
+    const token = await signer.sign(claims({ deviceId: 'device-1' }), 30);
+
+    expect(await verifier.verify(token, 'device-2', 'access')).toEqual({ ok: false });
   });
 
   it('refuses when no device id is presented at all', async () => {
     const service = makeService();
     const token = await service.sign(claims(), 30);
 
-    expect(await service.verify(token, undefined, 'access')).toBeNull();
+    expect(await service.verify(token, undefined, 'access')).toMatchObject({ ok: false });
   });
 
   it('binds to the device id only, so a changed user agent still verifies', async () => {
@@ -143,7 +152,7 @@ describe('AccessTokenService', () => {
     // user-agent string.
     const token = await service.sign(claims({ deviceId: 'device-1' }), 30);
 
-    expect(await service.verify(token, 'device-1', 'access')).not.toBeNull();
+    expect(await service.verify(token, 'device-1', 'access')).toMatchObject({ ok: true });
   });
 
   it('honours the ttl it was given', async () => {
@@ -159,7 +168,7 @@ describe('AccessTokenService', () => {
   it('rejects a malformed token', async () => {
     const service = makeService();
 
-    expect(await service.verify('not-a-jwt', 'device-1', 'access')).toBeNull();
+    expect(await service.verify('not-a-jwt', 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
   it('rejects an unsigned token', async () => {
@@ -168,7 +177,7 @@ describe('AccessTokenService', () => {
     const [header, payload] = token.split('.');
     const unsigned = [header, payload, ''].join('.');
 
-    expect(await service.verify(unsigned, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(unsigned, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
   it('rejects an alg:none token', async () => {
@@ -183,7 +192,7 @@ describe('AccessTokenService', () => {
       .setExpirationTime('30m')
       .encode();
 
-    expect(await service.verify(token, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(token, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
   it('rejects a token with a truncated signature', async () => {
@@ -192,7 +201,7 @@ describe('AccessTokenService', () => {
     const [header, payload, signature] = token.split('.');
     const truncated = [header, payload, signature.slice(0, -4)].join('.');
 
-    expect(await service.verify(truncated, 'device-1', 'access')).toBeNull();
+    expect(await service.verify(truncated, 'device-1', 'access')).toMatchObject({ ok: false });
   });
 
   it('signs without a configured secret, using the generated one', async () => {
@@ -204,7 +213,7 @@ describe('AccessTokenService', () => {
 
     const token = await service.sign(claims(), 30);
 
-    expect(await service.verify(token, 'device-1', 'access')).not.toBeNull();
+    expect(await service.verify(token, 'device-1', 'access')).toMatchObject({ ok: true });
     expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 });

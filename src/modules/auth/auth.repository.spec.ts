@@ -286,28 +286,33 @@ describe('AuthRepository', () => {
   });
 
   describe('recordTotpFailure', () => {
-    it('writes the failed-attempt count and lockout deadline', async () => {
+    it('writes the failed-attempt count, the lockout deadline and when the run began', async () => {
       const lockedUntil = new Date('2026-01-01T00:15:00.000Z');
+      const firstFailedAt = new Date('2026-01-01T00:00:00.000Z');
       prisma.user.update.mockResolvedValue({ id: 'user-1' });
 
-      await repository.recordTotpFailure('user-1', 5, lockedUntil);
+      await repository.recordTotpFailure('user-1', 5, lockedUntil, firstFailedAt);
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
-        data: { totpFailedAttempts: 5, totpLockedUntil: lockedUntil },
+        data: {
+          totpFailedAttempts: 5,
+          totpLockedUntil: lockedUntil,
+          totpFirstFailedAt: firstFailedAt,
+        },
       });
     });
 
     it('returns null when the write fails', async () => {
       prisma.user.update.mockRejectedValue(new Error('connection refused'));
 
-      await expect(repository.recordTotpFailure('user-1', 1, null)).resolves.toBeNull();
+      await expect(repository.recordTotpFailure('user-1', 1, null, new Date())).resolves.toBeNull();
     });
 
     it('does not bump the session-cache generation — a lockout counter gates login, not a live session', async () => {
       prisma.user.update.mockResolvedValue({ id: 'user-1' });
 
-      await repository.recordTotpFailure('user-1', 5, null);
+      await repository.recordTotpFailure('user-1', 5, null, new Date());
 
       expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
     });
@@ -321,7 +326,12 @@ describe('AuthRepository', () => {
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
-        data: { totpFailedAttempts: 0, totpLockedUntil: null, totpLastUsedStep: 42 },
+        data: {
+          totpFailedAttempts: 0,
+          totpLockedUntil: null,
+          totpFirstFailedAt: null,
+          totpLastUsedStep: 42,
+        },
       });
     });
 

@@ -49,6 +49,12 @@ export const AuthConstants = {
   /** 20 bytes is the RFC 6238 recommendation and encodes to 32 base32 characters. */
   TotpSecretBytes: 20,
   TotpMaxFailedAttempts: 5,
+  /**
+   * How long a run of failed codes stays counted. Without it the counter only ever resets on
+   * a *successful* verification, so five fumbles spread across months would lock an account
+   * that was never under attack — the count has to mean "five recently", not "five ever".
+   */
+  TotpFailureWindowMinutes: 60,
   TotpLockoutMinutes: 15,
   TotpRecoveryCodeCount: 10,
   TotpRecoveryCodeBytes: 10,

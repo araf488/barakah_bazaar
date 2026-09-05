@@ -33,6 +33,7 @@ const userRow = (overrides: Partial<User> = {}): User => ({
   totpEnabledAt: null,
   totpLastUsedStep: null,
   totpFailedAttempts: 0,
+  totpFirstFailedAt: null,
   totpLockedUntil: null,
   role: UserRole.CUSTOMER,
   preferredLanguage: Language.BN,
@@ -407,8 +408,14 @@ describe('LoginService', () => {
       }
       const { mfaToken } = result.data;
 
-      await expect(realTokens.verify(mfaToken, DEVICE_ID, 'mfa')).resolves.not.toBeNull();
-      await expect(realTokens.verify(mfaToken, DEVICE_ID, 'access')).resolves.toBeNull();
+      await expect(realTokens.verify(mfaToken, DEVICE_ID, 'mfa')).resolves.toMatchObject({
+        ok: true,
+      });
+      // Refused as an access token, and — because the `typ` check runs before the binding
+      // one — naming no session, so presenting it at the guard cannot end anything.
+      await expect(realTokens.verify(mfaToken, DEVICE_ID, 'access')).resolves.toEqual({
+        ok: false,
+      });
     });
   });
 });

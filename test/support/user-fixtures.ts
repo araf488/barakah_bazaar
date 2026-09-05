@@ -13,6 +13,7 @@ export const userFixture = (overrides: Partial<User> = {}): User => ({
   totpEnabledAt: null,
   totpLastUsedStep: null,
   totpFailedAttempts: 0,
+  totpFirstFailedAt: null,
   totpLockedUntil: null,
   role: UserRole.CUSTOMER,
   preferredLanguage: Language.BN,

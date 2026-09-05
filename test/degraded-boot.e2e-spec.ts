@@ -1,6 +1,8 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { UserRole } from '../src/infra/prisma/prisma-client';
+import { AccessTokenService } from '../src/modules/auth/tokens/access-token.service';
 
 // `ConfigModule.forRoot()` reads the environment and validates it eagerly, at
 // the moment app.module.ts is imported — not when the module is instantiated.
@@ -210,6 +212,31 @@ describe('Degraded boot (no Supabase, no database)', () => {
       // A 404 here would mean the route was never registered; 401 means it was registered
       // and the auth guard rejected the request first.
       expect(response.status).toBe(401);
+    });
+
+    it('answers 503, not 401, for a token that verifies but cannot be looked up', async () => {
+      // The second row of the guard's contract, and the only one that needs a real token:
+      // stage one passes on CPU alone, then stage two reaches for the session row and finds
+      // no database. That is an infrastructure fault, not a credential fault, and reporting
+      // it as 401 would send a signed-in user to the login screen during an outage.
+      const tokens = app.get(AccessTokenService);
+      const accessToken = await tokens.sign(
+        {
+          userId: '11111111-1111-1111-1111-111111111111',
+          sessionId: '22222222-2222-2222-2222-222222222222',
+          role: UserRole.CUSTOMER,
+          email: 'shopper@example.com',
+          deviceId: 'device-1',
+        },
+        30,
+      );
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('x-device-id', 'device-1');
+
+      expect(response.status).toBe(503);
     });
 
     it('refuses /auth/me with a bearer token it cannot verify', async () => {

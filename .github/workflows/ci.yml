@@ -32,6 +32,25 @@ jobs:
     # No `environment:` here, deliberately and permanently. On a public repo this
     # job runs untrusted fork code; granting it an environment would expose that
     # environment's secrets. Everything below must run without secrets.
+    services:
+      # For the e2e suite only. Empty on every run, migrated by the suite itself, and
+      # discarded with the runner — the credentials below are throwaway by construction and
+      # are deliberately literal rather than secrets, since this job must run on fork pull
+      # requests where no secret is available. The unit-test step must never reach it: that
+      # suite stays database-free, which `Unit tests` above proves by running first.
+      postgres-test:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: barakah
+          POSTGRES_PASSWORD: barakah
+          POSTGRES_DB: barakah_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U barakah -d barakah_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -50,12 +69,16 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      # Hermetic: app.module.ts sets ignoreEnvFile when NODE_ENV=test, so this
-      # needs no secrets and is safe to run on fork pull requests.
+      # No secrets: app.module.ts sets ignoreEnvFile when NODE_ENV=test, and the only
+      # database it touches is the throwaway service above — so this is safe to run on fork
+      # pull requests.
       - name: End-to-end tests
         run: npm run test:e2e
         env:
           NODE_ENV: test
+          # The service container above, reached on the host port it publishes. Localhost is
+          # also what test/support/auth-fixtures.ts requires before it will migrate anything.
+          TEST_DATABASE_URL: postgresql://barakah:barakah@localhost:5433/barakah_test?schema=public
           # Matches the Dockerfile. Password hashing runs on libuv's threadpool, which
           # defaults to 4 threads shared with all file and DNS work; the e2e suite signs in
           # concurrently and would otherwise measure that contention rather than the app.

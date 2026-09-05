@@ -275,6 +275,48 @@ export class SessionService {
   }
 
   /**
+   * Ends a session whose access token was presented from a device it was not issued to.
+   *
+   * Called by the guard's stage one, where verification has already accepted the signature,
+   * issuer, audience and expiry — so the session id is one this API issued and acting on it
+   * cannot be turned into a way to end somebody else's session.
+   *
+   * Refusing the request is too small a response: a token separated from its device id is a
+   * token that leaked, through a log, a crash report, a copied `curl` or a pasted support
+   * ticket. Ending the session turns a silent compromise into a visible logout the owner can
+   * see in their session listing.
+   *
+   * Returns nothing and throws nothing. The guard answers 401 either way, and neither an
+   * audit write nor a database fault may turn a rejected request into a 500.
+   */
+  async revokeOnDeviceMismatch(sessionId: string): Promise<void> {
+    try {
+      const session = await this.repository.findByIdWithUser(sessionId);
+
+      if (!session || session.revokedAt !== null) {
+        // Unknown, unreadable, or already ended by an earlier presentation of the same token.
+        // Returning here is what stops a token replayed in a loop writing one audit row per
+        // attempt — the first presentation records the event, the rest are already-dead.
+        return;
+      }
+
+      await this.repository.revoke(sessionId);
+      await this.invalidateCachedSession(sessionId);
+      await this.events.recordSessionRevoked(session.user, sessionId, 'device_mismatch');
+
+      this.logger.warn(
+        { sessionId },
+        'Access token presented from the wrong device, session revoked',
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error, sessionId },
+        'Exception occurred in SessionService.revokeOnDeviceMismatch',
+      );
+    }
+  }
+
+  /**
    * Ends one session. Idempotent: revoking an already-revoked session is a success.
    *
    * `actor` is the caller signing themselves out, when there is one — the route already

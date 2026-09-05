@@ -1,5 +1,5 @@
-# Local dependencies only. Postgres/Auth/Storage live in Supabase — use
-# `supabase start` if you want the whole stack locally instead.
+# Local dependencies. Production Postgres and Storage live in Supabase — use
+# `supabase start` if you want that whole stack locally instead.
 services:
   redis:
     image: redis:7-alpine
@@ -14,6 +14,41 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+  # The database the e2e suite runs against. Deliberately NOT the database anything else
+  # uses: it is created empty, migrated by the suite, and thrown away.
+  #
+  # Port 5433, not 5432, so it cannot collide with a Postgres already running on the host —
+  # and so a DATABASE_URL left pointing at a real database cannot be reached by accident from
+  # the e2e config. `test/support/auth-fixtures.ts` refuses to migrate anything whose host is
+  # not localhost for the same reason.
+  #
+  # No volume: every `docker compose down` discards it, which is the point. A test database
+  # that survives between runs accumulates state the tests did not create and cannot explain.
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: barakah-postgres-test
+    environment:
+      POSTGRES_USER: barakah
+      POSTGRES_PASSWORD: barakah
+      POSTGRES_DB: barakah_test
+    ports:
+      - '5433:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U barakah -d barakah_test']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # A local SMTP sink with a web UI on :8025. Nothing sends mail through it yet — the email
+  # adapter is a later sub-project — but it belongs with the compose change rather than as a
+  # second edit later, and it means a developer testing invitations never needs a real relay.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: barakah-mailpit
+    ports:
+      - '1025:1025'
+      - '8025:8025'
 
 volumes:
   redis-data:

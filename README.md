@@ -212,7 +212,7 @@ exception — the two identity keys sign and decrypt live credentials.
 | `npm run build`             | Compile to `dist/` (entry `dist/main.js`)                   |
 | `npm run start:prod`        | Run the compiled build                                      |
 | `npm test`                  | Unit tests                                                  |
-| `npm run test:e2e`          | End-to-end degraded-boot suite                              |
+| `npm run test:e2e`          | End-to-end (needs `docker compose up -d postgres-test`)     |
 | `npm run test:cov`          | Coverage                                                    |
 | `npm run lint` / `lint:fix` | ESLint (includes the quality gates below)                   |
 | `npm run format`            | Prettier                                                    |
@@ -447,16 +447,31 @@ drive delivery rules: `isPerishable`, `shelfLifeHours`, `storageType`,
 ## Testing
 
 ```bash
-npm test                                    # 233 unit tests, 20 suites
-npm run test:e2e                            # 12 end-to-end tests
+npm test                                    # unit tests — no database, no containers
+docker compose up -d postgres-test          # required by the identity e2e suite
+npm run test:e2e                            # end-to-end
 npm test -- catalog                         # one feature (path pattern)
 ```
 
-The end-to-end suite is the one to keep green above all others: it configures
+The unit suite never touches a database, and that is a rule rather than a
+coincidence: run it with every container stopped and it must still pass. A unit
+test that grows a database dependency is a defect.
+
+The end-to-end suite is the one to keep green above all others. It configures
 the environment **before** importing `AppModule` (because
 `ConfigModule.forRoot()` validates eagerly at import time) and asserts the app
-boots with nothing configured. It has already caught one dependency-injection
-bug that every unit test missed.
+boots with nothing configured. It has already caught two bugs every unit test
+missed — a dependency-injection failure, and a circular import that only showed
+up when Nest built the real container.
+
+`test/identity.e2e-spec.ts` is the exception to "no database": it runs the whole
+sign-in journey against a real Postgres, because an account disabled mid-session
+and a refresh token rotated out from under a second tab are facts about rows and
+indexes that a mocked repository would happily agree with. It reads
+`TEST_DATABASE_URL` (defaulting to the `postgres-test` container on **5433**,
+never 5432) and refuses to migrate any host that is not localhost — the
+migration it applies drops a column, and a stray `DATABASE_URL` must not be able
+to point that at a real project.
 
 ---
 

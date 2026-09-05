@@ -31,6 +31,7 @@ const userRow = (overrides: Partial<User> = {}): User => ({
   totpEnabledAt: new Date('2026-01-01T00:00:00.000Z'),
   totpLastUsedStep: 10,
   totpFailedAttempts: 0,
+  totpFirstFailedAt: null,
   totpLockedUntil: null,
   role: UserRole.CUSTOMER,
   preferredLanguage: Language.BN,
@@ -105,11 +106,14 @@ describe('MfaService', () => {
     };
     tokens = {
       verify: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        sessionId: '',
-        role: UserRole.CUSTOMER,
-        email: 'customer@example.com',
-        type: 'mfa',
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'customer@example.com',
+          type: 'mfa',
+        },
       }),
     };
     sessions = {
@@ -264,7 +268,7 @@ describe('MfaService', () => {
     });
 
     it('rejects an invalid or expired mfa token', async () => {
-      tokens.verify.mockResolvedValue(null);
+      tokens.verify.mockResolvedValue({ ok: false });
 
       const result = await service.verifyLogin(
         'bad-token',
@@ -291,7 +295,9 @@ describe('MfaService', () => {
     });
 
     it('rejects a wrong code, incrementing the failure counter', async () => {
-      repository.findById.mockResolvedValue(userRow({ totpFailedAttempts: 1 }));
+      repository.findById.mockResolvedValue(
+        userRow({ totpFailedAttempts: 1, totpFirstFailedAt: new Date(Date.now() - 60_000) }),
+      );
       crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
 
       const result = await service.verifyLogin(
@@ -307,13 +313,21 @@ describe('MfaService', () => {
         status: HttpStatus.UNAUTHORIZED,
         message: AuthMessages.InvalidMfaCode,
       });
-      expect(repository.recordTotpFailure).toHaveBeenCalledWith('user-1', 2, null);
+      expect(repository.recordTotpFailure).toHaveBeenCalledWith(
+        'user-1',
+        2,
+        null,
+        expect.any(Date),
+      );
       expect(sessions.issue).not.toHaveBeenCalled();
     });
 
     it('locks the account once the failure count reaches the ceiling', async () => {
       repository.findById.mockResolvedValue(
-        userRow({ totpFailedAttempts: AuthConstants.TotpMaxFailedAttempts - 1 }),
+        userRow({
+          totpFailedAttempts: AuthConstants.TotpMaxFailedAttempts - 1,
+          totpFirstFailedAt: new Date(Date.now() - 60_000),
+        }),
       );
       crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
 
@@ -322,6 +336,71 @@ describe('MfaService', () => {
       expect(repository.recordTotpFailure).toHaveBeenCalledWith(
         'user-1',
         AuthConstants.TotpMaxFailedAttempts,
+        expect.any(Date),
+        expect.any(Date),
+      );
+    });
+
+    it('starts a fresh run when the earlier failures are older than the window', async () => {
+      // The rule is "five within an hour", not "five ever". Without this, five fumbles
+      // spread across months would lock an account nobody was attacking.
+      const longAgo = new Date(
+        Date.now() -
+          (AuthConstants.TotpFailureWindowMinutes + 1) * AuthConstants.MillisecondsPerMinute,
+      );
+      repository.findById.mockResolvedValue(
+        userRow({
+          totpFailedAttempts: AuthConstants.TotpMaxFailedAttempts - 1,
+          totpFirstFailedAt: longAgo,
+        }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, null, null);
+
+      const [, attempts, lockedUntil, firstFailedAt] = repository.recordTotpFailure.mock
+        .calls[0] as [string, number, Date | null, Date | null];
+
+      expect(attempts).toBe(1);
+      expect(lockedUntil).toBeNull();
+      expect(firstFailedAt).not.toEqual(longAgo);
+    });
+
+    it('counts failures that fall inside the window', async () => {
+      const recently = new Date(
+        Date.now() -
+          (AuthConstants.TotpFailureWindowMinutes - 1) * AuthConstants.MillisecondsPerMinute,
+      );
+      repository.findById.mockResolvedValue(
+        userRow({ totpFailedAttempts: 2, totpFirstFailedAt: recently }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, null, null);
+
+      // The run keeps its original start, so the window does not slide forward with each
+      // failure — otherwise a slow drip of wrong codes would never expire.
+      expect(repository.recordTotpFailure).toHaveBeenCalledWith('user-1', 3, null, recently);
+    });
+
+    it('starts a fresh run after a lockout has been served', async () => {
+      // Otherwise the first attempt after serving fifteen minutes re-locks immediately, and
+      // one bad evening becomes a cycle nobody can get out of.
+      repository.findById.mockResolvedValue(
+        userRow({
+          totpFailedAttempts: AuthConstants.TotpMaxFailedAttempts,
+          totpFirstFailedAt: new Date(Date.now() - 60_000),
+          totpLockedUntil: new Date(Date.now() - 1_000),
+        }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, null, null);
+
+      expect(repository.recordTotpFailure).toHaveBeenCalledWith(
+        'user-1',
+        1,
+        null,
         expect.any(Date),
       );
     });

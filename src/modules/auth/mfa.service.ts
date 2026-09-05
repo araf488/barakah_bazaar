@@ -218,12 +218,15 @@ export class MfaService {
 
   /** Verifies the `mfa` token and resolves the user it names. One message for every failure. */
   private async resolveMfaUser(mfaToken: string, deviceId: string): Promise<ServiceResponse<User>> {
-    const claims = await this.tokens.verify(mfaToken, deviceId, 'mfa');
-    if (!claims) {
+    // A device mismatch is not acted on here, unlike in the guard: an `mfa` token names no
+    // session yet — its `sid` is the pending-session placeholder — so there is nothing to
+    // revoke. It is simply another way for the exchange to fail.
+    const verified = await this.tokens.verify(mfaToken, deviceId, 'mfa');
+    if (!verified.ok) {
       return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
     }
 
-    const user = await this.repository.findById(claims.userId);
+    const user = await this.repository.findById(verified.claims.userId);
     if (user === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
@@ -295,21 +298,50 @@ export class MfaService {
 
     await this.repository.burnRecoveryCode(found.id);
     // No TOTP step was spent by a recovery code, so there is nothing to advance — only the
-    // failure counter and lockout are reset.
-    await this.repository.recordTotpFailure(user.id, 0, null);
+    // failure counter, its window and the lockout are cleared. Passing `null` for the window
+    // is what ends the run: the next failure starts counting again from one.
+    await this.repository.recordTotpFailure(user.id, 0, null, null);
     return serviceOk<void>(undefined);
   }
 
   /** Increments the failed-attempt counter and sets a lockout once it reaches the ceiling. */
   private async registerFailure(user: User): Promise<void> {
-    const attempts = user.totpFailedAttempts + 1;
+    const now = Date.now();
+    const runStart = MfaService.currentRunStart(user, now);
+    const attempts = runStart === null ? 1 : user.totpFailedAttempts + 1;
     const lockedUntil =
       attempts >= AuthConstants.TotpMaxFailedAttempts
-        ? new Date(
-            Date.now() + AuthConstants.TotpLockoutMinutes * AuthConstants.MillisecondsPerMinute,
-          )
+        ? new Date(now + AuthConstants.TotpLockoutMinutes * AuthConstants.MillisecondsPerMinute)
         : null;
 
-    await this.repository.recordTotpFailure(user.id, attempts, lockedUntil);
+    await this.repository.recordTotpFailure(
+      user.id,
+      attempts,
+      lockedUntil,
+      runStart ?? new Date(now),
+    );
+  }
+
+  /**
+   * When the run of failures this one belongs to began, or `null` to start a new run.
+   *
+   * The rule is "five failed codes within an hour", so the count has to expire: without this
+   * it only ever reset on a *successful* verification, and five fumbles months apart locked an
+   * account nobody was attacking.
+   *
+   * A lockout that has already been served also starts a fresh run. Otherwise the sixth
+   * failure of an hour — the first attempt after serving fifteen minutes — would re-lock
+   * immediately, which turns one bad evening into a cycle nobody can get out of.
+   */
+  private static currentRunStart(user: User, now: number): Date | null {
+    const servedLockout = user.totpLockedUntil !== null && user.totpLockedUntil.getTime() <= now;
+
+    if (servedLockout || user.totpFirstFailedAt === null) {
+      return null;
+    }
+
+    const windowMs = AuthConstants.TotpFailureWindowMinutes * AuthConstants.MillisecondsPerMinute;
+
+    return now - user.totpFirstFailedAt.getTime() <= windowMs ? user.totpFirstFailedAt : null;
   }
 }

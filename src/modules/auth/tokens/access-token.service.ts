@@ -18,6 +18,23 @@ export interface AccessTokenClaims {
 }
 
 /**
+ * What verification concluded.
+ *
+ * A union rather than `claims | null` for one reason: a **device mismatch** is the single
+ * failure the caller must act on rather than merely refuse. Everything else — forged,
+ * expired, wrong issuer, wrong `typ` — is indistinguishable to a caller and stays that way.
+ *
+ * `deviceMismatch` carries the session id because reaching that branch means `jwtVerify`
+ * already accepted the signature, issuer, audience and expiry, so the `sid` is one this API
+ * genuinely issued. That is what makes acting on it safe: a forged token cannot reach here,
+ * and so cannot be used to revoke somebody else's session by naming it.
+ */
+export type TokenVerification =
+  | { readonly ok: true; readonly claims: AccessTokenClaims }
+  | { readonly ok: false; readonly deviceMismatch?: undefined }
+  | { readonly ok: false; readonly deviceMismatch: { readonly sessionId: string } };
+
+/**
  * Signs and verifies this application's own access tokens.
  *
  * Deliberately not a Supabase token: nothing outside this service issues a credential it
@@ -89,14 +106,17 @@ export class AccessTokenService {
     }
   }
 
-  /** Null for any failure. The caller answers 401 without saying which check failed. */
+  /**
+   * Verifies a token. The caller answers 401 for every failure without saying which check
+   * failed — the union it returns changes what the caller *does*, never what it replies.
+   */
   async verify(
     token: string,
     deviceId: string | undefined,
     expected: TokenType,
-  ): Promise<AccessTokenClaims | null> {
+  ): Promise<TokenVerification> {
     if (!deviceId) {
-      return null;
+      return { ok: false };
     }
 
     try {
@@ -117,25 +137,31 @@ export class AccessTokenService {
       });
 
       if (payload.typ !== expected) {
-        return null;
+        return { ok: false };
       }
+
       if (!AccessTokenService.bindingMatches(payload.bnd, deviceId)) {
-        return null;
+        // Signature, issuer, audience and expiry have all passed by this point, so `sid`
+        // names a real session of ours and the caller may act on it.
+        return { ok: false, deviceMismatch: { sessionId: String(payload.sid) } };
       }
 
       return {
-        userId: String(payload.sub),
-        sessionId: String(payload.sid),
-        role: payload.role as UserRole,
-        email: String(payload.email),
-        type: expected,
+        ok: true,
+        claims: {
+          userId: String(payload.sub),
+          sessionId: String(payload.sid),
+          role: payload.role as UserRole,
+          email: String(payload.email),
+          type: expected,
+        },
       };
     } catch (error) {
       // Expired and forged are both expected traffic, not faults — debug, not error — but
       // the error object is still worth keeping: it is what tells a misconfiguration (e.g.
       // a wrong key type) apart from routine expiry. jose's messages carry no token material.
       this.logger.debug({ err: error }, 'Access token failed verification');
-      return null;
+      return { ok: false };
     }
   }
 
