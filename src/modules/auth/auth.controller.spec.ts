@@ -16,6 +16,7 @@ import { AuthMessages } from './auth.constants';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LoginDto, MfaVerifyDto, RefreshDto } from './dto/login.dto';
+import { MfaDisableDto, MfaEnableDto, MfaSetupDto } from './dto/mfa.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
 import { LoginService } from './login.service';
 import { MfaService } from './mfa.service';
@@ -71,7 +72,12 @@ const makeSession = (overrides: Record<string, unknown> = {}) => ({
 describe('AuthController', () => {
   let authService: { resolveProfile: jest.Mock };
   let loginService: { login: jest.Mock };
-  let mfaService: { verifyLogin: jest.Mock };
+  let mfaService: {
+    verifyLogin: jest.Mock;
+    setupForEnrolment: jest.Mock;
+    enableForEnrolment: jest.Mock;
+    disableForUser: jest.Mock;
+  };
   let sessionService: {
     refresh: jest.Mock;
     revoke: jest.Mock;
@@ -84,7 +90,12 @@ describe('AuthController', () => {
   beforeEach(() => {
     authService = { resolveProfile: jest.fn() };
     loginService = { login: jest.fn() };
-    mfaService = { verifyLogin: jest.fn() };
+    mfaService = {
+      verifyLogin: jest.fn(),
+      setupForEnrolment: jest.fn(),
+      enableForEnrolment: jest.fn(),
+      disableForUser: jest.fn(),
+    };
     sessionService = {
       refresh: jest.fn(),
       revoke: jest.fn(),
@@ -308,13 +319,167 @@ describe('AuthController', () => {
       ['logoutAll', AuthController.prototype.logoutAll],
       ['listSessions', AuthController.prototype.listSessions],
       ['deleteSession', AuthController.prototype.deleteSession],
+      // Bearer, unlike the two enrolment routes: giving up a factor you already hold requires
+      // a session, and an enrolment token must never be able to take one off.
+      ['mfaDisable', AuthController.prototype.mfaDisable],
     ])('%s is not public', (_name, handler) => {
       const isPublic = new Reflector().get<boolean>(MetadataKeys.IsPublic, handler);
 
       expect(isPublic).toBeUndefined();
     });
+
+    // The enrolment routes are the one case where `@Public()` is the requirement rather than a
+    // risk: a staff account blocked from signing in until it enrols has no session to present,
+    // so a guarded route here would make the flow unreachable — the F-C gap this closes.
+    it.each([
+      ['mfaSetup', AuthController.prototype.mfaSetup],
+      ['mfaEnable', AuthController.prototype.mfaEnable],
+    ])('%s is public, because the caller cannot yet have a session', (_name, handler) => {
+      const isPublic = new Reflector().get<boolean>(MetadataKeys.IsPublic, handler);
+
+      expect(isPublic).toBe(true);
+    });
   });
 
+  describe('mfaSetup', () => {
+    const dto: MfaSetupDto = { enrolmentToken: 'enrol-token' };
+
+    it('returns the secret and the otpauth URI', async () => {
+      mfaService.setupForEnrolment.mockResolvedValue({
+        ok: true,
+        data: { secret: 'BASE32SECRET', otpauthUri: 'otpauth://totp/Barakah%20Bazaar:ops' },
+      });
+
+      const response = await controller.mfaSetup(dto, buildRequest({ 'x-device-id': 'device-1' }));
+
+      expect(response).toEqual({
+        secret: 'BASE32SECRET',
+        otpauthUri: 'otpauth://totp/Barakah%20Bazaar:ops',
+      });
+    });
+
+    it('binds the enrolment to the device that asked', async () => {
+      mfaService.setupForEnrolment.mockResolvedValue({
+        ok: true,
+        data: { secret: 'BASE32SECRET', otpauthUri: 'otpauth://totp/x' },
+      });
+
+      await controller.mfaSetup(dto, buildRequest({ 'x-device-id': 'device-1' }));
+
+      expect(mfaService.setupForEnrolment).toHaveBeenCalledWith('enrol-token', 'device-1');
+    });
+
+    it('rejects a request with no X-Device-Id header', async () => {
+      await expect(controller.mfaSetup(dto, buildRequest({}))).rejects.toThrow(BadRequestException);
+      expect(mfaService.setupForEnrolment).not.toHaveBeenCalled();
+    });
+
+    it('propagates a 401 for a token that did not verify', async () => {
+      mfaService.setupForEnrolment.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidCredentials,
+      });
+
+      await expect(
+        controller.mfaSetup(dto, buildRequest({ 'x-device-id': 'device-1' })),
+      ).rejects.toMatchObject({ status: HttpStatus.UNAUTHORIZED });
+    });
+  });
+
+  describe('mfaEnable', () => {
+    const dto: MfaEnableDto = { enrolmentToken: 'enrol-token', code: '123456' };
+
+    it('returns the recovery codes, which are readable exactly once', async () => {
+      mfaService.enableForEnrolment.mockResolvedValue({
+        ok: true,
+        data: { recoveryCodes: ['aaaa', 'bbbb'] },
+      });
+
+      const response = await controller.mfaEnable(dto, buildRequest({ 'x-device-id': 'device-1' }));
+
+      expect(response).toEqual({ recoveryCodes: ['aaaa', 'bbbb'] });
+    });
+
+    it('issues no session — enrolling is not a second way to authenticate', async () => {
+      mfaService.enableForEnrolment.mockResolvedValue({
+        ok: true,
+        data: { recoveryCodes: ['aaaa'] },
+      });
+
+      const response = await controller.mfaEnable(dto, buildRequest({ 'x-device-id': 'device-1' }));
+
+      expect(response).not.toHaveProperty('accessToken');
+      expect(response).not.toHaveProperty('refreshToken');
+      expect(sessionService.refresh).not.toHaveBeenCalled();
+    });
+
+    it('passes the token, device and code through', async () => {
+      mfaService.enableForEnrolment.mockResolvedValue({
+        ok: true,
+        data: { recoveryCodes: [] },
+      });
+
+      await controller.mfaEnable(dto, buildRequest({ 'x-device-id': 'device-1' }));
+
+      expect(mfaService.enableForEnrolment).toHaveBeenCalledWith(
+        'enrol-token',
+        'device-1',
+        '123456',
+      );
+    });
+
+    it('rejects a request with no X-Device-Id header', async () => {
+      await expect(controller.mfaEnable(dto, buildRequest({}))).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(mfaService.enableForEnrolment).not.toHaveBeenCalled();
+    });
+
+    it('propagates a 400 when setup has not run', async () => {
+      mfaService.enableForEnrolment.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: AuthMessages.MfaSetupRequired,
+      });
+
+      await expect(
+        controller.mfaEnable(dto, buildRequest({ 'x-device-id': 'device-1' })),
+      ).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
+    });
+  });
+
+  describe('mfaDisable', () => {
+    const dto: MfaDisableDto = { password: 'correct horse battery staple', code: '123456' };
+
+    it('turns the factor off for the authenticated caller', async () => {
+      mfaService.disableForUser.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.mfaDisable(dto, authenticated)).resolves.toBeUndefined();
+      expect(mfaService.disableForUser).toHaveBeenCalledWith(
+        authenticated.userId,
+        'correct horse battery staple',
+        '123456',
+      );
+    });
+
+    it('refuses an unauthenticated call rather than acting on nobody', async () => {
+      await expect(controller.mfaDisable(dto, undefined)).rejects.toThrow(UnauthorizedException);
+      expect(mfaService.disableForUser).not.toHaveBeenCalled();
+    });
+
+    it('propagates the 403 that keeps staff from opting out', async () => {
+      mfaService.disableForUser.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.FORBIDDEN,
+        message: AuthMessages.MfaCannotBeDisabledForStaff,
+      });
+
+      await expect(controller.mfaDisable(dto, authenticated)).rejects.toMatchObject({
+        status: HttpStatus.FORBIDDEN,
+      });
+    });
+  });
   describe('logout', () => {
     it('revokes the caller own session and answers 204', async () => {
       sessionService.revoke.mockResolvedValue({ ok: true, data: undefined });

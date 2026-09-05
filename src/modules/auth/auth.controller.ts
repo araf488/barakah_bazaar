@@ -27,6 +27,13 @@ import { AuthEventsService } from './auth-events.service';
 import { AuthMapper } from './auth.mapper';
 import { AuthService } from './auth.service';
 import { LoginDto, LoginResponseDto, MfaVerifyDto, RefreshDto } from './dto/login.dto';
+import {
+  MfaDisableDto,
+  MfaEnableDto,
+  MfaEnableResponseDto,
+  MfaSetupDto,
+  MfaSetupResponseDto,
+} from './dto/mfa.dto';
 import { LogoutAllResponseDto, SessionSummaryDto } from './dto/session.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
 import { LoginService } from './login.service';
@@ -164,6 +171,98 @@ export class AuthController {
       return AuthMapper.toSessionResponse(session);
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in AuthController.refresh');
+      throw error;
+    }
+  }
+
+  /**
+   * Issues a TOTP secret against the `enrolmentToken` that `POST /auth/login` hands to a staff
+   * account which must enrol before it can sign in.
+   *
+   * `@Public()`, and necessarily so: the caller has no session — being unable to obtain one
+   * without a second factor is precisely why they are here. The enrolment token is the
+   * credential, it is bound to the same device as the login that produced it, and it lives five
+   * minutes.
+   *
+   * Calling this again replaces an unconfirmed secret, which is what a caller who lost the QR
+   * code before scanning it needs. It cannot overwrite a *confirmed* factor by itself —
+   * `login` only issues an enrolment token to an account that has none enabled.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp)
+  @HttpCode(HttpStatus.OK)
+  @Post('mfa/setup')
+  @ApiOperation({ summary: 'Begin second-factor enrolment' })
+  @ApiResponse({ status: HttpStatus.OK, type: MfaSetupResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Invalid or expired token' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Missing X-Device-Id' })
+  async mfaSetup(@Body() dto: MfaSetupDto, @Req() request: Request): Promise<MfaSetupResponseDto> {
+    try {
+      const deviceId = AuthController.requireDeviceId(request);
+      return unwrapOrThrow(await this.mfaService.setupForEnrolment(dto.enrolmentToken, deviceId));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaSetup');
+      throw error;
+    }
+  }
+
+  /**
+   * Confirms the secret `mfa/setup` issued and turns the factor on, returning the ten recovery
+   * codes. This is the only time they are readable — only their hashes are stored.
+   *
+   * The caller signs in again afterwards: this deliberately does not issue a session. Enrolling
+   * proves possession of the factor, not of the password, and the password was verified in a
+   * login whose token expires in five minutes. Handing back a session here would make enrolment
+   * a second way to authenticate.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp)
+  @HttpCode(HttpStatus.OK)
+  @Post('mfa/enable')
+  @ApiOperation({ summary: 'Confirm second-factor enrolment and collect recovery codes' })
+  @ApiResponse({ status: HttpStatus.OK, type: MfaEnableResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Invalid token or code' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Setup has not run yet' })
+  async mfaEnable(
+    @Body() dto: MfaEnableDto,
+    @Req() request: Request,
+  ): Promise<MfaEnableResponseDto> {
+    try {
+      const deviceId = AuthController.requireDeviceId(request);
+      const result = unwrapOrThrow(
+        await this.mfaService.enableForEnrolment(dto.enrolmentToken, deviceId, dto.code),
+      );
+      return { recoveryCodes: [...result.recoveryCodes] };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaEnable');
+      throw error;
+    }
+  }
+
+  /**
+   * Turns the caller's second factor off. Bearer, not an enrolment token: you must be signed in
+   * to give up a factor you already hold.
+   *
+   * Refused for staff while `staffMfaRequired` is set — `MfaService.disable` owns that rule, so
+   * turning the setting off is the only way to lift it.
+   */
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post('mfa/disable')
+  @ApiOperation({ summary: 'Turn off the second factor' })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Wrong password or code' })
+  @ApiResponse({ status: HttpStatus.FORBIDDEN, description: 'Staff may not disable it' })
+  async mfaDisable(
+    @Body() dto: MfaDisableDto,
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(
+        await this.mfaService.disableForUser(authenticated.userId, dto.password, dto.code),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaDisable');
       throw error;
     }
   }

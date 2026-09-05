@@ -600,4 +600,212 @@ describe('MfaService', () => {
       expect(JSON.stringify(logger.error.mock.calls)).not.toContain('super-secret-password');
     });
   });
+
+  // The enrolment entry point. Without these three the flow has no way in: a staff account that
+  // `staffMfaRequired` applies to gets an `enrolmentToken` from login and, holding no session,
+  // nothing to spend it on.
+  describe('setupForEnrolment', () => {
+    const enrolmentClaims = {
+      ok: true,
+      claims: {
+        userId: 'user-1',
+        sessionId: '',
+        role: UserRole.OPS,
+        email: 'ops@barakahbazaar.com.bd',
+        type: 'enrolment',
+      },
+    };
+
+    it('verifies the token as "enrolment", never as "access" or "mfa"', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+      repository.saveTotpSecret.mockResolvedValue(userRow());
+
+      await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(tokens.verify).toHaveBeenCalledWith('enrol-token', DEVICE_ID, 'enrolment');
+    });
+
+    it('issues a secret for an account that has none yet — the whole point of enrolment', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+      repository.saveTotpSecret.mockResolvedValue(userRow());
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result).toEqual({
+        ok: true,
+        data: { secret: 'plain-secret', otpauthUri: 'otpauth://totp/...' },
+      });
+    });
+
+    it('rejects a token that does not verify', async () => {
+      tokens.verify.mockResolvedValue({ ok: false });
+
+      const result = await service.setupForEnrolment('forged', DEVICE_ID);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(repository.saveTotpSecret).not.toHaveBeenCalled();
+    });
+
+    it('answers 401 for an account that has since been deleted', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(undefined);
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+    });
+
+    it('answers 503, not 401, when the lookup itself failed', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(null);
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.SERVICE_UNAVAILABLE });
+    });
+
+    it('never logs the enrolment token', async () => {
+      tokens.verify.mockRejectedValue(new Error('boom'));
+
+      await service.setupForEnrolment('enrol-token-secret-value', DEVICE_ID);
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('enrol-token-secret-value');
+    });
+  });
+
+  describe('enableForEnrolment', () => {
+    const enrolmentClaims = {
+      ok: true,
+      claims: {
+        userId: 'user-1',
+        sessionId: '',
+        role: UserRole.OPS,
+        email: 'ops@barakahbazaar.com.bd',
+        type: 'enrolment',
+      },
+    };
+
+    it('confirms the factor and hands back ten recovery codes', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.enableTotp.mockResolvedValue(true);
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result.ok).toBe(true);
+      expect(
+        (result as { data: { recoveryCodes: readonly string[] } }).data.recoveryCodes,
+      ).toHaveLength(10);
+    });
+
+    it('verifies the token as "enrolment"', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.enableTotp.mockResolvedValue(true);
+
+      await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(tokens.verify).toHaveBeenCalledWith('enrol-token', DEVICE_ID, 'enrolment');
+    });
+
+    it('refuses a wrong code without enabling anything', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '000000');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+
+    it('refuses when setup has not run, so there is no secret to confirm', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.BAD_REQUEST });
+    });
+
+    it('rejects a token that does not verify', async () => {
+      tokens.verify.mockResolvedValue({ ok: false });
+
+      const result = await service.enableForEnrolment('forged', DEVICE_ID, '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+
+    it('never logs the presented code', async () => {
+      tokens.verify.mockRejectedValue(new Error('boom'));
+
+      await service.enableForEnrolment('enrol-token', DEVICE_ID, '424242');
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('424242');
+    });
+  });
+
+  describe('disableForUser', () => {
+    it('turns the factor off for the caller the guard authenticated', async () => {
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.disableTotp.mockResolvedValue(true);
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result.ok).toBe(true);
+      expect(repository.disableTotp).toHaveBeenCalledWith('user-1');
+    });
+
+    it('reads the row rather than trusting the caller for the role check', async () => {
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.disableTotp.mockResolvedValue(true);
+
+      await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(repository.findById).toHaveBeenCalledWith('user-1');
+    });
+
+    it('still refuses staff while staffMfaRequired is set', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ role: UserRole.OPS, totpSecretEncrypted: 'sealed-secret' }),
+      );
+      settings.current.mockResolvedValue(settingsRow({ staffMfaRequired: true }));
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.FORBIDDEN });
+      expect(repository.disableTotp).not.toHaveBeenCalled();
+    });
+
+    it('answers 503, not 401, when the lookup failed', async () => {
+      repository.findById.mockResolvedValue(null);
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.SERVICE_UNAVAILABLE });
+    });
+
+    it('answers 401 when the row is gone by the time this runs', async () => {
+      repository.findById.mockResolvedValue(undefined);
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+    });
+
+    it('never logs the password', async () => {
+      repository.findById.mockRejectedValue(new Error('boom'));
+
+      await service.disableForUser('user-1', 'super-secret-password', '123456');
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('super-secret-password');
+    });
+  });
 });

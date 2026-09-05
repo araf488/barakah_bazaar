@@ -417,5 +417,43 @@ describe('LoginService', () => {
         ok: false,
       });
     });
+
+    // The cross-service contract that makes staff enrolment reachable at all: `login` signs
+    // the enrolment token and `MfaService.setupForEnrolment` verifies it as `'enrolment'`.
+    // Both halves are proved against the real token service, because a stub would agree with
+    // whatever string each side happened to pass and the flow would still dead-end in
+    // production — which is exactly how it dead-ended before.
+    it('signs an enrolment token that verifies as "enrolment" but not as "access" or "mfa"', async () => {
+      const realTokens = new AccessTokenService(createMockConfig(jwtConfig), logger);
+      const realService = new LoginService(
+        repository as unknown as AuthRepository,
+        hasher as unknown as PasswordHasher,
+        settings as unknown as AuthSettingsService,
+        realTokens,
+        sessions as unknown as SessionService,
+        events as unknown as AuthEventsService,
+        logger,
+      );
+      settings.current.mockResolvedValue(settingsRow({ staffMfaRequired: true }));
+      repository.findByEmail.mockResolvedValue(
+        userRow({ role: UserRole.OPS, totpEnabledAt: null }),
+      );
+
+      const result = await realService.login(dto, DEVICE_ID, null, null);
+      if (!result.ok || result.data.kind !== 'enrolment') {
+        throw new Error('expected an enrolment result');
+      }
+      const { enrolmentToken } = result.data;
+
+      await expect(
+        realTokens.verify(enrolmentToken, DEVICE_ID, 'enrolment'),
+      ).resolves.toMatchObject({ ok: true });
+      await expect(realTokens.verify(enrolmentToken, DEVICE_ID, 'access')).resolves.toEqual({
+        ok: false,
+      });
+      await expect(realTokens.verify(enrolmentToken, DEVICE_ID, 'mfa')).resolves.toEqual({
+        ok: false,
+      });
+    });
   });
 });

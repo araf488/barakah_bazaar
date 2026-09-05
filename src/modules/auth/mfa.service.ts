@@ -133,6 +133,78 @@ export class MfaService {
   }
 
   /**
+   * `setup`, reached with the `enrolment` token `login` hands to staff who must enrol before
+   * they can sign in.
+   *
+   * Without this the enrolment flow has no entry point at all: a staff account that
+   * `staffMfaRequired` applies to receives an `enrolmentToken` from `login` and, with no
+   * session to authenticate with, no way to spend it.
+   */
+  async setupForEnrolment(
+    enrolmentToken: string,
+    deviceId: string,
+  ): Promise<ServiceResponse<MfaSetup>> {
+    try {
+      const user = await this.resolveEnrolmentUser(enrolmentToken, deviceId);
+      if (!user.ok) {
+        return user;
+      }
+
+      return await this.setup(user.data);
+    } catch (error) {
+      // No user id: resolving the token is the first thing that happens, so a throw before
+      // that leaves nothing safe to name. The token itself is never logged.
+      this.logger.error({ err: error }, 'Exception occurred in MfaService.setupForEnrolment');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /** `enable`, reached with an `enrolment` token rather than a session. */
+  async enableForEnrolment(
+    enrolmentToken: string,
+    deviceId: string,
+    code: string,
+  ): Promise<ServiceResponse<MfaEnableResult>> {
+    try {
+      const user = await this.resolveEnrolmentUser(enrolmentToken, deviceId);
+      if (!user.ok) {
+        return user;
+      }
+
+      return await this.enable(user.data, code);
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in MfaService.enableForEnrolment');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /** `disable`, for a caller the guard has already authenticated. */
+  async disableForUser(
+    userId: string,
+    password: string,
+    code: string,
+  ): Promise<ServiceResponse<void>> {
+    try {
+      const user = await this.repository.findById(userId);
+
+      if (user === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      if (user === undefined) {
+        // The guard validated this session moments ago, so the row disappearing between then
+        // and now is a deleted account, not a bad credential.
+        return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
+      }
+
+      return await this.disable(user, password, code);
+    } catch (error) {
+      this.logger.error({ err: error, userId }, 'Exception occurred in MfaService.disableForUser');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
    * Completes a login an `mfa` token is waiting on: verifies the token, checks the lockout,
    * verifies the presented code or burns a recovery code, then issues the session.
    */
@@ -231,6 +303,35 @@ export class MfaService {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
     if (user === undefined || !user.totpSecretEncrypted) {
+      return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
+    }
+
+    return serviceOk(user);
+  }
+
+  /**
+   * Verifies an `enrolment` token and resolves the user it names.
+   *
+   * Deliberately not `resolveMfaUser`: that one requires `totpSecretEncrypted` to already be
+   * set, which is exactly what enrolment does not have yet — `setup` runs before any secret
+   * exists, and reusing it here would refuse every genuine enrolment.
+   *
+   * Every failure answers alike, for the same reason the login exchange does.
+   */
+  private async resolveEnrolmentUser(
+    enrolmentToken: string,
+    deviceId: string,
+  ): Promise<ServiceResponse<User>> {
+    const verified = await this.tokens.verify(enrolmentToken, deviceId, 'enrolment');
+    if (!verified.ok) {
+      return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
+    }
+
+    const user = await this.repository.findById(verified.claims.userId);
+    if (user === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+    if (user === undefined) {
       return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
     }
 
