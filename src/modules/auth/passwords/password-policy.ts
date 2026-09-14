@@ -16,10 +16,25 @@ import { AuthConstants, AuthMessages } from '../auth.constants';
  * the 64 they ask implementations to accept, and nothing here truncates or strips what is
  * typed.
  *
- * There are deliberately no character-class rules. Requiring an uppercase letter, a digit and
- * a symbol would reject "marbled kingfisher 41" while accepting "Password123!", which is the
- * trade NIST SP 800-63B and the OWASP ASVS both tell implementations to stop making: length
- * and a common-password check, not composition. Please don't add them back.
+ * **Character-class rules are required here, by the repo owner's explicit decision
+ * (2026-09-14).** A password must carry an uppercase letter, a lowercase letter, a digit and a
+ * special character (`AuthConstants.PasswordSpecialCharacters`).
+ *
+ * This file previously argued the opposite, and the argument is recorded rather than deleted
+ * because it is still the reason to be careful: composition rules reject
+ * "marbled kingfisher 41" while accepting "Password123!", which is the trade NIST SP 800-63B
+ * and the OWASP ASVS both tell implementations to stop making. The decision was made with that
+ * in front of it, and spec §4.4 carries the same note.
+ *
+ * Composition is checked **last**, so every more specific diagnosis still wins: a common
+ * password is reported as common, not as missing a symbol.
+ *
+ * That ordering does **not** rescue the case the guidance warns about, and the comment should
+ * not pretend it does. `password123` is on the bundled list; `password123!` is not, so
+ * `Password123!` satisfies every rule here and is accepted. The denylist is a list of exact
+ * strings, and decorating a listed password with one symbol steps off it — which is precisely
+ * the behaviour composition rules encourage. Worth knowing before anyone treats this rule as
+ * having raised the floor.
  */
 @Injectable()
 export class PasswordPolicy {
@@ -52,8 +67,42 @@ export class PasswordPolicy {
     if (PasswordPolicy.hasLongRun(lowered)) {
       return AuthMessages.PasswordSequential;
     }
+    // Last, deliberately. Every check above names something true about *this* password — it is
+    // common, it carries your name, it repeats one character. Composition can only say "add a
+    // symbol", so it is the fallback once nothing more specific applies.
+    if (!PasswordPolicy.hasRequiredCharacterClasses(password)) {
+      return AuthMessages.PasswordMissingCharacterClasses;
+    }
 
     return null;
+  }
+
+  /**
+   * Whether the password carries all four required classes: an uppercase letter, a lowercase
+   * letter, a digit and a special character.
+   *
+   * Tested against the raw password, not the lower-cased copy the other rules use — lowering
+   * it first would destroy the very distinction the uppercase test is looking for.
+   */
+  private static hasRequiredCharacterClasses(password: string): boolean {
+    let hasUpper = false;
+    let hasLower = false;
+    let hasDigit = false;
+    let hasSpecial = false;
+
+    for (const character of password) {
+      if (character >= 'A' && character <= 'Z') {
+        hasUpper = true;
+      } else if (character >= 'a' && character <= 'z') {
+        hasLower = true;
+      } else if (character >= '0' && character <= '9') {
+        hasDigit = true;
+      } else if (AuthConstants.PasswordSpecialCharacters.includes(character)) {
+        hasSpecial = true;
+      }
+    }
+
+    return hasUpper && hasLower && hasDigit && hasSpecial;
   }
 
   /** Loaded on first use, not at boot — a fresh clone should not pay for it to start. */

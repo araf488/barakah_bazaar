@@ -31,6 +31,16 @@ export const AuthConstants = {
   PasswordMaxSequentialRun: 6,
   /** Below this, a name fragment matches too much to be meaningful. */
   PasswordIdentityMinLength: 4,
+  /**
+   * What counts as a "special character" for the composition rule.
+   *
+   * The printable ASCII punctuation and symbols, i.e. everything that is neither a letter nor
+   * a digit nor whitespace. **Space is deliberately excluded**: a passphrase is mostly spaces,
+   * and letting one satisfy the rule would mean `correct horse battery staple` passed a check
+   * that exists precisely to demand a symbol. Space remains perfectly legal *in* a password —
+   * it simply does not count toward this requirement.
+   */
+  PasswordSpecialCharacters: '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~' as string,
   PasswordBannedWords: ['barakah', 'bazaar'] as readonly string[],
   /** AES-256-GCM: the algorithm TOTP secrets are sealed with at rest. */
   CipherAlgorithm: 'aes-256-gcm',
@@ -158,6 +168,15 @@ export const AuthMessages = {
   PasswordTooFewDistinct: 'Your password must use at least 6 different characters.',
   /** Six or more sequential characters, ascending or descending. */
   PasswordSequential: 'Your password must not contain a long run of sequential characters.',
+  /**
+   * The password is missing one or more of the four required character classes.
+   *
+   * One message naming all four rather than four messages revealing one rule at a time: a
+   * caller fixing a password should see the whole requirement at once, not discover it over
+   * four submissions.
+   */
+  PasswordMissingCharacterClasses:
+    'Your password must include an uppercase letter, a lowercase letter, a number and a special character.',
   /** Wrong password, unknown address, or an unusable refresh token. Deliberately one message. */
   InvalidCredentials: 'Those sign-in details are not correct.',
   /** The account exists and the password was right, but the email is not verified. */

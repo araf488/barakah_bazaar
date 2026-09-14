@@ -808,4 +808,60 @@ describe('MfaService', () => {
       expect(JSON.stringify(logger.error.mock.calls)).not.toContain('super-secret-password');
     });
   });
+
+  // Pins a deliberate divergence from the spec as originally written, which required these two
+  // to answer identically. §4.6 was amended on 2026-09-06 to withdraw that: `POST /auth/login`
+  // already discloses a correct password by handing out an mfaToken at all, so merging these
+  // closes nothing, while answering a mistyped code with "Those sign-in details are not correct"
+  // tells the user something false. Without this test, a later reader comparing the code against
+  // an older copy of the spec would "fix" it straight back.
+  describe('the two verifyLogin failures are deliberately distinguishable', () => {
+    it('names the code when the code is wrong, and the credentials when the token is not', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+      const wrongCode = await service.verifyLogin(
+        'mfa-token',
+        { code: '000000' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      tokens.verify.mockResolvedValue({ ok: false });
+      const badToken = await service.verifyLogin(
+        'forged',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(wrongCode).toMatchObject({ message: 'That code is not valid.' });
+      expect(badToken).toMatchObject({ message: 'Those sign-in details are not correct.' });
+    });
+
+    it('still answers both with 401, so only the wording differs', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+      const wrongCode = await service.verifyLogin(
+        'mfa-token',
+        { code: '000000' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      tokens.verify.mockResolvedValue({ ok: false });
+      const badToken = await service.verifyLogin(
+        'forged',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(wrongCode).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+      expect(badToken).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+    });
+  });
 });

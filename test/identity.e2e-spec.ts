@@ -60,6 +60,8 @@ const REFRESH = '/api/v1/auth/refresh';
 const LOGOUT = '/api/v1/auth/logout';
 const SESSIONS = '/api/v1/auth/sessions';
 const ADMIN_USERS = '/api/v1/admin/users';
+const MFA_SETUP = '/api/v1/auth/mfa/setup';
+const MFA_ENABLE = '/api/v1/auth/mfa/enable';
 
 const INVALID_TOKEN = 'Your session is invalid or has expired. Please sign in again.';
 const INVALID_CREDENTIALS = 'Those sign-in details are not correct.';
@@ -757,6 +759,126 @@ describe('Identity (end to end)', () => {
         .send({ email: STAFF_EMAIL, password: PASSWORD });
 
       expect(response.body.kind).toBe('enrolment');
+      expect(await prisma.session.count()).toBe(0);
+    });
+
+    // The journey that did not exist until the enrolment routes were built: a staff account
+    // that `staffMfaRequired` blocks could obtain an `enrolmentToken` and had nowhere to spend
+    // it, so it could never reach a session at all. This walks the whole way through.
+    it('a staff account required to enrol can complete enrolment and then sign in', async () => {
+      await writeSettings({ staffMfaRequired: true });
+      await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+
+      const blocked = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: STAFF_EMAIL, password: PASSWORD });
+
+      expect(blocked.body.kind).toBe('enrolment');
+      const { enrolmentToken } = blocked.body;
+
+      const setup = await request(app.getHttpServer())
+        .post(MFA_SETUP)
+        .set('x-device-id', DEVICE)
+        .send({ enrolmentToken });
+
+      expect(setup.status).toBe(200);
+      expect(setup.body.secret).toEqual(expect.any(String));
+      expect(setup.body.otpauthUri).toContain('otpauth://totp/');
+      // Stored but not yet confirmed: the factor is not on until `enable` verifies a code.
+      expect(await prisma.user.findFirstOrThrow({ where: { email: STAFF_EMAIL } })).toMatchObject({
+        totpEnabledAt: null,
+      });
+
+      const enable = await request(app.getHttpServer())
+        .post(MFA_ENABLE)
+        .set('x-device-id', DEVICE)
+        .send({ enrolmentToken, code: new TotpService().codeFor(setup.body.secret) });
+
+      expect(enable.status).toBe(200);
+      expect(enable.body.recoveryCodes).toHaveLength(10);
+      // Enrolling is not a second way to authenticate — no session came out of it.
+      expect(enable.body.accessToken).toBeUndefined();
+      expect(await prisma.session.count()).toBe(0);
+
+      // Signing in again now asks for the factor rather than demanding enrolment.
+      const second = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: STAFF_EMAIL, password: PASSWORD });
+
+      expect(second.body.kind).toBe('mfa');
+
+      const finished = await request(app.getHttpServer())
+        .post(LOGIN_MFA)
+        .set('x-device-id', DEVICE)
+        .send({
+          mfaToken: second.body.mfaToken,
+          // The *next* step's code, not this one's. `enable` just spent the current step, and
+          // `totpLastUsedStep` refuses a step already used — so re-presenting the same code
+          // here is a replay and is correctly rejected. Worth stating rather than working
+          // around silently: it means someone who enrols and immediately signs in waits for
+          // the next 30-second window, which is inherent to TOTP replay protection.
+          code: new TotpService().codeFor(
+            setup.body.secret,
+            Date.now() + AuthConstants.TotpStepSeconds * 1000,
+          ),
+        });
+
+      expect(finished.status).toBe(200);
+      expect(finished.body.accessToken).toEqual(expect.any(String));
+      expect(await prisma.session.count()).toBe(1);
+
+      // And the session it produced actually works.
+      const me = await request(app.getHttpServer())
+        .get(ME)
+        .set(authHeaders(finished.body.accessToken, DEVICE));
+
+      expect(me.status).toBe(200);
+    });
+
+    it('refuses enrolment with a token this API did not sign', async () => {
+      await writeSettings({ staffMfaRequired: true });
+      await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+
+      const response = await request(app.getHttpServer())
+        .post(MFA_SETUP)
+        .set('x-device-id', DEVICE)
+        .send({ enrolmentToken: 'not-a-real-token' });
+
+      expect(response.status).toBe(401);
+      expect(await prisma.user.findFirstOrThrow({ where: { email: STAFF_EMAIL } })).toMatchObject({
+        totpSecretEncrypted: null,
+      });
+    });
+
+    it('refuses to enable before setup has issued a secret', async () => {
+      await writeSettings({ staffMfaRequired: true });
+      await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+
+      const blocked = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: STAFF_EMAIL, password: PASSWORD });
+
+      const enable = await request(app.getHttpServer())
+        .post(MFA_ENABLE)
+        .set('x-device-id', DEVICE)
+        .send({ enrolmentToken: blocked.body.enrolmentToken, code: '123456' });
+
+      expect(enable.status).toBe(400);
       expect(await prisma.session.count()).toBe(0);
     });
 
