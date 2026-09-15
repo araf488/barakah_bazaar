@@ -2,6 +2,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '../../../config';
 import { EmailMessage, EmailSender } from '../ports/email-sender.port';
 import { NoopEmailSender } from './noop-email.sender';
+import { SmtpEmailSender } from './smtp-email.sender';
 
 /**
  * Reports every send as failed, loudly.
@@ -34,6 +35,10 @@ export const createEmailSender = (config: AppConfigService, logger: PinoLogger):
     return new NoopEmailSender(logger);
   }
 
-  // resend and smtp are the documented roadmap; neither has an adapter yet.
+  if (provider === 'smtp') {
+    return new SmtpEmailSender(config, logger);
+  }
+
+  // resend is the documented roadmap; it has no adapter yet.
   return new UnavailableEmailSender(provider, logger);
 };

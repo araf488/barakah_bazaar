@@ -200,6 +200,7 @@ model User {
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
   sessions            Session[]
+  emailVerifications  EmailVerification[]
   recoveryCodes       MfaRecoveryCode[]
   addresses           Address[]
   auditLog            AdminAuditLog[]
@@ -243,6 +244,30 @@ model Session {
   @@index([userId, revokedAt])
   @@index([expiresAt])
   @@map("sessions")
+}
+
+/// A pending email-address verification. Both credentials are stored only as SHA-256.
+model EmailVerification {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// Lowercased at write time. Where the mail was sent, kept even if the account's address
+  /// later changes — otherwise the audit trail loses the destination.
+  email      String
+  /// SHA-256 of the 32-byte link token. Unique, so the link path is one indexed lookup.
+  tokenHash  String    @unique @map("token_hash")
+  /// SHA-256 of the 6-digit code. Deliberately NOT unique: with a million possibilities two
+  /// users collide routinely, and a unique index would fail the second one's registration.
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  /// Wrong-code presentations. Capped, because six digits is a million guesses.
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("email_verifications")
 }
 
 /// Operational auth knobs, editable without a deploy. Exactly one row.

@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { MfaRecoveryCode, User } from '../../infra/prisma/prisma-client';
+import { Language, MfaRecoveryCode, User, UserRole } from '../../infra/prisma/prisma-client';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { AuthTokens } from './auth.constants';
@@ -60,6 +60,35 @@ export class AuthRepository {
   }
 
   /**
+   * Creates a customer account. Staff accounts are invitation-only and are not created here.
+   *
+   * `null` on any failure, including a unique-constraint rejection: the caller races another
+   * registration for the same address, and "could not create" is all it needs to know.
+   */
+  async createCustomer(data: {
+    email: string;
+    passwordHash: string;
+    fullName: string;
+    preferredLanguage: Language;
+  }): Promise<User | null> {
+    try {
+      return await this.prisma.user.create({
+        data: {
+          email: data.email.toLowerCase(),
+          passwordHash: data.passwordHash,
+          fullName: data.fullName,
+          preferredLanguage: data.preferredLanguage,
+          role: UserRole.CUSTOMER,
+        },
+      });
+    } catch (error) {
+      // No passwordHash in the line, and no email either — this runs on an unauthenticated route.
+      this.logger.error({ err: error }, 'Exception occurred in AuthRepository.createCustomer');
+      return null;
+    }
+  }
+
+  /**
    * Rewrites the stored hash after a successful login at weaker-than-configured parameters.
    *
    * The only writer of `passwordHash` in this codebase today — there is no user-initiated
@@ -86,6 +115,28 @@ export class AuthRepository {
       this.logger.error(
         { err: error, userId },
         'Exception occurred in AuthRepository.updatePasswordHash',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Stamps `emailVerifiedAt` once `EmailVerificationService` has confirmed a token or code.
+   *
+   * No cache invalidation, same reasoning as `saveTotpSecret`: `emailVerifiedAt` is not a
+   * field `CachedSessionValue` carries, and confirming an address does not revoke or otherwise
+   * change any live session.
+   */
+  async updateEmailVerifiedAt(userId: string): Promise<User | null> {
+    try {
+      return await this.prisma.user.update({
+        where: { id: userId },
+        data: { emailVerifiedAt: new Date() },
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId },
+        'Exception occurred in AuthRepository.updateEmailVerifiedAt',
       );
       return null;
     }

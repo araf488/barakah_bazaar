@@ -7,10 +7,8 @@ import {
   Matches,
   MaxLength,
   MinLength,
-  ValidationArguments,
-  ValidationOptions,
-  registerDecorator,
 } from 'class-validator';
+import { IsExactlyOneOf } from '../../../common/validators/exactly-one-of.validator';
 import { AuthConstants } from '../auth.constants';
 import { UserProfileDto } from './user-profile.dto';
 
@@ -29,43 +27,15 @@ export class LoginDto {
   password!: string;
 }
 
-/**
- * Exactly one of `code`/`recoveryCode` must be present on the object being validated.
- *
- * Attached to `mfaToken` rather than to either credential field on purpose: `@IsOptional()` on
- * `code` or `recoveryCode` skips *every* validator on that property whenever the value it
- * guards is absent — including a cross-field check placed there — which is exactly the "neither
- * provided" case this decorator exists to catch. `mfaToken` carries no such guard, so this
- * always runs.
- */
-function IsExactlyOneCredential(validationOptions?: ValidationOptions): PropertyDecorator {
-  return (object: object, propertyName: string | symbol): void => {
-    registerDecorator({
-      name: 'isExactlyOneCredential',
-      target: object.constructor,
-      propertyName: propertyName as string,
-      options: validationOptions,
-      validator: {
-        validate(_value: unknown, args: ValidationArguments): boolean {
-          const target = args.object as { code?: unknown; recoveryCode?: unknown };
-          const provided = [target.code, target.recoveryCode].filter(
-            (value) => value !== undefined && value !== null && value !== '',
-          );
-          return provided.length === 1;
-        },
-        defaultMessage(): string {
-          return 'Provide exactly one of code or recoveryCode';
-        },
-      },
-    });
-  };
-}
-
 export class MfaVerifyDto {
   @ApiProperty({ description: 'The intermediate token returned by POST /auth/login.' })
   @IsString()
   @IsNotEmpty()
-  @IsExactlyOneCredential({ message: 'Provide exactly one of code or recoveryCode' })
+  @IsExactlyOneOf(['code', 'recoveryCode'], {
+    message: 'Provide exactly one of code or recoveryCode',
+    // Preserves the original inline validator's constraint key, which existing tests assert on.
+    constraintName: 'isExactlyOneCredential',
+  })
   mfaToken!: string;
 
   @ApiPropertyOptional({ description: '6-digit code from the authenticator app.' })

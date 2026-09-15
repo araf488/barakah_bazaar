@@ -4,6 +4,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import request from 'supertest';
 import { PrismaClient, User, UserRole } from '../../src/infra/prisma/prisma-client';
 import { PasswordHasher, ScryptParameters } from '../../src/modules/auth/crypto/password-hasher';
+import { EmailMessage, EmailSender } from '../../src/modules/notification/ports/email-sender.port';
 
 /**
  * Deliberately cheap. Production hashes at 2^15, which costs roughly a second per hash — fine
@@ -123,7 +124,8 @@ export const testPrisma = (): PrismaClient =>
 export const resetDatabase = async (prisma: PrismaClient): Promise<void> => {
   await prisma.$executeRawUnsafe(
     'TRUNCATE TABLE "public"."sessions", "public"."mfa_recovery_codes", ' +
-      '"public"."admin_audit_log", "public"."staff_invitations", "public"."users" CASCADE',
+      '"public"."admin_audit_log", "public"."staff_invitations", "public"."email_verifications", ' +
+      '"public"."users" CASCADE',
   );
 };
 
@@ -200,3 +202,67 @@ export const authHeaders = (accessToken: string, deviceId: string): Record<strin
   Authorization: `Bearer ${accessToken}`,
   'x-device-id': deviceId,
 });
+
+/** One email exactly as `EmailMessage` carried it, captured for a test to inspect. */
+export type CapturedEmail = Pick<EmailMessage, 'to' | 'subject' | 'body'>;
+
+/**
+ * A fake `EmailSender` that records every message instead of sending it.
+ *
+ * Bound in place of the real provider via `overrideProvider(AuthTokens.EmailSender)` in the
+ * identity suite, so the registration/verification journey can read the token and code a real
+ * request would only ever see inside a real inbox — `POST /auth/register` never echoes either
+ * one back in its response, by design (see `RegistrationService`).
+ */
+export class RecordingEmailSender implements EmailSender {
+  readonly sent: CapturedEmail[] = [];
+
+  send(message: EmailMessage): Promise<boolean> {
+    this.sent.push({ to: message.to, subject: message.subject, body: message.body });
+    return Promise.resolve(true);
+  }
+
+  /** Clears everything captured so far. Call between tests, the same way resetDatabase does. */
+  reset(): void {
+    this.sent.length = 0;
+  }
+
+  /** The most recently captured message sent to this address. Throws if there was none. */
+  latestTo(email: string): CapturedEmail {
+    const lowered = email.toLowerCase();
+    const match = [...this.sent].reverse().find((sent) => sent.to.toLowerCase() === lowered);
+
+    if (!match) {
+      throw new Error(`No email was captured for ${email}`);
+    }
+
+    return match;
+  }
+}
+
+/**
+ * Pulls the raw link token out of a verification email's body.
+ *
+ * `EmailVerificationService.issueFor` never returns the token in an HTTP response — a test can
+ * only read it here, the same way a real recipient would read it out of their inbox.
+ */
+export const extractVerificationToken = (body: string): string => {
+  const match = /token=([^\s&]+)/.exec(body);
+
+  if (!match) {
+    throw new Error(`No verification token found in email body:\n${body}`);
+  }
+
+  return match[1];
+};
+
+/** Pulls the 6-digit verification code out of a verification email's body. */
+export const extractVerificationCode = (body: string): string => {
+  const match = /this code in the app:\n(\d{6})/.exec(body);
+
+  if (!match) {
+    throw new Error(`No verification code found in email body:\n${body}`);
+  }
+
+  return match[1];
+};

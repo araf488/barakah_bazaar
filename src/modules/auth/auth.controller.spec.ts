@@ -12,14 +12,17 @@ import { MetadataKeys } from '../../common/constants/app.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { UserRole } from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
-import { AuthMessages } from './auth.constants';
+import { AuthConstants, AuthMessages } from './auth.constants';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LoginDto, MfaVerifyDto, RefreshDto } from './dto/login.dto';
 import { MfaDisableDto, MfaEnableDto, MfaSetupDto } from './dto/mfa.dto';
+import { RegisterDto } from './dto/register.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
+import { VerifyEmailDto } from './dto/verification.dto';
 import { LoginService } from './login.service';
 import { MfaService } from './mfa.service';
+import { RegistrationDependencies } from './registration.dependencies';
 import { SessionService } from './sessions/session.service';
 
 const authenticated: AuthenticatedUser = {
@@ -85,6 +88,9 @@ describe('AuthController', () => {
     listForUser: jest.Mock;
     revokeOwned: jest.Mock;
   };
+  let registrationService: { register: jest.Mock };
+  let emailVerificationService: { verify: jest.Mock; resend: jest.Mock };
+  let registrationDependencies: RegistrationDependencies;
   let controller: AuthController;
 
   beforeEach(() => {
@@ -103,11 +109,18 @@ describe('AuthController', () => {
       listForUser: jest.fn(),
       revokeOwned: jest.fn(),
     };
+    registrationService = { register: jest.fn() };
+    emailVerificationService = { verify: jest.fn(), resend: jest.fn() };
+    registrationDependencies = {
+      registration: registrationService,
+      emailVerification: emailVerificationService,
+    } as unknown as RegistrationDependencies;
     controller = new AuthController(
       authService as unknown as AuthService,
       loginService as unknown as LoginService,
       mfaService as unknown as MfaService,
       sessionService as unknown as SessionService,
+      registrationDependencies,
       createMockLogger(),
     );
   });
@@ -310,6 +323,115 @@ describe('AuthController', () => {
     });
   });
 
+  describe('register', () => {
+    const dto: RegisterDto = {
+      email: 'shopper@example.com',
+      password: 'Correct Horse Battery 41!',
+      fullName: 'Aisha Rahman',
+    };
+
+    it('answers with the pending-verification body', async () => {
+      registrationService.register.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.register(dto)).resolves.toEqual({
+        status: 'pending_verification',
+      });
+    });
+
+    // The enumeration property itself — that a new address and an already-registered one
+    // produce the identical response — is pinned a layer down, in
+    // registration.service.spec.ts, which drives the two real repository outcomes apart. What
+    // belongs here is a controller-only property: the body is the fixed constant, never
+    // whatever the service happened to resolve as `data`. `data` on `register`'s real return
+    // type is always `void`, so this mocks a value that could never occur in production —
+    // deliberately, to prove the controller does not become a passthrough if that ever
+    // changed. A prior version of this test instead called `register` twice with the same mock
+    // and compared the two results to each other; that assertion holds for any deterministic
+    // implementation, including a broken one, so it could never fail.
+    it('returns the fixed body, never whatever the service resolved as data', async () => {
+      registrationService.register.mockResolvedValue({
+        ok: true,
+        data: { leaked: 'should-never-appear' } as unknown as undefined,
+      });
+
+      await expect(controller.register(dto)).resolves.toEqual({
+        status: 'pending_verification',
+      });
+    });
+
+    it('propagates a policy rejection as a 400 carrying the policy message', async () => {
+      registrationService.register.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Your password must be at least 12 characters.',
+      });
+
+      await expect(controller.register(dto)).rejects.toMatchObject({
+        status: HttpStatus.BAD_REQUEST,
+      });
+    });
+  });
+
+  describe('verifyEmail', () => {
+    it('answers 200 with emailVerified true', async () => {
+      emailVerificationService.verify.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.verifyEmail({ token: 'raw-token' })).resolves.toEqual({
+        emailVerified: true,
+      });
+    });
+
+    it('passes the token through without altering it', async () => {
+      emailVerificationService.verify.mockResolvedValue({ ok: true, data: undefined });
+
+      await controller.verifyEmail({ token: 'raw-token' });
+
+      expect(emailVerificationService.verify).toHaveBeenCalledWith({
+        token: 'raw-token',
+        email: undefined,
+        code: undefined,
+      });
+    });
+
+    it('propagates the 400 for an invalid credential', async () => {
+      emailVerificationService.verify.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'That verification link or code is not valid. Please request a new one.',
+      });
+
+      await expect(controller.verifyEmail({ token: 'nope' })).rejects.toMatchObject({
+        status: HttpStatus.BAD_REQUEST,
+      });
+    });
+  });
+
+  describe('resendVerification', () => {
+    it('answers with the pending-verification body, matching register', async () => {
+      emailVerificationService.resend.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.resendVerification({ email: 'nobody@example.com' })).resolves.toEqual(
+        { status: 'pending_verification' },
+      );
+    });
+
+    // EmailVerificationService.resend always answers ok — see its own class comment — so this
+    // branch does not occur in production. It is exercised anyway: unwrapOrThrow must still
+    // convert a hypothetical failure into a thrown error rather than the controller silently
+    // returning its fixed 202 body regardless of what the service reported.
+    it('propagates a failure as an error rather than always returning the fixed body', async () => {
+      emailVerificationService.resend.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+
+      await expect(
+        controller.resendVerification({ email: 'nobody@example.com' }),
+      ).rejects.toMatchObject({ status: HttpStatus.SERVICE_UNAVAILABLE });
+    });
+  });
+
   describe('route protection', () => {
     // The counterpart to the refresh assertion above: `@CurrentUser()` is only ever undefined
     // on a `@Public()` route, so a session route that picked up the decorator would hand any
@@ -326,6 +448,16 @@ describe('AuthController', () => {
       const isPublic = new Reflector().get<boolean>(MetadataKeys.IsPublic, handler);
 
       expect(isPublic).toBeUndefined();
+    });
+
+    // The three routes below are unreachable any other way: the caller has no account, and
+    // therefore no session, until one of these succeeds.
+    it.each([
+      ['register', AuthController.prototype.register],
+      ['verifyEmail', AuthController.prototype.verifyEmail],
+      ['resendVerification', AuthController.prototype.resendVerification],
+    ])('%s is public, because the caller has no account yet', (_name, handler) => {
+      expect(new Reflector().get<boolean>(MetadataKeys.IsPublic, handler)).toBe(true);
     });
 
     // The enrolment routes are the one case where `@Public()` is the requirement rather than a
@@ -781,6 +913,29 @@ describe('AuthController', () => {
       const errors = await validate(plainToInstance(RefreshDto, {}));
 
       expect(errors).not.toEqual([]);
+    });
+  });
+
+  describe('VerifyEmailDto validation', () => {
+    it('accepts a token at the maximum allowed length', async () => {
+      const errors = await validate(
+        plainToInstance(VerifyEmailDto, {
+          token: 'a'.repeat(AuthConstants.EmailVerificationTokenMaxLength),
+        }),
+      );
+
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects a token longer than the maximum allowed length', async () => {
+      const errors = await validate(
+        plainToInstance(VerifyEmailDto, {
+          token: 'a'.repeat(AuthConstants.EmailVerificationTokenMaxLength + 1),
+        }),
+      );
+
+      expect(errors).not.toEqual([]);
+      expect(errors.some((error) => error.property === 'token')).toBe(true);
     });
   });
 

@@ -2,6 +2,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { createMockConfig, createMockLogger } from '../../../../test/support/mocks';
 import { createEmailSender } from './email-sender.factory';
 import { NoopEmailSender } from './noop-email.sender';
+import { SmtpEmailSender } from './smtp-email.sender';
 
 describe('createEmailSender', () => {
   let logger: jest.Mocked<PinoLogger>;
@@ -24,7 +25,8 @@ describe('createEmailSender', () => {
   });
 
   it('fails rather than reporting success for a provider with no adapter', async () => {
-    const sender = createEmailSender(createMockConfig({ EMAIL_PROVIDER: 'smtp' }), logger);
+    // 'smtp' now has an adapter (see below); 'resend' is still on the roadmap only.
+    const sender = createEmailSender(createMockConfig({ EMAIL_PROVIDER: 'resend' }), logger);
 
     await expect(sender.send({ to: 'a@b.com', subject: 's', body: 'b' })).resolves.toBe(false);
     expect(logger.error).toHaveBeenCalled();
@@ -36,5 +38,25 @@ describe('createEmailSender', () => {
     await sender.send({ to: 'a@b.com', subject: 'Invitation', body: 'code super-secret' });
 
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain('super-secret');
+  });
+
+  it('binds the smtp sender when EMAIL_PROVIDER is smtp', () => {
+    const sender = createEmailSender(
+      createMockConfig({ EMAIL_PROVIDER: 'smtp' }),
+      createMockLogger(),
+    );
+
+    expect(sender).toBeInstanceOf(SmtpEmailSender);
+  });
+
+  it('still refuses a provider with no adapter, rather than silently reporting success', async () => {
+    const sender = createEmailSender(
+      createMockConfig({ EMAIL_PROVIDER: 'resend' }),
+      createMockLogger(),
+    );
+
+    await expect(sender.send({ to: 'a@example.com', subject: 's', body: 'b' })).resolves.toBe(
+      false,
+    );
   });
 });

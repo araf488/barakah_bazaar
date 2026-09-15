@@ -86,6 +86,13 @@ describe('validateEnv', () => {
       expect(env.EMAIL_SMTP_SECURE).toBe(false);
     });
 
+    it('defaults the email sender name and verification ttl, so a fresh clone boots', () => {
+      const env = validateEnv({});
+
+      expect(env.EMAIL_FROM_NAME).toBe('Barakah Bazaar');
+      expect(env.EMAIL_VERIFICATION_TTL_HOURS).toBe(24);
+    });
+
     it('defaults the write rate limit, so writes are bounded without configuration', () => {
       expect(validateEnv({}).WRITE_RATE_LIMIT).toBe(60);
     });
@@ -206,6 +213,12 @@ describe('validateEnv', () => {
       expect(() => validateEnv({ ...productionEnv, APP_PUBLIC_BASE_URL: insecure })).toThrow(
         /APP_PUBLIC_BASE_URL must begin with https/,
       );
+    });
+
+    it('refuses a configured email provider with no credentials', () => {
+      expect(() =>
+        validateEnv({ ...productionEnv, EMAIL_PROVIDER: 'smtp', EMAIL_FROM: undefined }),
+      ).toThrow(/EMAIL_FROM and the EMAIL_SMTP_\* credentials are required/);
     });
 
     it('stays permissive in development', () => {

@@ -72,12 +72,16 @@ const baseEnvSchema = z.object({
   // completed in development; with a real provider it never leaves the email.
   EMAIL_PROVIDER: z.enum(['noop', 'resend', 'smtp']).default('noop'),
   EMAIL_FROM: z.string().min(1).optional(),
+  /** Display name beside EMAIL_FROM. Without it a relay shows the bare address. */
+  EMAIL_FROM_NAME: z.string().min(1).default('Barakah Bazaar'),
   EMAIL_SMTP_HOST: z.string().min(1).optional(),
   EMAIL_SMTP_PORT: z.coerce.number().int().positive().max(65535).default(587),
   EMAIL_SMTP_USER: z.string().min(1).optional(),
   EMAIL_SMTP_PASSWORD: z.string().min(1).optional(),
   /** Implicit TLS on connect (port 465). Leave false for STARTTLS on 587. */
   EMAIL_SMTP_SECURE: boolFlag('false'),
+  /** How long an emailed verification credential stays valid. */
+  EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().positive().max(168).default(24),
 
   // ── Payment gateway ───────────────────────────────────────────────────────
   // Defaults to noop, which REFUSES every charge. Cash on delivery is unaffected: it never
@@ -159,6 +163,14 @@ const DEPLOYED_ENV_REQUIRED_KEYS = [
   'TOTP_ENCRYPTION_KEY',
 ] as const satisfies readonly (keyof Env)[];
 
+/** Required once a real email provider is selected; the noop default needs none of them. */
+const EMAIL_PROVIDER_REQUIRED_KEYS = [
+  'EMAIL_FROM',
+  'EMAIL_SMTP_HOST',
+  'EMAIL_SMTP_USER',
+  'EMAIL_SMTP_PASSWORD',
+] as const satisfies readonly (keyof Env)[];
+
 const isDeployedEnv = (nodeEnv: Env['NODE_ENV']): boolean =>
   (DEPLOYED_ENVS as readonly string[]).includes(nodeEnv);
 
@@ -186,6 +198,15 @@ const enforceDeployedEnvRules = (env: Env, ctx: z.RefinementCtx): void => {
 
   if (env.CORS_ALLOWED_ORIGINS.trim().length === 0) {
     addIssue(ctx, 'CORS_ALLOWED_ORIGINS', EnvValidationMessages.CorsAllowlistEmpty);
+  }
+
+  // A configured (non-noop) provider with no credentials would boot and then fail every send
+  // at request time instead of at start-up, where the operator can actually see it.
+  const emailProviderMissingCredentials = EMAIL_PROVIDER_REQUIRED_KEYS.some(
+    (key) => env[key] === undefined,
+  );
+  if (env.EMAIL_PROVIDER !== 'noop' && emailProviderMissingCredentials) {
+    addIssue(ctx, 'EMAIL_FROM', EnvValidationMessages.EmailProviderNotConfigured);
   }
 };
 

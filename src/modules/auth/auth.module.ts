@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PinoLogger, getLoggerToken } from 'nestjs-pino';
 import { Env } from '../../config';
 import { AuditLogRepository } from '../admin/audit-log.repository';
+import { createEmailSender } from '../notification/gateways/email-sender.factory';
 import { AuthConstants, AuthTokens } from './auth.constants';
 import { AuthController } from './auth.controller';
 import { AuthEventsService } from './auth-events.service';
@@ -15,12 +16,17 @@ import { TotpService } from './crypto/totp.service';
 import { createSmsGateway } from './gateways/sms-gateway.factory';
 import { LoginService } from './login.service';
 import { MfaCryptoSupport, MfaService } from './mfa.service';
+import { PasswordPolicy } from './passwords/password-policy';
+import { RegistrationDependencies } from './registration.dependencies';
+import { RegistrationService } from './registration.service';
 import { AuthSettingsRepository } from './settings/auth-settings.repository';
 import { AuthSettingsService } from './settings/auth-settings.service';
 import { createSessionCache } from './sessions/session-cache.factory';
 import { SessionRepository } from './sessions/session.repository';
 import { SessionService } from './sessions/session.service';
 import { AccessTokenService } from './tokens/access-token.service';
+import { EmailVerificationRepository } from './verification/email-verification.repository';
+import { EmailVerificationService } from './verification/email-verification.service';
 
 /**
  * Everything about who the caller is: the user table, the profile endpoint, the SMS/OTP ports
@@ -102,6 +108,28 @@ import { AccessTokenService } from './tokens/access-token.service';
     MfaCryptoSupport,
     LoginService,
     MfaService,
+
+    // Registration and email verification.
+    //
+    // The email sender is bound here rather than imported from a shared module, matching how
+    // AdminModule binds its own — registration/verification mail and admin mail are different
+    // audiences, and this keeps the auth module's DI wiring independent of the admin module's.
+    // This does mean two `EmailSender` instances live in one process (this one and admin's),
+    // i.e. two nodemailer transports under EMAIL_PROVIDER=smtp — accepted, not unified: each
+    // pools its own connections, at the cost of one extra idle connection to the relay.
+    PasswordPolicy,
+    EmailVerificationRepository,
+    EmailVerificationService,
+    RegistrationService,
+    {
+      provide: AuthTokens.EmailSender,
+      inject: [ConfigService, PinoLogger],
+      useFactory: createEmailSender,
+    },
+
+    // Bundles RegistrationService and EmailVerificationService for AuthController, which would
+    // otherwise sit at the 7-parameter S107 ceiling — see registration.dependencies.ts.
+    RegistrationDependencies,
   ],
   // AuthRepository is exported because it owns the user table, which the admin module's
   // invitation flow must read (by id, and by email). Re-providing it there would create a

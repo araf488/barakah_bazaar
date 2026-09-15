@@ -51,6 +51,9 @@ const HEALTH = '/api/v1/health';
 const CART_ITEMS = '/api/v1/cart/items';
 const LOGIN = '/api/v1/auth/login';
 const REFRESH = '/api/v1/auth/refresh';
+const REGISTER = '/api/v1/auth/register';
+const VERIFY_EMAIL = '/api/v1/auth/verify-email';
+const RESEND_VERIFICATION = '/api/v1/auth/resend-verification';
 const GEO_SEARCH = '/api/v1/geo/search';
 const GEO_DIVISIONS = '/api/v1/geo/divisions';
 
@@ -153,6 +156,28 @@ describe('Rate limiting (HTTP)', () => {
       .set('X-Forwarded-For', ip)
       .send({ refreshToken: 'not-a-real-token' });
 
+  // These three routes are @Public() — no device id, no bearer token, nothing to authenticate —
+  // so the only gate available on them at all is the throttler. Each carries the same
+  // AuthIp + AuthAccount pair as login (per AuthController), which is what these tests confirm
+  // rather than merely trust from reading the decorator.
+  const postRegister = (email: string, ip: string = DEFAULT_IP) =>
+    request(app.getHttpServer())
+      .post(REGISTER)
+      .set('X-Forwarded-For', ip)
+      .send({ email, password: 'Correct Horse Battery 41!', fullName: 'Rate Limit Test' });
+
+  const postVerifyEmail = (ip: string = DEFAULT_IP) =>
+    request(app.getHttpServer())
+      .post(VERIFY_EMAIL)
+      .set('X-Forwarded-For', ip)
+      .send({ token: 'not-a-real-token' });
+
+  const postResendVerification = (email: string, ip: string = DEFAULT_IP) =>
+    request(app.getHttpServer())
+      .post(RESEND_VERIFICATION)
+      .set('X-Forwarded-For', ip)
+      .send({ email });
+
   describe('the write baseline', () => {
     it('caps a write route that carries no rate-limit decorator at all', async () => {
       const statuses = await fire(WRITE_LIMIT + 1, postCartItem);
@@ -249,6 +274,40 @@ describe('Rate limiting (HTTP)', () => {
       );
 
       expect(statuses).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+    });
+  });
+
+  describe('the registration and verification routes', () => {
+    it('holds register to the auth-ip limit', async () => {
+      const statuses = await fire(AUTH_LIMIT + 1, () => postRegister('newcustomer@example.com'));
+
+      expect(statuses.slice(0, AUTH_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+      expect(statuses[AUTH_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('holds verify-email to the auth-ip limit', async () => {
+      const statuses = await fire(AUTH_LIMIT + 1, () => postVerifyEmail());
+
+      expect(statuses.slice(0, AUTH_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+      expect(statuses[AUTH_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('holds resend-verification to the auth-ip limit', async () => {
+      const statuses = await fire(AUTH_LIMIT + 1, () =>
+        postResendVerification('someone@example.com'),
+      );
+
+      expect(statuses.slice(0, AUTH_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+      expect(statuses[AUTH_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('blocks many IPs attacking a single address on resend-verification, the auth-account bucket', async () => {
+      const statuses = await fireEach(AUTH_ACCOUNT_LIMIT + 1, (attempt) =>
+        postResendVerification('victim@example.com', `203.0.113.${attempt + 1}`),
+      );
+
+      expect(statuses.slice(0, AUTH_ACCOUNT_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+      expect(statuses[AUTH_ACCOUNT_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
     });
   });
 

@@ -1,12 +1,38 @@
 import { PinoLogger } from 'nestjs-pino';
+import { Language, User, UserRole } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AuthRepository } from './auth.repository';
 import { SessionCachePort } from './sessions/session-cache.port';
 
+const userRow = (overrides: Partial<User> = {}): User => ({
+  id: 'user-1',
+  email: 'shopper@example.com',
+  phone: null,
+  fullName: 'Aisha Rahman',
+  // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+  passwordHash: 'scrypt$hash',
+  emailVerifiedAt: null,
+  phoneVerifiedAt: null,
+  passwordChangedAt: null,
+  totpSecretEncrypted: null,
+  totpEnabledAt: null,
+  totpLastUsedStep: null,
+  totpFailedAttempts: 0,
+  totpFirstFailedAt: null,
+  totpLockedUntil: null,
+  role: UserRole.CUSTOMER,
+  preferredLanguage: Language.BN,
+  isActive: true,
+  lastSeenAt: null,
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+  ...overrides,
+});
+
 describe('AuthRepository', () => {
   let prisma: {
-    user: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock };
+    user: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock; create: jest.Mock };
     mfaRecoveryCode: {
       deleteMany: jest.Mock;
       createMany: jest.Mock;
@@ -21,7 +47,12 @@ describe('AuthRepository', () => {
 
   beforeEach(() => {
     prisma = {
-      user: { findUnique: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
+      user: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        update: jest.fn(),
+        create: jest.fn(),
+      },
       mfaRecoveryCode: {
         deleteMany: jest.fn(),
         createMany: jest.fn(),
@@ -123,6 +154,42 @@ describe('AuthRepository', () => {
     });
   });
 
+  describe('createCustomer', () => {
+    it('creates a CUSTOMER with the address lowercased', async () => {
+      prisma.user.create.mockResolvedValue(userRow());
+
+      await repository.createCustomer({
+        email: 'Shopper@Example.COM',
+        // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+        passwordHash: 'scrypt$hash',
+        fullName: 'Aisha Rahman',
+        preferredLanguage: Language.BN,
+      });
+
+      expect(prisma.user.create.mock.calls[0][0].data).toMatchObject({
+        email: 'shopper@example.com',
+        role: UserRole.CUSTOMER,
+      });
+    });
+
+    it('reports null when the write fails, and never logs the hash or the address', async () => {
+      prisma.user.create.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        repository.createCustomer({
+          email: 'attacker-supplied@example.com',
+          // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+          passwordHash: 'scrypt$secret-hash',
+          fullName: 'Aisha Rahman',
+          preferredLanguage: Language.BN,
+        }),
+      ).resolves.toBeNull();
+      const logged = JSON.stringify(logger.error.mock.calls);
+      expect(logged).not.toContain('scrypt$secret-hash');
+      expect(logged).not.toContain('attacker-supplied@example.com');
+    });
+  });
+
   describe('updatePasswordHash', () => {
     it('writes the new hash and stamps passwordChangedAt', async () => {
       // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
@@ -156,6 +223,33 @@ describe('AuthRepository', () => {
       prisma.user.update.mockRejectedValue(new Error('connection refused'));
 
       await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateEmailVerifiedAt', () => {
+    it('stamps emailVerifiedAt', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1', emailVerifiedAt: new Date() });
+
+      await repository.updateEmailVerifiedAt('user-1');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { emailVerifiedAt: expect.any(Date) },
+      });
+    });
+
+    it('returns null when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.updateEmailVerifiedAt('user-1')).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — confirming an address ends no session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1', emailVerifiedAt: new Date() });
+
+      await repository.updateEmailVerifiedAt('user-1');
 
       expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
     });

@@ -27,6 +27,9 @@ export const AuthConstants = {
   CommonPasswordsFileName: 'common-passwords.txt',
   PasswordMinLength: 12,
   PasswordMaxLength: 128,
+  /** Ceiling on a submitted full name. Unbounded text on an unauthenticated route is a cheap
+   *  way to write megabytes into a row and into every log line that ever names it. */
+  FullNameMaxLength: 120,
   PasswordMinDistinctCharacters: 6,
   PasswordMaxSequentialRun: 6,
   /** Below this, a name fragment matches too much to be meaningful. */
@@ -42,6 +45,37 @@ export const AuthConstants = {
    */
   PasswordSpecialCharacters: '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~' as string,
   PasswordBannedWords: ['barakah', 'bazaar'] as readonly string[],
+  /**
+   * Status value `POST /auth/register` and `POST /auth/resend-verification` answer with.
+   * Identical in every case — see `RegistrationAcceptedDto`.
+   */
+  RegistrationPendingStatus: 'pending_verification',
+  /** Link-token entropy, in bytes, before base64url encoding. Matches the refresh token. */
+  EmailVerificationTokenBytes: 32,
+  /**
+   * Ceiling on the submitted `token` field of `POST /auth/verify-email`. 32 random bytes
+   * base64url-encodes to 43 characters; this leaves a comfortable margin above that while still
+   * bounding an unauthenticated, unbounded string before it is hashed and searched — otherwise
+   * a caller could hand this `@Public()` route an arbitrarily large value to hash on every call.
+   */
+  EmailVerificationTokenMaxLength: 128,
+  /** Digits in the emailed verification code. */
+  EmailVerificationCodeDigits: 6,
+  /**
+   * Wrong codes tolerated against one verification record before it is dead. Six digits is a
+   * million guesses; without a cap the code is not a credential. The link token has no cap and
+   * needs none — 32 random bytes is not guessable, and capping it would let anyone kill a
+   * stranger's verification by hammering the endpoint.
+   */
+  EmailVerificationMaxAttempts: 5,
+  /**
+   * How long before a resend is honoured again. Guards the 300-a-day sending quota: an endpoint
+   * that mails an attacker-chosen address is otherwise a cheap denial of service against the
+   * whole system's ability to send anything.
+   */
+  EmailVerificationResendCooldownSeconds: 60,
+  /** How long a consumed or expired verification is kept before the sweeper removes it. */
+  EmailVerificationRetentionDays: 30,
   /** AES-256-GCM: the algorithm TOTP secrets are sealed with at rest. */
   CipherAlgorithm: 'aes-256-gcm',
   CipherIvBytes: 12,
@@ -150,6 +184,12 @@ export const AuthTokens = {
   SmsGateway: Symbol('BARAKAH_SMS_GATEWAY'),
   OtpService: Symbol('BARAKAH_OTP_SERVICE'),
   SessionCache: Symbol('BARAKAH_SESSION_CACHE'),
+  /**
+   * The auth module's own binding, deliberately separate from `AdminTokens.EmailSender`: the
+   * two modules send different mail for different reasons, and sharing a token would make the
+   * auth module depend on the admin module's DI wiring.
+   */
+  EmailSender: Symbol('BARAKAH_AUTH_EMAIL_SENDER'),
 } as const;
 
 /** User-facing auth messages. Changing one of these is an API change. */
@@ -177,6 +217,13 @@ export const AuthMessages = {
    */
   PasswordMissingCharacterClasses:
     'Your password must include an uppercase letter, a lowercase letter, a number and a special character.',
+  /**
+   * Unknown, expired, already-used or simply wrong verification credential. One message for all
+   * four: distinguishing them tells whoever holds a credential exactly what they hold.
+   */
+  VerificationInvalid: 'That verification link or code is not valid. Please request a new one.',
+  /** The attempt cap was reached against one verification record. */
+  VerificationTooManyAttempts: 'Too many incorrect codes. Please request a new verification email.',
   /** Wrong password, unknown address, or an unusable refresh token. Deliberately one message. */
   InvalidCredentials: 'Those sign-in details are not correct.',
   /** The account exists and the password was right, but the email is not verified. */

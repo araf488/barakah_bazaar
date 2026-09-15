@@ -14,6 +14,9 @@ export const EnvValidationMessages = {
   CorsAllowlistEmpty: 'CORS_ALLOWED_ORIGINS must list the storefront and admin origins',
   /** Raised when a deployed environment would build email links over plain http. */
   PublicBaseUrlNotHttps: 'APP_PUBLIC_BASE_URL must begin with https:// in a deployed environment',
+  /** Raised when a deployed environment selects a real email provider with no credentials. */
+  EmailProviderNotConfigured:
+    'EMAIL_FROM and the EMAIL_SMTP_* credentials are required when EMAIL_PROVIDER is not noop',
   /** Raised when Swagger is left enabled in production. Staging may enable it. */
   SwaggerEnabledInProduction: 'SWAGGER_ENABLED must be false in production',
 } as const;

@@ -2,8 +2,13 @@
 export interface EmailMessage {
   readonly to: string;
   readonly subject: string;
-  /** Plain text. No HTML sender exists yet, and a staff invitation does not need one. */
+  /** Plain text. Always present — some clients render nothing else, and a spam filter reads it. */
   readonly body: string;
+  /**
+   * Optional HTML alternative, sent as a multipart alternative beside `body`. Optional so the
+   * staff-invitation caller, which has only text, is unchanged.
+   */
+  readonly html?: string;
 }
 
 /**

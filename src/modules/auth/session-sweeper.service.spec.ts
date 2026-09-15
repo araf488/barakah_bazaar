@@ -3,11 +3,15 @@ import { createMockLogger } from '../../../test/support/mocks';
 import { AuthConstants } from './auth.constants';
 import { SessionRepository } from './sessions/session.repository';
 import { SessionSweeper } from './session-sweeper.service';
+import { EmailVerificationRepository } from './verification/email-verification.repository';
 
 describe('SessionSweeper', () => {
   let repository: {
     deleteExpired: jest.Mock;
     deleteRecoveryCodesForDisabledUsers: jest.Mock;
+  };
+  let verifications: {
+    deleteStale: jest.Mock;
   };
   let logger: jest.Mocked<PinoLogger>;
   let sweeper: SessionSweeper;
@@ -17,8 +21,15 @@ describe('SessionSweeper', () => {
       deleteExpired: jest.fn().mockResolvedValue(0),
       deleteRecoveryCodesForDisabledUsers: jest.fn().mockResolvedValue(0),
     };
+    verifications = {
+      deleteStale: jest.fn().mockResolvedValue(0),
+    };
     logger = createMockLogger();
-    sweeper = new SessionSweeper(repository as unknown as SessionRepository, logger);
+    sweeper = new SessionSweeper(
+      repository as unknown as SessionRepository,
+      verifications as unknown as EmailVerificationRepository,
+      logger,
+    );
   });
 
   afterEach(() => {
@@ -60,12 +71,13 @@ describe('SessionSweeper', () => {
     it('reports what it removed when it removed anything', async () => {
       repository.deleteExpired.mockResolvedValue(4);
       repository.deleteRecoveryCodesForDisabledUsers.mockResolvedValue(6);
+      verifications.deleteStale.mockResolvedValue(3);
 
       await sweeper.sweep();
 
       expect(logger.info).toHaveBeenCalledWith(
-        { sessions: 4, recoveryCodes: 6 },
-        'Swept expired sessions and dead recovery codes',
+        { sessions: 4, recoveryCodes: 6, verifications: 3 },
+        'Swept expired sessions, dead recovery codes and finished verifications',
       );
     });
 
@@ -74,9 +86,26 @@ describe('SessionSweeper', () => {
 
       expect(logger.info).not.toHaveBeenCalled();
     });
+
+    it('deletes verifications that are finished and older than the retention window', async () => {
+      verifications.deleteStale.mockResolvedValue(3);
+
+      await sweeper.sweep();
+
+      const cutoff = verifications.deleteStale.mock.calls[0][0] as Date;
+      // 30 days, asserted as the literal rather than the constant.
+      expect(Date.now() - cutoff.getTime()).toBeCloseTo(30 * 24 * 60 * 60 * 1000, -4);
+    });
   });
 
   describe('failure', () => {
+    // Weak by itself: the verification delete runs LAST in sweep(), so "sessions still ran"
+    // is true no matter what happens after the session delete — it cannot catch a regression
+    // where something added after the session delete (an early return, a rethrow) stops the
+    // pass early. Kept for its own value (it does show the verification failure is warned on
+    // and does not block the sweep from completing), but see the tests below for the direction
+    // that can actually break: something failing EARLY in the pass must not stop what runs
+    // LATER in the pass.
     it('warns rather than throwing when a delete fails, and still tries the other', async () => {
       repository.deleteExpired.mockResolvedValue(null);
 
@@ -88,6 +117,45 @@ describe('SessionSweeper', () => {
 
     it('never rethrows, because an unhandled rejection in a timer takes the process down', async () => {
       repository.deleteExpired.mockRejectedValue(new Error('connection reset'));
+
+      await expect(sweeper.sweep()).resolves.toBeUndefined();
+
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('still sweeps sessions when the verification delete fails', async () => {
+      verifications.deleteStale.mockResolvedValue(null);
+
+      await sweeper.sweep();
+
+      expect(repository.deleteExpired).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    // The direction the weak test above cannot cover: the verification delete runs LAST, so
+    // only a test that fails an EARLIER delete and then checks the LATER one still ran can
+    // catch a regression like an early return or a rethrow inserted right after the session
+    // delete.
+    it('still sweeps verifications when the session delete fails', async () => {
+      repository.deleteExpired.mockResolvedValue(null);
+
+      await sweeper.sweep();
+
+      expect(verifications.deleteStale).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('still sweeps verifications when the recovery-code delete fails', async () => {
+      repository.deleteRecoveryCodesForDisabledUsers.mockResolvedValue(null);
+
+      await sweeper.sweep();
+
+      expect(verifications.deleteStale).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('never rethrows when the verification delete rejects', async () => {
+      verifications.deleteStale.mockRejectedValue(new Error('connection reset'));
 
       await expect(sweeper.sweep()).resolves.toBeUndefined();
 

@@ -2,16 +2,20 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { PrismaClient, UserRole } from '../src/infra/prisma/prisma-client';
-import { AuthConstants } from '../src/modules/auth/auth.constants';
+import { AuthConstants, AuthTokens } from '../src/modules/auth/auth.constants';
 import { SecretCipher } from '../src/modules/auth/crypto/secret-cipher';
 import { AccessTokenService } from '../src/modules/auth/tokens/access-token.service';
 import { TotpService } from '../src/modules/auth/crypto/totp.service';
+import { EmailVerificationService } from '../src/modules/auth/verification/email-verification.service';
 import {
   DATABASE_UNREACHABLE_MESSAGE,
+  RecordingEmailSender,
   SEED_SCRYPT_PARAMETERS,
   TEST_DATABASE_URL,
   applyMigrations,
   authHeaders,
+  extractVerificationCode,
+  extractVerificationToken,
   isTestDatabaseReachable,
   loginAs,
   resetDatabase,
@@ -62,9 +66,23 @@ const SESSIONS = '/api/v1/auth/sessions';
 const ADMIN_USERS = '/api/v1/admin/users';
 const MFA_SETUP = '/api/v1/auth/mfa/setup';
 const MFA_ENABLE = '/api/v1/auth/mfa/enable';
+const REGISTER = '/api/v1/auth/register';
+const VERIFY_EMAIL = '/api/v1/auth/verify-email';
+const RESEND_VERIFICATION = '/api/v1/auth/resend-verification';
 
 const INVALID_TOKEN = 'Your session is invalid or has expired. Please sign in again.';
 const INVALID_CREDENTIALS = 'Those sign-in details are not correct.';
+const VERIFICATION_INVALID =
+  'That verification link or code is not valid. Please request a new one.';
+
+/**
+ * Satisfies `PasswordPolicy`: 12+ characters, all four required character classes, not on the
+ * bundled denylist, no identity fragment, no long run. `PASSWORD` above (a plain passphrase)
+ * deliberately fails the class-composition rule and is reused below as the "policy refuses it"
+ * case rather than inventing a second weak password.
+ */
+// eslint-disable-next-line sonarjs/no-hardcoded-passwords -- fixture value exercising PasswordPolicy, not a credential to anything real
+const REGISTRATION_PASSWORD = 'Kiwi9!Lagoon$47';
 
 /**
  * The whole identity journey against a real Postgres.
@@ -81,6 +99,11 @@ const INVALID_CREDENTIALS = 'Those sign-in details are not correct.';
 describe('Identity (end to end)', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
+  // Registration/verification mail an EMAIL_PROVIDER=noop app never actually sends. This
+  // records it instead, so the registration journey below can read the token and code the
+  // way a real recipient would — out of the email, since POST /auth/register never echoes
+  // either one back in its response.
+  const emailSender = new RecordingEmailSender();
 
   /** Writes the singleton settings row, so a test can change one rule and re-read it. */
   const writeSettings = async (overrides: Record<string, unknown> = {}): Promise<void> => {
@@ -114,7 +137,10 @@ describe('Identity (end to end)', () => {
     prisma = testPrisma();
 
     const { AppModule } = await import('../src/app.module');
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(AuthTokens.EmailSender)
+      .useValue(emailSender)
+      .compile();
 
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api/v1');
@@ -132,6 +158,7 @@ describe('Identity (end to end)', () => {
   beforeEach(async () => {
     await resetDatabase(prisma);
     await writeSettings();
+    emailSender.reset();
   });
 
   describe('signing in', () => {
@@ -1040,6 +1067,242 @@ describe('Identity (end to end)', () => {
       expect(serialised).not.toContain(PASSWORD);
       expect(serialised).not.toContain(tokens.refreshToken);
       expect(serialised).not.toContain(tokens.accessToken);
+    });
+  });
+
+  describe('registration and verification', () => {
+    /**
+     * Registers a fresh account through the real endpoint and returns the token and code the
+     * (captured) verification email carried — the only place either one is ever readable, since
+     * `POST /auth/register` never returns a credential in its own response.
+     */
+    const registerAndCapture = async (
+      email: string,
+      fullName: string,
+    ): Promise<{ code: string; token: string }> => {
+      await request(app.getHttpServer())
+        .post(REGISTER)
+        .send({ email, password: REGISTRATION_PASSWORD, fullName });
+
+      const captured = emailSender.latestTo(email);
+
+      return {
+        code: extractVerificationCode(captured.body),
+        token: extractVerificationToken(captured.body),
+      };
+    };
+
+    it('registers a pending account with exactly one live verification record', async () => {
+      const email = 'pending@barakahbazaar.com.bd';
+
+      const response = await request(app.getHttpServer())
+        .post(REGISTER)
+        .send({ email, password: REGISTRATION_PASSWORD, fullName: 'Pending Account' });
+
+      expect(response.status).toBe(202);
+      expect(response.body).toEqual({ status: 'pending_verification' });
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      expect(user.emailVerifiedAt).toBeNull();
+
+      const verifications = await prisma.emailVerification.findMany({
+        where: { userId: user.id },
+      });
+      expect(verifications).toHaveLength(1);
+    });
+
+    it('stores only a hash of the token and the code, never the raw values', async () => {
+      const email = 'hashcheck@barakahbazaar.com.bd';
+      const { code, token } = await registerAndCapture(email, 'Hash Check');
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      const verification = await prisma.emailVerification.findFirstOrThrow({
+        where: { userId: user.id },
+      });
+
+      expect(verification.tokenHash).toBe(EmailVerificationService.hashCredential(token));
+      expect(verification.codeHash).toBe(EmailVerificationService.hashCredential(code));
+
+      const serialised = JSON.stringify(verification);
+      expect(serialised).not.toContain(token);
+      expect(serialised).not.toContain(code);
+    });
+
+    it('verifies with the emailed code and consumes the record', async () => {
+      const email = 'verifybycode@barakahbazaar.com.bd';
+      const { code } = await registerAndCapture(email, 'Verify Code');
+
+      const response = await request(app.getHttpServer()).post(VERIFY_EMAIL).send({ email, code });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ emailVerified: true });
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      expect(user.emailVerifiedAt).not.toBeNull();
+
+      const verification = await prisma.emailVerification.findFirstOrThrow({
+        where: { userId: user.id },
+      });
+      expect(verification.consumedAt).not.toBeNull();
+    });
+
+    it('verifies a second account with the link token', async () => {
+      const email = 'verifybytoken@barakahbazaar.com.bd';
+      const { token } = await registerAndCapture(email, 'Verify Token');
+
+      const response = await request(app.getHttpServer()).post(VERIFY_EMAIL).send({ token });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ emailVerified: true });
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      expect(user.emailVerifiedAt).not.toBeNull();
+    });
+
+    it('refuses a token that was already consumed', async () => {
+      const email = 'replaytoken@barakahbazaar.com.bd';
+      const { token } = await registerAndCapture(email, 'Replay Token');
+
+      const first = await request(app.getHttpServer()).post(VERIFY_EMAIL).send({ token });
+      expect(first.status).toBe(200);
+
+      const replay = await request(app.getHttpServer()).post(VERIFY_EMAIL).send({ token });
+
+      expect(replay.status).toBe(400);
+      expect(replay.body.message).toBe(VERIFICATION_INVALID);
+    });
+
+    it('answers identically whether or not the address already has an account', async () => {
+      const email = 'enumeration@barakahbazaar.com.bd';
+      const fullName = 'Enumeration Check';
+
+      const first = await request(app.getHttpServer())
+        .post(REGISTER)
+        .send({ email, password: REGISTRATION_PASSWORD, fullName });
+      const second = await request(app.getHttpServer())
+        .post(REGISTER)
+        .send({ email, password: REGISTRATION_PASSWORD, fullName });
+
+      expect(first.status).toBe(202);
+      expect(second.status).toBe(first.status);
+      expect(second.body).toEqual(first.body);
+    });
+
+    it('resending twice inside the cooldown still leaves exactly one live verification row', async () => {
+      const email = 'resendcooldown@barakahbazaar.com.bd';
+      await registerAndCapture(email, 'Resend Cooldown');
+
+      const firstResend = await request(app.getHttpServer())
+        .post(RESEND_VERIFICATION)
+        .send({ email });
+      const secondResend = await request(app.getHttpServer())
+        .post(RESEND_VERIFICATION)
+        .send({ email });
+
+      expect(firstResend.status).toBe(202);
+      expect(secondResend.status).toBe(202);
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+      const liveRows = await prisma.emailVerification.findMany({
+        where: { userId: user.id, consumedAt: null },
+      });
+
+      expect(liveRows).toHaveLength(1);
+    });
+
+    it('rejects a password the policy refuses and creates no account', async () => {
+      const email = 'weakpassword@barakahbazaar.com.bd';
+
+      const response = await request(app.getHttpServer())
+        .post(REGISTER)
+        .send({ email, password: PASSWORD, fullName: 'Weak Password' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe(
+        'Your password must include an uppercase letter, a lowercase letter, a number and a special character.',
+      );
+
+      const user = await prisma.user.findUnique({ where: { email } });
+      expect(user).toBeNull();
+    });
+
+    it('rejects a register payload missing every required field, with field detail', async () => {
+      const response = await request(app.getHttpServer()).post(REGISTER).send({});
+
+      expect(response.status).toBe(400);
+      expect(Array.isArray(response.body.errors)).toBe(true);
+    });
+
+    it('rejects a register payload with a malformed email', async () => {
+      const response = await request(app.getHttpServer())
+        .post(REGISTER)
+        .send({ email: 'not-an-email', password: REGISTRATION_PASSWORD, fullName: 'Bad Email' });
+
+      expect(response.status).toBe(400);
+      expect(Array.isArray(response.body.errors)).toBe(true);
+    });
+
+    it('is reachable with no Authorization header at all', async () => {
+      const email = 'noauthheader@barakahbazaar.com.bd';
+
+      const response = await request(app.getHttpServer())
+        .post(REGISTER)
+        .send({ email, password: REGISTRATION_PASSWORD, fullName: 'No Auth Header' });
+
+      expect(response.status).toBe(202);
+    });
+
+    it('rejects a verify-email payload carrying both a token and a code', async () => {
+      const response = await request(app.getHttpServer())
+        .post(VERIFY_EMAIL)
+        .send({ token: 'some-token', email: 'someone@example.com', code: '123456' });
+
+      expect(response.status).toBe(400);
+      expect(Array.isArray(response.body.errors)).toBe(true);
+    });
+
+    it('rejects a verify-email payload carrying neither a token nor an email/code pair', async () => {
+      const response = await request(app.getHttpServer()).post(VERIFY_EMAIL).send({});
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe(VERIFICATION_INVALID);
+    });
+
+    it('rejects a verify-email payload with a code but no email', async () => {
+      const response = await request(app.getHttpServer())
+        .post(VERIFY_EMAIL)
+        .send({ code: '123456' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe(VERIFICATION_INVALID);
+    });
+
+    it('rejects a resend-verification payload with a malformed email', async () => {
+      const response = await request(app.getHttpServer())
+        .post(RESEND_VERIFICATION)
+        .send({ email: 'not-an-email' });
+
+      expect(response.status).toBe(400);
+      expect(Array.isArray(response.body.errors)).toBe(true);
+    });
+
+    it('resend-verification is reachable with no Authorization header at all', async () => {
+      const response = await request(app.getHttpServer())
+        .post(RESEND_VERIFICATION)
+        .send({ email: 'whoever@barakahbazaar.com.bd' });
+
+      expect(response.status).toBe(202);
+    });
+
+    it('writes no admin audit log row for registration, verification or resend', async () => {
+      const before = await prisma.adminAuditLog.count();
+      const email = 'noauditrow@barakahbazaar.com.bd';
+
+      const { code } = await registerAndCapture(email, 'No Audit Row');
+      await request(app.getHttpServer()).post(VERIFY_EMAIL).send({ email, code });
+      await request(app.getHttpServer()).post(RESEND_VERIFICATION).send({ email });
+
+      expect(await prisma.adminAuditLog.count()).toBe(before);
     });
   });
 });

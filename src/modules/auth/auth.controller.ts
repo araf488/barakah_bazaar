@@ -34,10 +34,17 @@ import {
   MfaSetupDto,
   MfaSetupResponseDto,
 } from './dto/mfa.dto';
+import { RegisterDto, RegistrationAcceptedDto } from './dto/register.dto';
 import { LogoutAllResponseDto, SessionSummaryDto } from './dto/session.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
+import {
+  ResendVerificationDto,
+  VerifyEmailDto,
+  VerifyEmailResponseDto,
+} from './dto/verification.dto';
 import { LoginService } from './login.service';
 import { MfaService } from './mfa.service';
+import { RegistrationDependencies } from './registration.dependencies';
 import { SessionService } from './sessions/session.service';
 
 @ApiTags('Auth')
@@ -49,8 +56,88 @@ export class AuthController {
     private readonly loginService: LoginService,
     private readonly mfaService: MfaService,
     private readonly sessionService: SessionService,
+    private readonly registrationDependencies: RegistrationDependencies,
     @InjectPinoLogger(AuthController.name) private readonly logger: PinoLogger,
   ) {}
+
+  /**
+   * Creates a customer account. `@Public()`, necessarily: the caller has no account yet.
+   *
+   * Enumeration-safe: this answers identically — same status, same body — whether or not the
+   * submitted address already has an account, and whatever password policy failure or database
+   * fault the service hit along the way collapses to the same shape here too. See
+   * `RegistrationService.register` for how that indistinguishability is produced; this handler
+   * must not reintroduce a difference by mapping the two cases apart.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('register')
+  @ApiOperation({ summary: 'Create a customer account' })
+  @ApiResponse({ status: HttpStatus.ACCEPTED, type: RegistrationAcceptedDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid payload or weak password' })
+  async register(@Body() dto: RegisterDto): Promise<RegistrationAcceptedDto> {
+    try {
+      unwrapOrThrow(await this.registrationDependencies.registration.register(dto));
+      return { status: AuthConstants.RegistrationPendingStatus };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.register');
+      throw error;
+    }
+  }
+
+  /**
+   * Verifies a link token, or an email plus a typed-in code, and marks the account's email
+   * confirmed. `@Public()`: the caller has no session until this succeeds.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.OK)
+  @Post('verify-email')
+  @ApiOperation({ summary: 'Verify an email address' })
+  @ApiResponse({ status: HttpStatus.OK, type: VerifyEmailResponseDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid or expired credential' })
+  async verifyEmail(@Body() dto: VerifyEmailDto): Promise<VerifyEmailResponseDto> {
+    try {
+      unwrapOrThrow(
+        await this.registrationDependencies.emailVerification.verify({
+          token: dto.token,
+          email: dto.email,
+          code: dto.code,
+        }),
+      );
+      return { emailVerified: true };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.verifyEmail');
+      throw error;
+    }
+  }
+
+  /**
+   * Resends a verification credential. `@Public()`, same as `register`: the caller has no
+   * session to present.
+   *
+   * Enumeration-safe in the same way `register` is: the identical `RegistrationAcceptedDto`
+   * body comes back whether the address is unknown, already verified, mid-cooldown, or freshly
+   * mailed again — see `EmailVerificationService.resend`. The account bucket in `@RateLimit`
+   * keys on this submitted email, which is exactly the axis a resend flood runs along, and it
+   * is also what protects the 300-a-day sending quota.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('resend-verification')
+  @ApiOperation({ summary: 'Resend a verification email' })
+  @ApiResponse({ status: HttpStatus.ACCEPTED, type: RegistrationAcceptedDto })
+  async resendVerification(@Body() dto: ResendVerificationDto): Promise<RegistrationAcceptedDto> {
+    try {
+      unwrapOrThrow(await this.registrationDependencies.emailVerification.resend(dto.email));
+      return { status: AuthConstants.RegistrationPendingStatus };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.resendVerification');
+      throw error;
+    }
+  }
 
   /**
    * Returns the caller's own profile. The local row already exists — SessionAuthGuard
