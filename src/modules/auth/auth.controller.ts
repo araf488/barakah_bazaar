@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Req,
   UnauthorizedException,
@@ -34,6 +35,13 @@ import {
   MfaSetupDto,
   MfaSetupResponseDto,
 } from './dto/mfa.dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordAcceptedDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  ResetPasswordResponseDto,
+} from './dto/password.dto';
 import { RegisterDto, RegistrationAcceptedDto } from './dto/register.dto';
 import { LogoutAllResponseDto, SessionSummaryDto } from './dto/session.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
@@ -42,10 +50,10 @@ import {
   VerifyEmailDto,
   VerifyEmailResponseDto,
 } from './dto/verification.dto';
-import { LoginService } from './login.service';
-import { MfaService } from './mfa.service';
+import { PasswordDependencies } from './password.dependencies';
 import { RegistrationDependencies } from './registration.dependencies';
 import { SessionService } from './sessions/session.service';
+import { SignInDependencies } from './sign-in.dependencies';
 
 @ApiTags('Auth')
 @ApiBearerAuth()
@@ -53,10 +61,10 @@ import { SessionService } from './sessions/session.service';
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
-    private readonly loginService: LoginService,
-    private readonly mfaService: MfaService,
+    private readonly signInDependencies: SignInDependencies,
     private readonly sessionService: SessionService,
     private readonly registrationDependencies: RegistrationDependencies,
+    private readonly passwordDependencies: PasswordDependencies,
     @InjectPinoLogger(AuthController.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -140,6 +148,96 @@ export class AuthController {
   }
 
   /**
+   * Mails a password-reset credential to an address that has an account. `@Public()`: the
+   * caller has forgotten the password that would get them a session.
+   *
+   * Enumeration-safe: the identical 202 body comes back for a known address, an unknown one, a
+   * disabled account and a cooldown — see `PasswordResetService.request`. The account bucket
+   * keys on the submitted email, which is the axis a mail flood against one victim runs along.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('forgot-password')
+  @ApiOperation({ summary: 'Request a password reset email' })
+  @ApiResponse({ status: HttpStatus.ACCEPTED, type: ForgotPasswordAcceptedDto })
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<ForgotPasswordAcceptedDto> {
+    try {
+      unwrapOrThrow(await this.passwordDependencies.passwordReset.request(dto.email));
+      return { status: AuthConstants.PasswordResetRequestedStatus };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.forgotPassword');
+      throw error;
+    }
+  }
+
+  /**
+   * Redeems a reset link token, or an email plus a typed-in code, and sets the new password.
+   *
+   * **Returns no session, and must never be changed to.** A staff account requires a second
+   * factor; a reset that signed the caller in would skip it. The caller signs in afterwards and
+   * passes TOTP as usual.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.OK)
+  @Post('reset-password')
+  @ApiOperation({ summary: 'Set a new password with a reset link or code' })
+  @ApiResponse({ status: HttpStatus.OK, type: ResetPasswordResponseDto })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Invalid credential or weak password',
+  })
+  @ApiResponse({ status: HttpStatus.TOO_MANY_REQUESTS, description: 'Too many wrong codes' })
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<ResetPasswordResponseDto> {
+    try {
+      unwrapOrThrow(
+        await this.passwordDependencies.passwordReset.reset({
+          token: dto.token,
+          email: dto.email,
+          code: dto.code,
+          newPassword: dto.newPassword,
+        }),
+      );
+      return { passwordReset: true };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.resetPassword');
+      throw error;
+    }
+  }
+
+  /**
+   * Changes the caller's password. Requires the current one, which is what makes a separate
+   * step-up mechanism unnecessary. Every *other* session ends; this one survives.
+   */
+  @RateLimit(ThrottleBuckets.AuthIp)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Patch('password')
+  @ApiOperation({ summary: 'Change the password, signing out every other device' })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Wrong current password' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Weak new password' })
+  async changePassword(
+    @Body() dto: ChangePasswordDto,
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(
+        await this.passwordDependencies.passwordChange.change(
+          authenticated.userId,
+          authenticated.sessionId,
+          dto.currentPassword,
+          dto.newPassword,
+        ),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.changePassword');
+      throw error;
+    }
+  }
+
+  /**
    * Returns the caller's own profile. The local row already exists — SessionAuthGuard
    * resolved and validated it before this handler ever runs.
    */
@@ -178,7 +276,7 @@ export class AuthController {
     try {
       const deviceId = AuthController.requireDeviceId(request);
       const result = unwrapOrThrow(
-        await this.loginService.login(
+        await this.signInDependencies.login.login(
           dto,
           deviceId,
           AuthController.userAgent(request),
@@ -212,7 +310,7 @@ export class AuthController {
     try {
       const deviceId = AuthController.requireDeviceId(request);
       const session = unwrapOrThrow(
-        await this.mfaService.verifyLogin(
+        await this.signInDependencies.mfa.verifyLogin(
           dto.mfaToken,
           { code: dto.code, recoveryCode: dto.recoveryCode },
           deviceId,
@@ -286,7 +384,9 @@ export class AuthController {
   async mfaSetup(@Body() dto: MfaSetupDto, @Req() request: Request): Promise<MfaSetupResponseDto> {
     try {
       const deviceId = AuthController.requireDeviceId(request);
-      return unwrapOrThrow(await this.mfaService.setupForEnrolment(dto.enrolmentToken, deviceId));
+      return unwrapOrThrow(
+        await this.signInDependencies.mfa.setupForEnrolment(dto.enrolmentToken, deviceId),
+      );
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaSetup');
       throw error;
@@ -317,7 +417,11 @@ export class AuthController {
     try {
       const deviceId = AuthController.requireDeviceId(request);
       const result = unwrapOrThrow(
-        await this.mfaService.enableForEnrolment(dto.enrolmentToken, deviceId, dto.code),
+        await this.signInDependencies.mfa.enableForEnrolment(
+          dto.enrolmentToken,
+          deviceId,
+          dto.code,
+        ),
       );
       return { recoveryCodes: [...result.recoveryCodes] };
     } catch (error) {
@@ -346,7 +450,11 @@ export class AuthController {
     try {
       const authenticated = AuthController.require(user);
       unwrapOrThrow(
-        await this.mfaService.disableForUser(authenticated.userId, dto.password, dto.code),
+        await this.signInDependencies.mfa.disableForUser(
+          authenticated.userId,
+          dto.password,
+          dto.code,
+        ),
       );
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaDisable');

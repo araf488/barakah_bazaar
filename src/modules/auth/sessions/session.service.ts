@@ -385,6 +385,37 @@ export class SessionService {
   }
 
   /**
+   * Ends every live session a user has except the one named, and reports how many.
+   *
+   * The password-change path. Signing someone out of the session they just used to change their
+   * password is hostile and teaches nothing; leaving another device signed in under the old
+   * password is wrong. `revokeAll` cannot express the difference, so this is its sibling.
+   */
+  async revokeAllExcept(userId: string, keepSessionId: string): Promise<ServiceResponse<number>> {
+    try {
+      const revoked = await this.repository.revokeAllForUserExcept(userId, keepSessionId);
+
+      if (revoked === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      // Same reasoning as revokeAll: the generation bump is what makes every cached entry for
+      // this user unreadable at once, without enumerating session ids.
+      await this.invalidateCachedUser(userId);
+
+      this.logger.info({ userId, revoked }, 'Revoked every other live session for a user');
+
+      return serviceOk(revoked);
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId },
+        'Exception occurred in SessionService.revokeAllExcept',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
    * The caller's own live sessions, newest first — "where am I signed in".
    *
    * `null` from the repository means the read itself failed and must not be reported as "no

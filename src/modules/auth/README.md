@@ -1,7 +1,8 @@
 # Auth module
 
-**Status:** in use — password login, TOTP second factor, sessions, refresh rotation and
-session management are live. Phone/OTP login is specified but unimplemented.
+**Status:** in use — password login, TOTP second factor, sessions, refresh rotation, session
+management, registration, email verification and password reset/change are live. Phone/OTP
+login is specified but unimplemented.
 
 This module is the whole of identity. It stores the credentials, issues the tokens, and
 answers every "who is this and may they" question from this database. **No third party takes
@@ -15,6 +16,9 @@ here, and a Supabase outage cannot sign anybody in or out.
 - `sessions` ✅ — one row per signed-in device; no RLS policy at all, which is a deny
 - `auth_settings` ✅ — a single row of deadlines and policy, editable without a deploy
 - `mfa_recovery_codes` ✅ — hashes only; no RLS policy
+- `email_verifications` ✅ — hashed link token + code; no RLS policy
+- `password_resets` ✅ — the same shape in its own table, so a verification token can never be
+  redeemed as a reset; no RLS policy
 
 ## The two-stage guard
 
@@ -144,6 +148,22 @@ session.
 `expiresAt` slides forward on each refresh; `absoluteExpiresAt` never moves. Both deadlines,
 and the grace window, come from `auth_settings` and differ by role, so staff sessions can be
 made short-lived without touching a customer's.
+
+## Password reset and change
+
+`POST /auth/forgot-password` → `POST /auth/reset-password` recovers a forgotten password;
+`PATCH /auth/password` changes a known one.
+
+- **A completed reset returns no session.** Staff accounts require a second factor, and a reset
+  that signed the caller in would skip it, which would make reset a complete MFA bypass. A named
+  unit test and an e2e test assert the response is exactly `{ passwordReset: true }`.
+- **Sessions are revoked before the new hash is written** (`PasswordUpdater.replace`). If
+  revocation cannot be confirmed, nothing is written and the answer is 503.
+- A reset revokes every session; a change keeps the calling one (`SessionService.revokeAllExcept`).
+- The reset credential lives `PASSWORD_RESET_TTL_MINUTES` (default 60). Completing a reset also
+  verifies the address, since it needed a credential mailed there.
+- `forgot-password` answers the identical 202 for a known address, an unknown one, a disabled
+  account, a pending invitation and a cooldown.
 
 ## Before writing code here
 

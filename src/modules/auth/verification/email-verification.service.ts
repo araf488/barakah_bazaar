@@ -1,6 +1,6 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ErrorMessages } from '../../../common/constants/error-messages.constants';
 import { ServiceResponse, serviceFail, serviceOk } from '../../../common/types/service-response';
@@ -9,6 +9,13 @@ import { User } from '../../../infra/prisma/prisma-client';
 import { EmailSender } from '../../notification/ports/email-sender.port';
 import { AuthConstants, AuthMessages, AuthTokens } from '../auth.constants';
 import { AuthRepository } from '../auth.repository';
+import {
+  codeMatches,
+  generateCode,
+  hashCredential,
+  isLive,
+  withinCooldown,
+} from '../credentials/emailed-credential';
 import { buildVerificationEmail, buildVerifiedEmail } from '../emails/verification-emails';
 import {
   EmailVerificationRepository,
@@ -40,9 +47,12 @@ export class EmailVerificationService {
     @InjectPinoLogger(EmailVerificationService.name) private readonly logger: PinoLogger,
   ) {}
 
-  /** base64url SHA-256, matching SessionService.hashToken. The raw value is never persisted. */
+  /**
+   * base64url SHA-256 of a raw credential. Kept as a public static because sub-project 2's suite
+   * and the e2e fixtures call it by this name; the implementation is the shared helper.
+   */
   static hashCredential(raw: string): string {
-    return createHash('sha256').update(raw).digest('base64url');
+    return hashCredential(raw);
   }
 
   /**
@@ -53,15 +63,15 @@ export class EmailVerificationService {
   async issueFor(user: User): Promise<void> {
     try {
       const token = randomBytes(AuthConstants.EmailVerificationTokenBytes).toString('base64url');
-      const code = EmailVerificationService.generateCode();
+      const code = generateCode(AuthConstants.EmailVerificationCodeDigits);
       const ttlHours = this.config.get('EMAIL_VERIFICATION_TTL_HOURS', { infer: true });
       const expiresAt = new Date(Date.now() + ttlHours * 60 * AuthConstants.MillisecondsPerMinute);
 
       const created = await this.repository.create({
         userId: user.id,
         email: user.email,
-        tokenHash: EmailVerificationService.hashCredential(token),
-        codeHash: EmailVerificationService.hashCredential(code),
+        tokenHash: hashCredential(token),
+        codeHash: hashCredential(code),
         expiresAt,
       });
 
@@ -141,7 +151,10 @@ export class EmailVerificationService {
         return serviceOk<void>(undefined);
       }
 
-      if (latest && EmailVerificationService.withinCooldown(latest.createdAt)) {
+      if (
+        latest &&
+        withinCooldown(latest.createdAt, AuthConstants.EmailVerificationResendCooldownSeconds)
+      ) {
         return serviceOk<void>(undefined);
       }
 
@@ -156,15 +169,13 @@ export class EmailVerificationService {
   }
 
   private async verifyByToken(token: string): Promise<ServiceResponse<void>> {
-    const found = await this.repository.findByTokenHash(
-      EmailVerificationService.hashCredential(token),
-    );
+    const found = await this.repository.findByTokenHash(hashCredential(token));
 
     if (found === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
 
-    if (!EmailVerificationService.isLive(found)) {
+    if (!isLive(found)) {
       return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.VerificationInvalid);
     }
 
@@ -178,7 +189,7 @@ export class EmailVerificationService {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
 
-    if (!EmailVerificationService.isLive(found)) {
+    if (!isLive(found)) {
       return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.VerificationInvalid);
     }
 
@@ -188,7 +199,7 @@ export class EmailVerificationService {
       return serviceFail(HttpStatus.TOO_MANY_REQUESTS, AuthMessages.VerificationTooManyAttempts);
     }
 
-    if (!EmailVerificationService.codeMatches(code, found.codeHash)) {
+    if (!codeMatches(code, found.codeHash)) {
       return this.registerWrongCode(found.id);
     }
 
@@ -231,39 +242,5 @@ export class EmailVerificationService {
     );
 
     return serviceOk<void>(undefined);
-  }
-
-  /** A record that exists, has not been consumed, and has not expired. */
-  private static isLive(
-    found: EmailVerificationWithUser | undefined,
-  ): found is EmailVerificationWithUser {
-    return (
-      found !== undefined && found.consumedAt === null && found.expiresAt.getTime() > Date.now()
-    );
-  }
-
-  /**
-   * Compares the presented code's hash to the stored one with `timingSafeEqual`, over
-   * equal-length buffers — both sides are fixed-length SHA-256 digests, so the length check is
-   * a defensive match to the pattern used everywhere else this codebase compares a hash.
-   */
-  private static codeMatches(code: string, codeHash: string): boolean {
-    const provided = Buffer.from(EmailVerificationService.hashCredential(code));
-    const expected = Buffer.from(codeHash);
-    return provided.length === expected.length && timingSafeEqual(provided, expected);
-  }
-
-  /** A zero-padded, fixed-width code. `randomInt`, never `Math.random` — this is a credential. */
-  private static generateCode(): string {
-    const max = 10 ** AuthConstants.EmailVerificationCodeDigits;
-    return randomInt(0, max).toString().padStart(AuthConstants.EmailVerificationCodeDigits, '0');
-  }
-
-  private static withinCooldown(createdAt: Date): boolean {
-    const elapsedMs = Date.now() - createdAt.getTime();
-    return (
-      elapsedMs <=
-      AuthConstants.EmailVerificationResendCooldownSeconds * AuthConstants.MillisecondsPerSecond
-    );
   }
 }

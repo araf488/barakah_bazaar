@@ -16,7 +16,12 @@ import { TotpService } from './crypto/totp.service';
 import { createSmsGateway } from './gateways/sms-gateway.factory';
 import { LoginService } from './login.service';
 import { MfaCryptoSupport, MfaService } from './mfa.service';
+import { PasswordDependencies } from './password.dependencies';
+import { PasswordResetRepository } from './password-reset/password-reset.repository';
+import { PasswordResetService } from './password-reset/password-reset.service';
+import { PasswordChangeService } from './passwords/password-change.service';
 import { PasswordPolicy } from './passwords/password-policy';
+import { PasswordUpdater } from './passwords/password-updater';
 import { RegistrationDependencies } from './registration.dependencies';
 import { RegistrationService } from './registration.service';
 import { AuthSettingsRepository } from './settings/auth-settings.repository';
@@ -24,6 +29,7 @@ import { AuthSettingsService } from './settings/auth-settings.service';
 import { createSessionCache } from './sessions/session-cache.factory';
 import { SessionRepository } from './sessions/session.repository';
 import { SessionService } from './sessions/session.service';
+import { SignInDependencies } from './sign-in.dependencies';
 import { AccessTokenService } from './tokens/access-token.service';
 import { EmailVerificationRepository } from './verification/email-verification.repository';
 import { EmailVerificationService } from './verification/email-verification.service';
@@ -108,6 +114,8 @@ import { EmailVerificationService } from './verification/email-verification.serv
     MfaCryptoSupport,
     LoginService,
     MfaService,
+    // Bundles LoginService and MfaService for AuthController — see sign-in.dependencies.ts.
+    SignInDependencies,
 
     // Registration and email verification.
     //
@@ -130,6 +138,15 @@ import { EmailVerificationService } from './verification/email-verification.serv
     // Bundles RegistrationService and EmailVerificationService for AuthController, which would
     // otherwise sit at the 7-parameter S107 ceiling — see registration.dependencies.ts.
     RegistrationDependencies,
+
+    // Password reset and change. PasswordUpdater holds what the two flows share — policy,
+    // revoke-before-write, audit, mail — and PasswordDependencies bundles the two services for
+    // AuthController, which would otherwise reach the S107 ceiling.
+    PasswordUpdater,
+    PasswordResetRepository,
+    PasswordResetService,
+    PasswordChangeService,
+    PasswordDependencies,
   ],
   // AuthRepository is exported because it owns the user table, which the admin module's
   // invitation flow must read (by id, and by email). Re-providing it there would create a

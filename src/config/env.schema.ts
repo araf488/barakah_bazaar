@@ -82,6 +82,12 @@ const baseEnvSchema = z.object({
   EMAIL_SMTP_SECURE: boolFlag('false'),
   /** How long an emailed verification credential stays valid. */
   EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().positive().max(168).default(24),
+  /**
+   * How long an emailed password-reset credential stays valid. An hour, not the verification's
+   * day: a leaked reset credential is account takeover. Capped at a day so one mistyped value
+   * cannot leave such a credential live for a week.
+   */
+  PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().positive().max(1440).default(60),
 
   // ── Payment gateway ───────────────────────────────────────────────────────
   // Defaults to noop, which REFUSES every charge. Cash on delivery is unaffected: it never

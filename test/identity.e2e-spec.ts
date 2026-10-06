@@ -14,13 +14,16 @@ import {
   TEST_DATABASE_URL,
   applyMigrations,
   authHeaders,
+  countEmailsTo,
   extractVerificationCode,
   extractVerificationToken,
   isTestDatabaseReachable,
   loginAs,
   resetDatabase,
   seedVerifiedUser,
+  settleDetachedWork,
   testPrisma,
+  waitForEmailTo,
 } from './support/auth-fixtures';
 
 // ConfigModule.forRoot() reads and validates the environment when app.module.ts is imported,
@@ -69,9 +72,15 @@ const MFA_ENABLE = '/api/v1/auth/mfa/enable';
 const REGISTER = '/api/v1/auth/register';
 const VERIFY_EMAIL = '/api/v1/auth/verify-email';
 const RESEND_VERIFICATION = '/api/v1/auth/resend-verification';
+const FORGOT_PASSWORD = '/api/v1/auth/forgot-password';
+const RESET_PASSWORD = '/api/v1/auth/reset-password';
+const CHANGE_PASSWORD = '/api/v1/auth/password';
 
 const INVALID_TOKEN = 'Your session is invalid or has expired. Please sign in again.';
 const INVALID_CREDENTIALS = 'Those sign-in details are not correct.';
+const RESET_INVALID = 'That password reset link or code is not valid. Please request a new one.';
+const RESET_TOO_MANY_ATTEMPTS =
+  'Too many incorrect codes. Please request a new password reset email.';
 const VERIFICATION_INVALID =
   'That verification link or code is not valid. Please request a new one.';
 
@@ -1303,6 +1312,397 @@ describe('Identity (end to end)', () => {
       await request(app.getHttpServer()).post(RESEND_VERIFICATION).send({ email });
 
       expect(await prisma.adminAuditLog.count()).toBe(before);
+    });
+  });
+
+  describe('password reset and change', () => {
+    /**
+     * Requests a reset through the real endpoint and reads the credential out of the mail. The
+     * 202 comes back before the mail is sent, so this waits for a mail newer than any before it.
+     */
+    const requestAndCapture = async (email: string): Promise<{ code: string; token: string }> => {
+      const alreadySeen = countEmailsTo(emailSender, email);
+      await request(app.getHttpServer()).post(FORGOT_PASSWORD).send({ email });
+      const captured = await waitForEmailTo(emailSender, email, alreadySeen);
+
+      return {
+        code: extractVerificationCode(captured.body),
+        token: extractVerificationToken(captured.body),
+      };
+    };
+
+    it('resets by code: old password fails, new one works, every session dies, address verified', async () => {
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        emailVerified: false,
+      });
+      const first = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE);
+      const second = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, OTHER_DEVICE);
+
+      const requested = await request(app.getHttpServer())
+        .post(FORGOT_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL });
+      expect(requested.status).toBe(202);
+      expect(requested.body).toEqual({ status: 'reset_requested' });
+
+      const code = extractVerificationCode(
+        (await waitForEmailTo(emailSender, CUSTOMER_EMAIL)).body,
+      );
+      const reset = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL, code, newPassword: REGISTRATION_PASSWORD });
+
+      expect(reset.status).toBe(200);
+      expect(reset.body).toStrictEqual({ passwordReset: true });
+
+      const oldLogin = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: CUSTOMER_EMAIL, password: PASSWORD });
+      expect(oldLogin.status).toBe(401);
+      await expect(
+        loginAs(app, CUSTOMER_EMAIL, REGISTRATION_PASSWORD, DEVICE),
+      ).resolves.toBeDefined();
+
+      for (const [pair, device] of [
+        [first, DEVICE],
+        [second, OTHER_DEVICE],
+      ] as const) {
+        const me = await request(app.getHttpServer())
+          .get(ME)
+          .set(authHeaders(pair.accessToken, device));
+        expect(me.status).toBe(401);
+      }
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email: CUSTOMER_EMAIL } });
+      expect(user.emailVerifiedAt).not.toBeNull();
+      expect(user.passwordChangedAt).not.toBeNull();
+    });
+
+    it('refuses a credential issued before the account was disabled, and leaves the password alone', async () => {
+      const seeded = await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const { token } = await requestAndCapture(CUSTOMER_EMAIL);
+      await prisma.user.update({ where: { id: seeded.id }, data: { isActive: false } });
+
+      const reset = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token, newPassword: REGISTRATION_PASSWORD });
+
+      expect(reset.status).toBe(400);
+      expect(reset.body.message).toBe(RESET_INVALID);
+      const after = await prisma.user.findUniqueOrThrow({ where: { id: seeded.id } });
+      expect(after.passwordHash).toBe(seeded.passwordHash);
+      expect(after.passwordChangedAt).toEqual(seeded.passwordChangedAt);
+    });
+
+    it('lets only one of two concurrent redemptions of the same token write a password', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const { token } = await requestAndCapture(CUSTOMER_EMAIL);
+
+      const responses = await Promise.all(
+        [REGISTRATION_PASSWORD, REGISTRATION_PASSWORD].map((newPassword) =>
+          request(app.getHttpServer()).post(RESET_PASSWORD).send({ token, newPassword }),
+        ),
+      );
+
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([
+        200, 400,
+      ]);
+      const loser = responses.find((response) => response.status === 400);
+      expect(loser?.body.message).toBe(RESET_INVALID);
+    });
+
+    it('stores only hashes of the reset token and code', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const { code, token } = await requestAndCapture(CUSTOMER_EMAIL);
+
+      const row = await prisma.passwordReset.findFirstOrThrow({});
+      expect(row.tokenHash).toBe(EmailVerificationService.hashCredential(token));
+      expect(row.codeHash).toBe(EmailVerificationService.hashCredential(code));
+      expect(JSON.stringify(row)).not.toContain(token);
+    });
+
+    it('answers a replayed token exactly as it answers an unknown one', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const { token } = await requestAndCapture(CUSTOMER_EMAIL);
+
+      const used = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token, newPassword: REGISTRATION_PASSWORD });
+      expect(used.status).toBe(200);
+
+      const replay = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token, newPassword: REGISTRATION_PASSWORD });
+      const unknown = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token: 'never-issued-token', newPassword: REGISTRATION_PASSWORD });
+
+      expect(replay.status).toBe(400);
+      expect(replay.body.message).toBe(RESET_INVALID);
+      expect(unknown.status).toBe(replay.status);
+      // requestId and timestamp are per-request by design; every other field must match.
+      const stable = ({ requestId: _id, timestamp: _at, ...rest }: Record<string, unknown>) => rest;
+      expect(stable(unknown.body)).toEqual(stable(replay.body));
+    });
+
+    it('answers an unknown address identically, and sends it nothing', async () => {
+      const response = await request(app.getHttpServer())
+        .post(FORGOT_PASSWORD)
+        .send({ email: 'nobody@barakahbazaar.com.bd' });
+
+      expect(response.status).toBe(202);
+      expect(response.body).toEqual({ status: 'reset_requested' });
+      await settleDetachedWork();
+      expect(emailSender.sent).toHaveLength(0);
+      expect(await prisma.passwordReset.count()).toBe(0);
+    });
+
+    it('finds the account and the code whatever the case of the submitted address', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      await request(app.getHttpServer())
+        .post(FORGOT_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL.toUpperCase() });
+      const code = extractVerificationCode(
+        (await waitForEmailTo(emailSender, CUSTOMER_EMAIL)).body,
+      );
+
+      const reset = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({
+          email: `Shopper@${CUSTOMER_EMAIL.split('@')[1]}`,
+          code,
+          newPassword: REGISTRATION_PASSWORD,
+        });
+
+      expect(reset.status).toBe(200);
+    });
+
+    it('a second request after the cooldown kills the first email', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const first = await requestAndCapture(CUSTOMER_EMAIL);
+      // Backdate the first row past the 60-second cooldown rather than waiting it out.
+      await prisma.passwordReset.updateMany({
+        data: { createdAt: new Date(Date.now() - 120_000) },
+      });
+      const second = await requestAndCapture(CUSTOMER_EMAIL);
+      expect(second.token).not.toBe(first.token);
+
+      const stale = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token: first.token, newPassword: REGISTRATION_PASSWORD });
+      expect(stale.status).toBe(400);
+      expect(stale.body.message).toBe(RESET_INVALID);
+
+      const fresh = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token: second.token, newPassword: REGISTRATION_PASSWORD });
+      expect(fresh.status).toBe(200);
+    });
+
+    it('refuses a weak new password with the policy message, and the same code then works', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const { code } = await requestAndCapture(CUSTOMER_EMAIL);
+
+      // PASSWORD passes the DTO's length bounds and fails only the four-class rule, so the 400
+      // comes from PasswordPolicy.check, not from validation.
+      const weak = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL, code, newPassword: PASSWORD });
+      expect(weak.status).toBe(400);
+      expect(weak.body.message).toBe(
+        'Your password must include an uppercase letter, a lowercase letter, a number and a special character.',
+      );
+      await expect(loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE)).resolves.toBeDefined();
+
+      const strong = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL, code, newPassword: REGISTRATION_PASSWORD });
+      expect(strong.status).toBe(200);
+    });
+
+    it('returns nothing session-shaped for a staff account, whose second factor stays required', async () => {
+      await writeSettings({ staffMfaRequired: true });
+      await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+      const { token } = await requestAndCapture(STAFF_EMAIL);
+
+      const reset = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token, newPassword: REGISTRATION_PASSWORD });
+
+      expect(reset.status).toBe(200);
+      expect(reset.body).toStrictEqual({ passwordReset: true });
+
+      const login = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: STAFF_EMAIL, password: REGISTRATION_PASSWORD });
+      expect(login.body.kind).toBe('enrolment');
+    });
+
+    it('PATCH /auth/password keeps the calling session and ends every other', async () => {
+      // PASSWORD fails the four-class rule, so this also proves the current password is never
+      // policy-checked.
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const caller = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE);
+      const other = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, OTHER_DEVICE);
+
+      const changed = await request(app.getHttpServer())
+        .patch(CHANGE_PASSWORD)
+        .set(authHeaders(caller.accessToken, DEVICE))
+        .send({ currentPassword: PASSWORD, newPassword: REGISTRATION_PASSWORD });
+      expect(changed.status).toBe(204);
+
+      const callerMe = await request(app.getHttpServer())
+        .get(ME)
+        .set(authHeaders(caller.accessToken, DEVICE));
+      const otherMe = await request(app.getHttpServer())
+        .get(ME)
+        .set(authHeaders(other.accessToken, OTHER_DEVICE));
+      expect(callerMe.status).toBe(200);
+      expect(otherMe.status).toBe(401);
+
+      await expect(
+        loginAs(app, CUSTOMER_EMAIL, REGISTRATION_PASSWORD, OTHER_DEVICE),
+      ).resolves.toBeDefined();
+    });
+
+    it('PATCH /auth/password refuses a wrong current password with the sign-in message', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const caller = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE);
+
+      const response = await request(app.getHttpServer())
+        .patch(CHANGE_PASSWORD)
+        .set(authHeaders(caller.accessToken, DEVICE))
+        .send({ currentPassword: 'not the right one', newPassword: REGISTRATION_PASSWORD });
+
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe(INVALID_CREDENTIALS);
+    });
+
+    it('PATCH /auth/password without a token answers 401', async () => {
+      const response = await request(app.getHttpServer())
+        .patch(CHANGE_PASSWORD)
+        .send({ currentPassword: PASSWORD, newPassword: REGISTRATION_PASSWORD });
+
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects a reset payload carrying both a token and a code', async () => {
+      const response = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token: 'abc', code: '123456', newPassword: REGISTRATION_PASSWORD });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('rejects a reset payload carrying neither a token nor a code', async () => {
+      const response = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL, newPassword: REGISTRATION_PASSWORD });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).not.toBe(RESET_INVALID);
+    });
+
+    it('rejects a malformed forgot-password payload with 400 and sends nothing', async () => {
+      const notAnEmail = await request(app.getHttpServer())
+        .post(FORGOT_PASSWORD)
+        .send({ email: 'not-an-email' });
+      const empty = await request(app.getHttpServer()).post(FORGOT_PASSWORD).send({});
+
+      expect(notAnEmail.status).toBe(400);
+      expect(empty.status).toBe(400);
+      expect(emailSender.sent).toHaveLength(0);
+    });
+
+    it('issues a 32-byte token and a 6-digit code that live exactly 60 minutes', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const { code, token } = await requestAndCapture(CUSTOMER_EMAIL);
+
+      expect(Buffer.from(token, 'base64url')).toHaveLength(32);
+      expect(code).toMatch(/^\d{6}$/);
+      const row = await prisma.passwordReset.findFirstOrThrow({});
+      expect(row.expiresAt.getTime() - row.createdAt.getTime()).toBeCloseTo(60 * 60 * 1000, -4);
+    });
+
+    it('answers a second request inside the 60-second cooldown identically, and sends nothing', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      await requestAndCapture(CUSTOMER_EMAIL);
+
+      const again = await request(app.getHttpServer())
+        .post(FORGOT_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL });
+
+      expect(again.status).toBe(202);
+      expect(again.body).toEqual({ status: 'reset_requested' });
+      await settleDetachedWork();
+      expect(emailSender.sent).toHaveLength(1);
+      expect(await prisma.passwordReset.count()).toBe(1);
+    });
+
+    it('refuses the 5th wrong code with 429, and then the right code too', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const { code } = await requestAndCapture(CUSTOMER_EMAIL);
+      const wrong = code === '000000' ? '111111' : '000000';
+
+      const statuses: number[] = [];
+      for (let guess = 0; guess < 5; guess += 1) {
+        const response = await request(app.getHttpServer())
+          .post(RESET_PASSWORD)
+          .send({ email: CUSTOMER_EMAIL, code: wrong, newPassword: REGISTRATION_PASSWORD });
+        statuses.push(response.status);
+      }
+      expect(statuses).toEqual([400, 400, 400, 400, 429]);
+
+      const right = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL, code, newPassword: REGISTRATION_PASSWORD });
+      expect(right.status).toBe(429);
+      expect(right.body.message).toBe(RESET_TOO_MANY_ATTEMPTS);
+
+      const row = await prisma.passwordReset.findFirstOrThrow({});
+      expect(row.attempts).toBe(5);
+      await expect(loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE)).resolves.toBeDefined();
+    });
+
+    it('records auth.password_changed for a staff reset', async () => {
+      await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+      const { token } = await requestAndCapture(STAFF_EMAIL);
+
+      await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ token, newPassword: REGISTRATION_PASSWORD });
+
+      const rows = await prisma.adminAuditLog.findMany({
+        where: { action: 'auth.password_changed' },
+      });
+      expect(rows).toHaveLength(1);
+    });
+
+    it('PATCH /auth/password refuses a weak new password with the policy message', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const caller = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE);
+
+      const response = await request(app.getHttpServer())
+        .patch(CHANGE_PASSWORD)
+        .set(authHeaders(caller.accessToken, DEVICE))
+        .send({ currentPassword: PASSWORD, newPassword: PASSWORD });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe(
+        'Your password must include an uppercase letter, a lowercase letter, a number and a special character.',
+      );
+      await expect(loginAs(app, CUSTOMER_EMAIL, PASSWORD, OTHER_DEVICE)).resolves.toBeDefined();
     });
   });
 });

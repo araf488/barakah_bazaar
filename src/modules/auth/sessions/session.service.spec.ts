@@ -108,6 +108,7 @@ describe('SessionService', () => {
     touch: jest.Mock;
     revoke: jest.Mock;
     revokeAllForUser: jest.Mock;
+    revokeAllForUserExcept: jest.Mock;
     listLiveForUser: jest.Mock;
     hasDeviceHistory: jest.Mock;
   };
@@ -163,6 +164,7 @@ describe('SessionService', () => {
       touch: jest.fn().mockResolvedValue(undefined),
       revoke: jest.fn().mockResolvedValue(true),
       revokeAllForUser: jest.fn().mockResolvedValue(2),
+      revokeAllForUserExcept: jest.fn().mockResolvedValue(0),
       listLiveForUser: jest.fn().mockResolvedValue([makeSession()]),
       hasDeviceHistory: jest.fn().mockResolvedValue(true),
     };
@@ -1146,6 +1148,47 @@ describe('SessionService', () => {
       repository.revokeAllForUser.mockResolvedValue(null);
 
       await service.revokeAll('user-1');
+
+      expect(cache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('revokeAllExcept', () => {
+    it('reports how many other live sessions it ended', async () => {
+      repository.revokeAllForUserExcept.mockResolvedValue(2);
+
+      const result = await service.revokeAllExcept('user-1', 'session-keep');
+
+      expect(result).toEqual({ ok: true, data: 2 });
+      expect(repository.revokeAllForUserExcept).toHaveBeenCalledWith('user-1', 'session-keep');
+      expect(repository.revokeAllForUser).not.toHaveBeenCalled();
+    });
+
+    it('reports 503 rather than a cheerful zero when the write failed', async () => {
+      repository.revokeAllForUserExcept.mockResolvedValue(null);
+
+      expect(failure(await service.revokeAllExcept('user-1', 'session-keep')).status).toBe(503);
+    });
+
+    it('reports 500 when the repository throws', async () => {
+      repository.revokeAllForUserExcept.mockRejectedValue(new Error('boom'));
+
+      expect(failure(await service.revokeAllExcept('user-1', 'session-keep')).status).toBe(500);
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('bumps the user generation, so the ended sessions cannot be served from cache', async () => {
+      repository.revokeAllForUserExcept.mockResolvedValue(2);
+
+      await service.revokeAllExcept('user-1', 'session-keep');
+
+      expect(cache.invalidateUser).toHaveBeenCalledWith('user-1');
+    });
+
+    it('does not bump the generation when the database write failed', async () => {
+      repository.revokeAllForUserExcept.mockResolvedValue(null);
+
+      await service.revokeAllExcept('user-1', 'session-keep');
 
       expect(cache.invalidateUser).not.toHaveBeenCalled();
     });

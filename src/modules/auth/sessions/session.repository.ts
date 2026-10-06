@@ -281,6 +281,29 @@ export class SessionRepository {
   }
 
   /**
+   * Ends every live session a user has except `keepSessionId`, and reports how many.
+   *
+   * A password change made from one device signs every *other* device out and leaves the one
+   * that made the change alone. `null`, not `0`, on a failed write, for the same reason as
+   * `revokeAllForUser`.
+   */
+  async revokeAllForUserExcept(userId: string, keepSessionId: string): Promise<number | null> {
+    try {
+      const result = await this.prisma.session.updateMany({
+        where: { userId, revokedAt: null, id: { not: keepSessionId } },
+        data: { revokedAt: new Date() },
+      });
+      return result.count;
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId },
+        'Exception occurred in SessionRepository.revokeAllForUserExcept',
+      );
+      return null;
+    }
+  }
+
+  /**
    * The user's live sessions, newest first, for the "where am I signed in" listing.
    *
    * "Live" here has to mean exactly what the session guard means by it, or the listing offers

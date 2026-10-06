@@ -125,7 +125,7 @@ export const resetDatabase = async (prisma: PrismaClient): Promise<void> => {
   await prisma.$executeRawUnsafe(
     'TRUNCATE TABLE "public"."sessions", "public"."mfa_recovery_codes", ' +
       '"public"."admin_audit_log", "public"."staff_invitations", "public"."email_verifications", ' +
-      '"public"."users" CASCADE',
+      '"public"."password_resets", "public"."users" CASCADE',
   );
 };
 
@@ -239,6 +239,54 @@ export class RecordingEmailSender implements EmailSender {
     return match;
   }
 }
+
+/**
+ * How long `waitForEmailTo` waits for a mail before failing the test. `forgot-password` answers
+ * 202 before its mail is sent (the send runs detached, so latency cannot reveal which addresses
+ * have accounts), so a test has to wait for the mail rather than read it straight after the 202.
+ */
+export const EMAIL_WAIT_TIMEOUT_MS = 5_000;
+
+/** How often `waitForEmailTo` looks again. */
+export const EMAIL_POLL_INTERVAL_MS = 10;
+
+/**
+ * How long a "nothing was sent" assertion waits first. Without it the assertion would run before
+ * the detached work had a chance to send anything, and would pass whatever the code did. The
+ * detached work is a few local queries and an in-memory send, so this is generous.
+ */
+export const EMAIL_SETTLE_MS = 300;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Counts captured messages to an address, case-insensitively. */
+export const countEmailsTo = (sender: RecordingEmailSender, email: string): number =>
+  sender.sent.filter((sent) => sent.to.toLowerCase() === email.toLowerCase()).length;
+
+/**
+ * Waits for a message to this address beyond the first `alreadySeen`, and returns the newest.
+ * Pass the count from before the request, so a mail from an earlier request cannot satisfy it.
+ */
+export const waitForEmailTo = async (
+  sender: RecordingEmailSender,
+  email: string,
+  alreadySeen = 0,
+  timeoutMs = EMAIL_WAIT_TIMEOUT_MS,
+): Promise<CapturedEmail> => {
+  const deadline = Date.now() + timeoutMs;
+
+  while (countEmailsTo(sender, email) <= alreadySeen) {
+    if (Date.now() > deadline) {
+      throw new Error(`No new email reached ${email} within ${timeoutMs} ms`);
+    }
+    await sleep(EMAIL_POLL_INTERVAL_MS);
+  }
+
+  return sender.latestTo(email);
+};
+
+/** Waits out `EMAIL_SETTLE_MS`, before asserting that nothing was sent. */
+export const settleDetachedWork = (): Promise<void> => sleep(EMAIL_SETTLE_MS);
 
 /**
  * Pulls the raw link token out of a verification email's body.

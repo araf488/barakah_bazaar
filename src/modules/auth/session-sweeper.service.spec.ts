@@ -1,6 +1,7 @@
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AuthConstants } from './auth.constants';
+import { PasswordResetRepository } from './password-reset/password-reset.repository';
 import { SessionRepository } from './sessions/session.repository';
 import { SessionSweeper } from './session-sweeper.service';
 import { EmailVerificationRepository } from './verification/email-verification.repository';
@@ -13,6 +14,7 @@ describe('SessionSweeper', () => {
   let verifications: {
     deleteStale: jest.Mock;
   };
+  let passwordResets: { deleteStale: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let sweeper: SessionSweeper;
 
@@ -24,10 +26,12 @@ describe('SessionSweeper', () => {
     verifications = {
       deleteStale: jest.fn().mockResolvedValue(0),
     };
+    passwordResets = { deleteStale: jest.fn().mockResolvedValue(0) };
     logger = createMockLogger();
     sweeper = new SessionSweeper(
       repository as unknown as SessionRepository,
       verifications as unknown as EmailVerificationRepository,
+      passwordResets as unknown as PasswordResetRepository,
       logger,
     );
   });
@@ -76,8 +80,8 @@ describe('SessionSweeper', () => {
       await sweeper.sweep();
 
       expect(logger.info).toHaveBeenCalledWith(
-        { sessions: 4, recoveryCodes: 6, verifications: 3 },
-        'Swept expired sessions, dead recovery codes and finished verifications',
+        { sessions: 4, recoveryCodes: 6, verifications: 3, passwordResets: 0 },
+        'Swept expired sessions, dead recovery codes, finished verifications and resets',
       );
     });
 
@@ -95,6 +99,24 @@ describe('SessionSweeper', () => {
       const cutoff = verifications.deleteStale.mock.calls[0][0] as Date;
       // 30 days, asserted as the literal rather than the constant.
       expect(Date.now() - cutoff.getTime()).toBeCloseTo(30 * 24 * 60 * 60 * 1000, -4);
+    });
+
+    it('deletes resets that are finished and older than the retention window', async () => {
+      passwordResets.deleteStale.mockResolvedValue(2);
+
+      await sweeper.sweep();
+
+      const cutoff = passwordResets.deleteStale.mock.calls[0][0] as Date;
+      // 30 days, asserted as the literal rather than the constant.
+      expect(Date.now() - cutoff.getTime()).toBeCloseTo(30 * 24 * 60 * 60 * 1000, -4);
+    });
+
+    it('reports the resets it removed', async () => {
+      passwordResets.deleteStale.mockResolvedValue(2);
+
+      await sweeper.sweep();
+
+      expect(logger.info.mock.calls[0][0]).toMatchObject({ passwordResets: 2 });
     });
   });
 
@@ -152,6 +174,25 @@ describe('SessionSweeper', () => {
 
       expect(verifications.deleteStale).toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('still sweeps everything else when the reset delete fails, and warns', async () => {
+      passwordResets.deleteStale.mockResolvedValue(null);
+      repository.deleteExpired.mockResolvedValue(1);
+
+      await sweeper.sweep();
+
+      expect(repository.deleteExpired).toHaveBeenCalled();
+      expect(verifications.deleteStale).toHaveBeenCalled();
+      expect(logger.warn.mock.calls[0][0]).toMatchObject({ passwordResets: null });
+    });
+
+    it('still sweeps resets when the verification delete fails', async () => {
+      verifications.deleteStale.mockResolvedValue(null);
+
+      await sweeper.sweep();
+
+      expect(passwordResets.deleteStale).toHaveBeenCalled();
     });
 
     it('never rethrows when the verification delete rejects', async () => {

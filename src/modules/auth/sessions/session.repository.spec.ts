@@ -356,6 +356,26 @@ describe('SessionRepository', () => {
     });
   });
 
+  describe('revokeAllForUserExcept', () => {
+    it('revokes every live session but the one named, and reports how many', async () => {
+      prisma.session.updateMany.mockResolvedValue({ count: 2 });
+
+      await expect(repository.revokeAllForUserExcept('user-1', 'session-keep')).resolves.toBe(2);
+      expect(prisma.session.updateMany.mock.calls[0][0].where).toEqual({
+        userId: 'user-1',
+        revokedAt: null,
+        id: { not: 'session-keep' },
+      });
+    });
+
+    it('reports null, not zero, when the write fails', async () => {
+      prisma.session.updateMany.mockRejectedValue(new Error('boom'));
+
+      await expect(repository.revokeAllForUserExcept('user-1', 'session-keep')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
   describe('listLiveForUser', () => {
     it('lists only live sessions, newest first', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));

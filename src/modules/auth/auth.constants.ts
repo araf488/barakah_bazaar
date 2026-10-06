@@ -76,6 +76,36 @@ export const AuthConstants = {
   EmailVerificationResendCooldownSeconds: 60,
   /** How long a consumed or expired verification is kept before the sweeper removes it. */
   EmailVerificationRetentionDays: 30,
+  /**
+   * Status value `POST /auth/forgot-password` answers with. Identical in every non-error case —
+   * known address, unknown address, cooldown, disabled account — or the response becomes an
+   * oracle for which addresses have accounts.
+   */
+  PasswordResetRequestedStatus: 'reset_requested',
+  /** Link-token entropy, in bytes, before base64url encoding. Matches the verification token. */
+  PasswordResetTokenBytes: 32,
+  /**
+   * Ceiling on the submitted `token` of `POST /auth/reset-password`. Same reasoning as
+   * `EmailVerificationTokenMaxLength`: 43 characters is real, 128 bounds an unauthenticated
+   * string before it is hashed.
+   */
+  PasswordResetTokenMaxLength: 128,
+  /** Digits in the emailed reset code. */
+  PasswordResetCodeDigits: 6,
+  /**
+   * Wrong codes tolerated against one reset record before it is dead. The link token has no
+   * cap: 32 random bytes is not guessable, and a cap would let anyone kill a stranger's reset.
+   */
+  PasswordResetMaxAttempts: 5,
+  /**
+   * How long after one reset email another is honoured. Guards the 300-a-day sending quota
+   * against an endpoint that mails an attacker-chosen address.
+   */
+  PasswordResetRequestCooldownSeconds: 60,
+  /** How long a consumed or expired reset is kept before the sweeper removes it. */
+  PasswordResetRetentionDays: 30,
+  /** Path on `APP_PUBLIC_BASE_URL` the reset link opens. Never built from the request. */
+  PasswordResetLinkPath: '/reset-password',
   /** AES-256-GCM: the algorithm TOTP secrets are sealed with at rest. */
   CipherAlgorithm: 'aes-256-gcm',
   CipherIvBytes: 12,
@@ -224,6 +254,13 @@ export const AuthMessages = {
   VerificationInvalid: 'That verification link or code is not valid. Please request a new one.',
   /** The attempt cap was reached against one verification record. */
   VerificationTooManyAttempts: 'Too many incorrect codes. Please request a new verification email.',
+  /**
+   * Unknown, expired, already-used or simply wrong reset credential. One message for all four:
+   * distinguishing them tells whoever holds a credential exactly what they hold.
+   */
+  ResetInvalid: 'That password reset link or code is not valid. Please request a new one.',
+  /** The attempt cap was reached against one reset record. */
+  ResetTooManyAttempts: 'Too many incorrect codes. Please request a new password reset email.',
   /** Wrong password, unknown address, or an unusable refresh token. Deliberately one message. */
   InvalidCredentials: 'Those sign-in details are not correct.',
   /** The account exists and the password was right, but the email is not verified. */

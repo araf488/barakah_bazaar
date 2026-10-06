@@ -93,6 +93,18 @@ describe('validateEnv', () => {
       expect(env.EMAIL_VERIFICATION_TTL_HOURS).toBe(24);
     });
 
+    it('defaults the password reset ttl to one hour, so a fresh clone boots', () => {
+      expect(validateEnv({}).PASSWORD_RESET_TTL_MINUTES).toBe(60);
+    });
+
+    it('rejects a password reset ttl of zero', () => {
+      expect(() => validateEnv({ PASSWORD_RESET_TTL_MINUTES: '0' })).toThrow();
+    });
+
+    it('rejects a password reset ttl longer than a day, since the credential is account takeover', () => {
+      expect(() => validateEnv({ PASSWORD_RESET_TTL_MINUTES: '1441' })).toThrow();
+    });
+
     it('defaults the write rate limit, so writes are bounded without configuration', () => {
       expect(validateEnv({}).WRITE_RATE_LIMIT).toBe(60);
     });

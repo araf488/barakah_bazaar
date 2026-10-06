@@ -201,6 +201,7 @@ model User {
 
   sessions            Session[]
   emailVerifications  EmailVerification[]
+  passwordResets      PasswordReset[]
   recoveryCodes       MfaRecoveryCode[]
   addresses           Address[]
   auditLog            AdminAuditLog[]
@@ -268,6 +269,35 @@ model EmailVerification {
 
   @@index([userId, createdAt])
   @@map("email_verifications")
+}
+
+/// A pending password reset. Both credentials are stored only as SHA-256.
+///
+/// Deliberately its own table rather than a `purpose` column on email_verifications: a shared
+/// table makes every lookup filter on purpose, and the one that forgets turns a 24-hour
+/// verification token into an account-takeover credential. Separate tables make that
+/// structurally impossible. See the password-reset design, §3.2.
+model PasswordReset {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// Lowercased at write time. Where the mail was sent, kept for the audit trail.
+  email      String
+  /// SHA-256 of the 32-byte link token. Unique, so the link path is one indexed lookup.
+  tokenHash  String    @unique @map("token_hash")
+  /// SHA-256 of the 6-digit code. NOT unique — codes collide between users routinely.
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  /// Wrong-code presentations. Capped, because six digits is a million guesses.
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  /// The cooldown read and the code path both look a record up by address, newest first.
+  @@index([email, createdAt])
+  @@map("password_resets")
 }
 
 /// Operational auth knobs, editable without a deploy. Exactly one row.

@@ -17,13 +17,14 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LoginDto, MfaVerifyDto, RefreshDto } from './dto/login.dto';
 import { MfaDisableDto, MfaEnableDto, MfaSetupDto } from './dto/mfa.dto';
+import { ChangePasswordDto, ResetPasswordDto } from './dto/password.dto';
 import { RegisterDto } from './dto/register.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
 import { VerifyEmailDto } from './dto/verification.dto';
-import { LoginService } from './login.service';
-import { MfaService } from './mfa.service';
+import { PasswordDependencies } from './password.dependencies';
 import { RegistrationDependencies } from './registration.dependencies';
 import { SessionService } from './sessions/session.service';
+import { SignInDependencies } from './sign-in.dependencies';
 
 const authenticated: AuthenticatedUser = {
   userId: 'user-1',
@@ -91,6 +92,8 @@ describe('AuthController', () => {
   let registrationService: { register: jest.Mock };
   let emailVerificationService: { verify: jest.Mock; resend: jest.Mock };
   let registrationDependencies: RegistrationDependencies;
+  let passwordResetService: { request: jest.Mock; reset: jest.Mock };
+  let passwordChangeService: { change: jest.Mock };
   let controller: AuthController;
 
   beforeEach(() => {
@@ -115,12 +118,17 @@ describe('AuthController', () => {
       registration: registrationService,
       emailVerification: emailVerificationService,
     } as unknown as RegistrationDependencies;
+    passwordResetService = { request: jest.fn(), reset: jest.fn() };
+    passwordChangeService = { change: jest.fn() };
     controller = new AuthController(
       authService as unknown as AuthService,
-      loginService as unknown as LoginService,
-      mfaService as unknown as MfaService,
+      { login: loginService, mfa: mfaService } as unknown as SignInDependencies,
       sessionService as unknown as SessionService,
       registrationDependencies,
+      {
+        passwordReset: passwordResetService,
+        passwordChange: passwordChangeService,
+      } as unknown as PasswordDependencies,
       createMockLogger(),
     );
   });
@@ -949,6 +957,249 @@ describe('AuthController', () => {
       // is what proves that: the same invalid payload the pipe would reject, run through the
       // class-validator check it delegates to, produces errors and never reaches this handler.
       expect(loginService.login).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('forgotPassword', () => {
+    it('answers the reset-requested body whatever the service found', async () => {
+      passwordResetService.request.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.forgotPassword({ email: 'shopper@example.com' })).resolves.toEqual({
+        status: 'reset_requested',
+      });
+      expect(passwordResetService.request).toHaveBeenCalledWith('shopper@example.com');
+    });
+
+    it('propagates an unexpected failure status from the service', async () => {
+      passwordResetService.request.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: 'Something went wrong on our end. Please try again.',
+      });
+
+      await expect(
+        controller.forgotPassword({ email: 'shopper@example.com' }),
+      ).rejects.toMatchObject({ status: HttpStatus.INTERNAL_SERVER_ERROR });
+    });
+
+    it('is public and joins both auth buckets', () => {
+      const handler = AuthController.prototype.forgotPassword;
+
+      expect(new Reflector().get<boolean>(MetadataKeys.IsPublic, handler)).toBe(true);
+      expect(new Reflector().get<string[]>(MetadataKeys.RateLimitBuckets, handler)).toEqual([
+        'auth-ip',
+        'auth-account',
+      ]);
+    });
+  });
+
+  describe('resetPassword', () => {
+    const byCode: ResetPasswordDto = {
+      email: 'shopper@example.com',
+      code: '481920',
+      newPassword: 'Marbled Kingfisher 41!',
+    };
+
+    it('answers exactly { passwordReset: true } — no token of any kind', async () => {
+      passwordResetService.reset.mockResolvedValue({ ok: true, data: undefined });
+
+      const result = await controller.resetPassword(byCode);
+
+      expect(result).toStrictEqual({ passwordReset: true });
+    });
+
+    it('passes every credential field and the new password through to the service', async () => {
+      passwordResetService.reset.mockResolvedValue({ ok: true, data: undefined });
+
+      await controller.resetPassword(byCode);
+
+      expect(passwordResetService.reset).toHaveBeenCalledWith({
+        token: undefined,
+        email: 'shopper@example.com',
+        code: '481920',
+        newPassword: 'Marbled Kingfisher 41!',
+      });
+    });
+
+    it('propagates the invalid-credential 400 with its message', async () => {
+      passwordResetService.reset.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'That password reset link or code is not valid. Please request a new one.',
+      });
+
+      await expect(controller.resetPassword(byCode)).rejects.toMatchObject({
+        status: HttpStatus.BAD_REQUEST,
+        message: 'That password reset link or code is not valid. Please request a new one.',
+      });
+    });
+
+    it('propagates the attempt-cap 429', async () => {
+      passwordResetService.reset.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.TOO_MANY_REQUESTS,
+        message: 'Too many incorrect codes. Please request a new password reset email.',
+      });
+
+      await expect(controller.resetPassword(byCode)).rejects.toMatchObject({
+        status: HttpStatus.TOO_MANY_REQUESTS,
+      });
+    });
+
+    it('is public and joins both auth buckets', () => {
+      const handler = AuthController.prototype.resetPassword;
+
+      expect(new Reflector().get<boolean>(MetadataKeys.IsPublic, handler)).toBe(true);
+      // AuthAccount, keyed on the submitted email, is one of the three bounds on code brute
+      // force (spec §6.3); AuthIp is the other half of §6.4's pair.
+      expect(new Reflector().get<string[]>(MetadataKeys.RateLimitBuckets, handler)).toEqual([
+        'auth-ip',
+        'auth-account',
+      ]);
+    });
+  });
+
+  describe('changePassword', () => {
+    const dto: ChangePasswordDto = {
+      currentPassword: 'correct horse battery staple',
+      newPassword: 'Marbled Kingfisher 41!',
+    };
+
+    it('passes the caller, their session and both passwords to the service', async () => {
+      passwordChangeService.change.mockResolvedValue({ ok: true, data: undefined });
+
+      await expect(controller.changePassword(dto, authenticated)).resolves.toBeUndefined();
+      expect(passwordChangeService.change).toHaveBeenCalledWith(
+        'user-1',
+        'session-1',
+        'correct horse battery staple',
+        'Marbled Kingfisher 41!',
+      );
+    });
+
+    it('propagates a wrong-current-password 401', async () => {
+      passwordChangeService.change.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+
+      await expect(controller.changePassword(dto, authenticated)).rejects.toMatchObject({
+        status: HttpStatus.UNAUTHORIZED,
+      });
+    });
+
+    it('rejects a request with no verified caller, and never calls the service', async () => {
+      await expect(controller.changePassword(dto, undefined)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(passwordChangeService.change).not.toHaveBeenCalled();
+    });
+
+    it('is not public, and joins the per-IP auth bucket', () => {
+      const handler = AuthController.prototype.changePassword;
+
+      expect(new Reflector().get<boolean>(MetadataKeys.IsPublic, handler)).toBeUndefined();
+      expect(new Reflector().get<string[]>(MetadataKeys.RateLimitBuckets, handler)).toEqual([
+        'auth-ip',
+      ]);
+    });
+  });
+
+  describe('ResetPasswordDto validation', () => {
+    const newPassword = 'Marbled Kingfisher 41!';
+
+    it('accepts a token alone', async () => {
+      await expect(
+        validate(plainToInstance(ResetPasswordDto, { token: 'abc', newPassword })),
+      ).resolves.toEqual([]);
+    });
+
+    it('accepts an email and code', async () => {
+      await expect(
+        validate(
+          plainToInstance(ResetPasswordDto, {
+            email: 'shopper@example.com',
+            code: '481920',
+            newPassword,
+          }),
+        ),
+      ).resolves.toEqual([]);
+    });
+
+    it('rejects both a token and a code', async () => {
+      const errors = await validate(
+        plainToInstance(ResetPasswordDto, { token: 'abc', code: '481920', newPassword }),
+      );
+
+      expect(errors.some((error) => error.constraints?.isExactlyOneOf)).toBe(true);
+    });
+
+    it('rejects neither a token nor a code', async () => {
+      const errors = await validate(plainToInstance(ResetPasswordDto, { newPassword }));
+
+      expect(errors.some((error) => error.constraints?.isExactlyOneOf)).toBe(true);
+    });
+
+    it('rejects a code that is not 6 digits', async () => {
+      const errors = await validate(
+        plainToInstance(ResetPasswordDto, {
+          email: 'shopper@example.com',
+          code: '48192',
+          newPassword,
+        }),
+      );
+
+      expect(errors.map((error) => error.property)).toContain('code');
+    });
+
+    it('rejects a token longer than 128 characters', async () => {
+      const errors = await validate(
+        plainToInstance(ResetPasswordDto, { token: 'a'.repeat(129), newPassword }),
+      );
+
+      expect(errors.map((error) => error.property)).toContain('token');
+    });
+
+    it('rejects a new password under 12 characters', async () => {
+      const errors = await validate(
+        plainToInstance(ResetPasswordDto, { token: 'abc', newPassword: 'Short1!' }),
+      );
+
+      expect(errors.map((error) => error.property)).toContain('newPassword');
+    });
+  });
+
+  describe('ChangePasswordDto validation', () => {
+    it('accepts a current password that a newer policy would refuse', async () => {
+      await expect(
+        validate(
+          plainToInstance(ChangePasswordDto, {
+            currentPassword: 'correct horse battery staple',
+            newPassword: 'Marbled Kingfisher 41!',
+          }),
+        ),
+      ).resolves.toEqual([]);
+    });
+
+    it('reports one error per required field when the payload is empty', async () => {
+      const errors = await validate(plainToInstance(ChangePasswordDto, {}));
+
+      expect(errors.map((error) => error.property).sort((a, b) => a.localeCompare(b))).toEqual([
+        'currentPassword',
+        'newPassword',
+      ]);
+    });
+
+    it('rejects an empty current password', async () => {
+      const errors = await validate(
+        plainToInstance(ChangePasswordDto, {
+          currentPassword: '',
+          newPassword: 'Marbled Kingfisher 41!',
+        }),
+      );
+
+      expect(errors.map((error) => error.property)).toEqual(['currentPassword']);
     });
   });
 });

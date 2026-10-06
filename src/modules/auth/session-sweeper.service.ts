@@ -1,11 +1,12 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AuthConstants } from './auth.constants';
+import { PasswordResetRepository } from './password-reset/password-reset.repository';
 import { SessionRepository } from './sessions/session.repository';
 import { EmailVerificationRepository } from './verification/email-verification.repository';
 
 /**
- * Removes session rows, recovery codes and email verifications that have stopped meaning
+ * Removes session rows, recovery codes, email verifications and password resets that have stopped meaning
  * anything.
  *
  * None of these deletions change what any request is allowed to do — the guard already refuses
@@ -25,6 +26,10 @@ import { EmailVerificationRepository } from './verification/email-verification.r
  * for the same incident-review reason — `EmailVerificationRepository.deleteStale` is what
  * guarantees a live (unconsumed, unexpired) row is never touched by this sweep.
  *
+ * **A finished password reset is kept for `PasswordResetRetentionDays` on the same terms.**
+ * "When was this account's password reset, and from which request" is an incident-review
+ * question too.
+ *
  * Runs on a plain interval rather than through BullMQ or a scheduler package, copying
  * `ReservationSweeper`: the queue is optional and off by default, and this has to work on a
  * bare deployment with no Redis. Two instances sweeping at once is harmless — both issue the
@@ -37,6 +42,7 @@ export class SessionSweeper implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly repository: SessionRepository,
     private readonly verifications: EmailVerificationRepository,
+    private readonly passwordResets: PasswordResetRepository,
     @InjectPinoLogger(SessionSweeper.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -61,25 +67,29 @@ export class SessionSweeper implements OnModuleInit, OnModuleDestroy {
     try {
       const sessions = await this.repository.deleteExpired(new Date());
       const recoveryCodes = await this.repository.deleteRecoveryCodesForDisabledUsers();
-      const verifications = await this.verifications.deleteStale(this.verificationCutoff());
+      const verifications = await this.verifications.deleteStale(
+        SessionSweeper.cutoff(AuthConstants.EmailVerificationRetentionDays),
+      );
+      const passwordResets = await this.passwordResets.deleteStale(
+        SessionSweeper.cutoff(AuthConstants.PasswordResetRetentionDays),
+      );
+      const counts = { sessions, recoveryCodes, verifications, passwordResets };
 
-      if (sessions === null || recoveryCodes === null || verifications === null) {
+      if (Object.values(counts).includes(null)) {
         // A failed delete is not a problem the caller can act on and not one that grows:
         // the next tick tries again against the same rows.
-        this.logger.warn(
-          { sessions, recoveryCodes, verifications },
-          'Session sweep could not complete; will retry',
-        );
+        this.logger.warn(counts, 'Session sweep could not complete; will retry');
       }
 
-      if (sessions || recoveryCodes || verifications) {
+      if (Object.values(counts).some((count) => !!count)) {
         this.logger.info(
           {
             sessions: sessions ?? 0,
             recoveryCodes: recoveryCodes ?? 0,
             verifications: verifications ?? 0,
+            passwordResets: passwordResets ?? 0,
           },
-          'Swept expired sessions, dead recovery codes and finished verifications',
+          'Swept expired sessions, dead recovery codes, finished verifications and resets',
         );
       }
     } catch (error) {
@@ -89,9 +99,9 @@ export class SessionSweeper implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** `now - EmailVerificationRetentionDays`, the cutoff `deleteStale` sweeps below. */
-  private verificationCutoff(): Date {
+  /** `now - retentionDays`, the cutoff a `deleteStale` sweeps below. */
+  private static cutoff(retentionDays: number): Date {
     const millisecondsPerDay = 24 * 60 * 60 * 1000;
-    return new Date(Date.now() - AuthConstants.EmailVerificationRetentionDays * millisecondsPerDay);
+    return new Date(Date.now() - retentionDays * millisecondsPerDay);
   }
 }
