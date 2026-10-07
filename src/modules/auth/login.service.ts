@@ -11,6 +11,7 @@ import { LoginDto } from './dto/login.dto';
 import { ResolvedAuthSettings, AuthSettingsService } from './settings/auth-settings.service';
 import { IssuedSession, SessionService } from './sessions/session.service';
 import { AccessTokenService } from './tokens/access-token.service';
+import { credentialStampOf } from './tokens/credential-stamp';
 
 /** Which portal a role signs into. Every non-customer role is staff, and staff use the admin portal. */
 export type Portal = 'ADMIN' | 'STOREFRONT';
@@ -160,17 +161,28 @@ export class LoginService {
    * Rewrites the stored hash at the current scrypt parameters. Never fatal: the password just
    * verified, so the user is already signing in, and a rehash failure here should not undo
    * that — it is retried on the next successful login.
+   *
+   * The write is conditional on the hash this login verified. A reset or change that wrote a
+   * new hash meanwhile supersedes it, and nothing is written: re-encoding the old password over
+   * the new hash would bring the old password back. The sign-in itself is then refused by the
+   * credential-stamp checks downstream (`SessionService.issue`, the intermediate-token `pca`).
    */
   private async rehashIfNeeded(user: User, plainPassword: string): Promise<void> {
-    if (!user.passwordHash || !this.hasher.needsRehash(user.passwordHash)) {
+    const verifiedHash = user.passwordHash;
+    if (!verifiedHash || !this.hasher.needsRehash(verifiedHash)) {
       return;
     }
 
     try {
       const nextHash = await this.hasher.hash(plainPassword);
-      const updated = await this.repository.updatePasswordHash(user.id, nextHash);
+      const updated = await this.repository.updatePasswordEncoding(user.id, verifiedHash, nextHash);
 
-      if (!updated) {
+      if (updated === false) {
+        this.logger.warn(
+          { userId: user.id },
+          'Password rehash superseded by a newer password; nothing written, continuing',
+        );
+      } else if (updated === null) {
         this.logger.warn({ userId: user.id }, 'Password rehash failed to persist; continuing');
       }
     } catch (error) {
@@ -191,6 +203,7 @@ export class LoginService {
         role: user.role,
         email: user.email ?? '',
         deviceId,
+        credentialStamp: credentialStampOf(user),
       },
       AuthConstants.MfaTokenMinutes,
       type,

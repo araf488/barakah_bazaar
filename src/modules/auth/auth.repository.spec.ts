@@ -32,7 +32,14 @@ const userRow = (overrides: Partial<User> = {}): User => ({
 
 describe('AuthRepository', () => {
   let prisma: {
-    user: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock; create: jest.Mock };
+    user: {
+      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      findFirst: jest.Mock;
+      update: jest.Mock;
+      updateMany: jest.Mock;
+      create: jest.Mock;
+    };
     mfaRecoveryCode: {
       deleteMany: jest.Mock;
       createMany: jest.Mock;
@@ -49,8 +56,10 @@ describe('AuthRepository', () => {
     prisma = {
       user: {
         findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
         findFirst: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(),
         create: jest.fn(),
       },
       mfaRecoveryCode: {
@@ -228,6 +237,62 @@ describe('AuthRepository', () => {
     });
   });
 
+  describe('updatePasswordEncoding', () => {
+    it('re-encodes the hash only while the row still holds the verified one, leaving passwordChangedAt alone', async () => {
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+
+      await repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new');
+
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+        where: { id: 'user-1', passwordHash: 'scrypt$old' },
+        // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+        data: { passwordHash: 'scrypt$new' },
+      });
+    });
+
+    it('reports true when exactly one row was re-encoded', async () => {
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new'),
+      ).resolves.toBe(true);
+    });
+
+    it('reports false — superseded, nothing written — when a newer hash replaced the verified one', async () => {
+      // The row as a concurrent reset left it: a hash other than the one this login verified.
+      const row = { id: 'user-1', passwordHash: 'scrypt$reset' };
+      prisma.user.updateMany.mockImplementation(
+        (args: { where: { id: string; passwordHash?: string } }) => {
+          const matches =
+            args.where.id === row.id &&
+            (args.where.passwordHash === undefined || args.where.passwordHash === row.passwordHash);
+          return Promise.resolve({ count: matches ? 1 : 0 });
+        },
+      );
+
+      await expect(
+        repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new'),
+      ).resolves.toBe(false);
+    });
+
+    it('reports null rather than throwing when the re-encode fails', async () => {
+      prisma.user.updateMany.mockRejectedValue(new Error('connection refused'));
+
+      await expect(
+        repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new'),
+      ).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation', async () => {
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+
+      await repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
   describe('updateEmailVerifiedAt', () => {
     it('stamps emailVerifiedAt', async () => {
       prisma.user.update.mockResolvedValue({ id: 'user-1', emailVerifiedAt: new Date() });
@@ -283,16 +348,46 @@ describe('AuthRepository', () => {
   });
 
   describe('enableTotp', () => {
-    it('deletes old recovery codes, writes the new hashes, and stamps totpEnabledAt', async () => {
-      const user = { id: 'user-1', totpEnabledAt: new Date() };
+    const CHANGED_AT = new Date('2026-10-01T09:00:00.000Z');
+
+    /**
+     * Runs the interactive transaction against the mock itself, and answers `updateMany` from a
+     * one-row table through the predicate the repository actually built — so a write guarded on
+     * a stale `passwordChangedAt` genuinely matches nothing.
+     */
+    const withRow = (row: { id: string; passwordChangedAt: Date | null }): void => {
       prisma.$transaction.mockImplementation(
-        async (operations: unknown[]) => await Promise.all(operations),
+        async (work: (tx: typeof prisma) => Promise<unknown>) => await work(prisma),
+      );
+      prisma.user.updateMany.mockImplementation(
+        (args: { where: { id: string; passwordChangedAt?: Date | null } }) => {
+          const expected = args.where.passwordChangedAt;
+          const stampMatches =
+            expected !== undefined &&
+            (expected?.getTime() ?? null) === (row.passwordChangedAt?.getTime() ?? null);
+          return Promise.resolve({ count: args.where.id === row.id && stampMatches ? 1 : 0 });
+        },
       );
       prisma.mfaRecoveryCode.deleteMany.mockResolvedValue({ count: 0 });
       prisma.mfaRecoveryCode.createMany.mockResolvedValue({ count: 2 });
-      prisma.user.update.mockResolvedValue(user);
+      prisma.user.findUniqueOrThrow.mockResolvedValue({ id: row.id, totpEnabledAt: new Date() });
+    };
 
-      await expect(repository.enableTotp('user-1', 5, ['hash-a', 'hash-b'])).resolves.toEqual(user);
+    it('enables the factor guarded on the checked passwordChangedAt, then replaces the recovery codes', async () => {
+      withRow({ id: 'user-1', passwordChangedAt: CHANGED_AT });
+
+      await expect(
+        repository.enableTotp('user-1', CHANGED_AT, 5, ['hash-a', 'hash-b']),
+      ).resolves.toEqual({ id: 'user-1', totpEnabledAt: expect.any(Date) });
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: 'user-1', passwordChangedAt: CHANGED_AT },
+        data: {
+          totpEnabledAt: expect.any(Date),
+          totpLastUsedStep: 5,
+          totpFailedAttempts: 0,
+          totpLockedUntil: null,
+        },
+      });
       expect(prisma.mfaRecoveryCode.deleteMany).toHaveBeenCalledWith({
         where: { userId: 'user-1' },
       });
@@ -302,33 +397,41 @@ describe('AuthRepository', () => {
           { userId: 'user-1', codeHash: 'hash-b' },
         ],
       });
-      expect(prisma.user.update).toHaveBeenCalledWith({
-        where: { id: 'user-1' },
-        data: {
-          totpEnabledAt: expect.any(Date),
-          totpLastUsedStep: 5,
-          totpFailedAttempts: 0,
-          totpLockedUntil: null,
-        },
+    });
+
+    it('enables an account whose password has never changed, guarding on null', async () => {
+      withRow({ id: 'user-1', passwordChangedAt: null });
+
+      await expect(repository.enableTotp('user-1', null, 5, ['hash-a'])).resolves.toEqual({
+        id: 'user-1',
+        totpEnabledAt: expect.any(Date),
       });
+      expect(prisma.user.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'user-1', passwordChangedAt: null } }),
+      );
+    });
+
+    it('returns undefined and stores no recovery codes when the password changed since the check', async () => {
+      withRow({ id: 'user-1', passwordChangedAt: new Date('2026-10-06T08:00:00.000Z') });
+
+      await expect(
+        repository.enableTotp('user-1', CHANGED_AT, 5, ['hash-a', 'hash-b']),
+      ).resolves.toBeUndefined();
+      expect(prisma.mfaRecoveryCode.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.mfaRecoveryCode.createMany).not.toHaveBeenCalled();
+      expect(prisma.user.findUniqueOrThrow).not.toHaveBeenCalled();
     });
 
     it('returns null when the transaction fails', async () => {
       prisma.$transaction.mockRejectedValue(new Error('connection refused'));
 
-      await expect(repository.enableTotp('user-1', 5, ['hash-a'])).resolves.toBeNull();
+      await expect(repository.enableTotp('user-1', null, 5, ['hash-a'])).resolves.toBeNull();
     });
 
     it('does not bump the session-cache generation — enrolling MFA ends no other session', async () => {
-      const user = { id: 'user-1', totpEnabledAt: new Date() };
-      prisma.$transaction.mockImplementation(
-        async (operations: unknown[]) => await Promise.all(operations),
-      );
-      prisma.mfaRecoveryCode.deleteMany.mockResolvedValue({ count: 0 });
-      prisma.mfaRecoveryCode.createMany.mockResolvedValue({ count: 2 });
-      prisma.user.update.mockResolvedValue(user);
+      withRow({ id: 'user-1', passwordChangedAt: null });
 
-      await repository.enableTotp('user-1', 5, ['hash-a']);
+      await repository.enableTotp('user-1', null, 5, ['hash-a']);
 
       expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
     });

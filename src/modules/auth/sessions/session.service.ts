@@ -127,6 +127,11 @@ export class SessionService {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
 
+      const stale = await this.refuseIfCredentialChanged(user, session.id);
+      if (stale) {
+        return stale;
+      }
+
       await this.recordSignIn(user, session.id, deviceId, userAgent, ip);
 
       const access = await this.signAccessToken(user, session.id, deviceId, settings);
@@ -145,6 +150,43 @@ export class SessionService {
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
+  }
+
+  /**
+   * The credential this sign-in proved must still be the account's credential *after* the
+   * session row exists. A password reset or change landing between the caller's password check
+   * and this insert would otherwise leave a session authenticated by the old password alive —
+   * the very thing the reset was performed to end.
+   *
+   * Re-read after the insert, never before: a reset whose write lands after this read has its
+   * second revoke still to run, and that revoke ends this row. Returns the refusal, or `null`.
+   */
+  private async refuseIfCredentialChanged(
+    snapshot: User,
+    sessionId: string,
+  ): Promise<ServiceResponse<never> | null> {
+    const current = await this.repository.findByIdWithUser(sessionId);
+
+    if (current === null) {
+      await this.repository.revoke(sessionId);
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+
+    if (current === undefined || !SessionService.sameCredential(snapshot, current.user)) {
+      await this.repository.revoke(sessionId);
+      this.logger.warn({ sessionId }, 'Credential changed during sign-in; new session revoked');
+      return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
+    }
+
+    return null;
+  }
+
+  /** Same `passwordChangedAt`, both absent counting as the same. */
+  private static sameCredential(snapshot: User, current: User): boolean {
+    return (
+      (snapshot.passwordChangedAt?.getTime() ?? null) ===
+      (current.passwordChangedAt?.getTime() ?? null)
+    );
   }
 
   /**

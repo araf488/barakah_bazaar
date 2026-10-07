@@ -89,16 +89,9 @@ export class AuthRepository {
   }
 
   /**
-   * Rewrites the stored hash after a successful login at weaker-than-configured parameters.
-   *
-   * The only writer of `passwordHash` in this codebase today — there is no user-initiated
-   * "change password" flow yet, so every call here is an automatic rehash of an unchanged
-   * credential, triggered by `LoginService.rehashIfNeeded` on a successful login. It still
-   * bumps the cache generation: the brief's non-negotiable is "password change", stated as a
-   * field, not as a narrower "user-initiated change password" flow, and a spurious bump here
-   * costs at most one extra database read on the account's other live sessions — cheap insurance
-   * against a future password-change endpoint landing on this same method without anyone
-   * remembering to wire the invalidation in a second place.
+   * Writes a new password hash as a real password change: stamps `passwordChangedAt` and bumps
+   * the session-cache generation. Callers are the password reset and change flows
+   * (`PasswordUpdater`); the login-time rehash uses `updatePasswordEncoding` instead.
    */
   async updatePasswordHash(userId: string, passwordHash: string): Promise<User | null> {
     try {
@@ -115,6 +108,42 @@ export class AuthRepository {
       this.logger.error(
         { err: error, userId },
         'Exception occurred in AuthRepository.updatePasswordHash',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Re-encodes an unchanged credential at new scrypt parameters — the login-time rehash.
+   *
+   * Deliberately not `updatePasswordHash`: that is a password *change*, and it stamps
+   * `passwordChangedAt`, which sign-in compares against the snapshot it authenticated with
+   * (`SessionService.issue`, the intermediate-token `pca` claim). A rehash stamping it would
+   * make a concurrent sign-in of the same account fail as if the password had changed. No
+   * cache bump either: nothing `CachedSessionValue` carries depends on the hash.
+   *
+   * A conditional write, never a blind one: it lands only while the row still holds
+   * `expectedHash`, the hash the caller verified the password against. A reset or change that
+   * wrote a new hash in the meantime makes it match nothing, so the old password is never
+   * written back over the new one. Returns `true` when the re-encode landed, `false` when it was
+   * superseded (nothing written), and `null` on a write fault.
+   */
+  async updatePasswordEncoding(
+    userId: string,
+    expectedHash: string,
+    passwordHash: string,
+  ): Promise<boolean | null> {
+    try {
+      const result = await this.prisma.user.updateMany({
+        where: { id: userId, passwordHash: expectedHash },
+        data: { passwordHash },
+      });
+
+      return result.count === 1;
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId },
+        'Exception occurred in AuthRepository.updatePasswordEncoding',
       );
       return null;
     }
@@ -175,29 +204,45 @@ export class AuthRepository {
    * No cache invalidation, same reasoning as `saveTotpSecret`: enabling MFA does not revoke the
    * caller's other live sessions today, and none of `totpEnabledAt`/`totpLastUsedStep`/
    * `totpFailedAttempts`/`totpLockedUntil` are in `CachedSessionValue`.
+   *
+   * Conditional on `expectedPasswordChangedAt`, the value the caller checked the enrolment
+   * token's credential stamp against. A password reset landing between that check and this
+   * write makes the guarded update match nothing; the transaction then writes nothing at all —
+   * no recovery codes, no `totpEnabledAt` — so an old-password holder cannot enrol a factor
+   * that would lock the real owner out. The guarded update runs first for exactly that reason.
+   *
+   * Returns the enabled user, `undefined` when the credential changed (nothing written), and
+   * `null` on a fault.
    */
   async enableTotp(
     userId: string,
+    expectedPasswordChangedAt: Date | null,
     lastUsedStep: number,
     recoveryCodeHashes: readonly string[],
-  ): Promise<User | null> {
+  ): Promise<User | null | undefined> {
     try {
-      const [, , user] = await this.prisma.$transaction([
-        this.prisma.mfaRecoveryCode.deleteMany({ where: { userId } }),
-        this.prisma.mfaRecoveryCode.createMany({
-          data: recoveryCodeHashes.map((codeHash) => ({ userId, codeHash })),
-        }),
-        this.prisma.user.update({
-          where: { id: userId },
+      return await this.prisma.$transaction(async (tx) => {
+        const enabled = await tx.user.updateMany({
+          where: { id: userId, passwordChangedAt: expectedPasswordChangedAt },
           data: {
             totpEnabledAt: new Date(),
             totpLastUsedStep: lastUsedStep,
             totpFailedAttempts: 0,
             totpLockedUntil: null,
           },
-        }),
-      ]);
-      return user;
+        });
+
+        if (enabled.count !== 1) {
+          return undefined;
+        }
+
+        await tx.mfaRecoveryCode.deleteMany({ where: { userId } });
+        await tx.mfaRecoveryCode.createMany({
+          data: recoveryCodeHashes.map((codeHash) => ({ userId, codeHash })),
+        });
+
+        return await tx.user.findUniqueOrThrow({ where: { id: userId } });
+      });
     } catch (error) {
       this.logger.error({ err: error, userId }, 'Exception occurred in AuthRepository.enableTotp');
       return null;

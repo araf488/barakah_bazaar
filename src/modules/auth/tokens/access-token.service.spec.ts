@@ -54,6 +54,44 @@ describe('AccessTokenService', () => {
     });
   });
 
+  it('round-trips the credential stamp on a token that carries one', async () => {
+    const service = makeService();
+    const token = await service.sign(claims({ credentialStamp: 1_700_000_000_000 }), 5, 'mfa');
+
+    const verified = await service.verify(token, 'device-1', 'mfa');
+
+    expect(decodePayload(token).pca).toBe(1_700_000_000_000);
+    expect(verified).toMatchObject({ ok: true, claims: { credentialStamp: 1_700_000_000_000 } });
+  });
+
+  it('omits it from a token signed without one', async () => {
+    const service = makeService();
+    const token = await service.sign(claims(), 30);
+
+    const verified = await service.verify(token, 'device-1', 'access');
+
+    expect(decodePayload(token)).not.toHaveProperty('pca');
+    expect(verified.ok && verified.claims.credentialStamp).toBeUndefined();
+  });
+
+  it('drops a credential stamp that is not a finite number', async () => {
+    // Signed by the real service — same secret, issuer, audience and device binding — so the
+    // token verifies and only the stamp filter decides what reaches the claims.
+    const service = makeService();
+    const stringStamp = await service.sign(claims({ credentialStamp: '1700000000000' }), 5, 'mfa');
+    const nanStamp = await service.sign(claims({ credentialStamp: Number.NaN }), 5, 'mfa');
+
+    const fromString = await service.verify(stringStamp, 'device-1', 'mfa');
+    const fromNan = await service.verify(nanStamp, 'device-1', 'mfa');
+
+    expect(decodePayload(stringStamp).pca).toBe('1700000000000');
+    expect(decodePayload(nanStamp).pca).toBeNull();
+    expect(fromString.ok).toBe(true);
+    expect(fromNan.ok).toBe(true);
+    expect(fromString.ok && fromString.claims).not.toHaveProperty('credentialStamp');
+    expect(fromNan.ok && fromNan.claims).not.toHaveProperty('credentialStamp');
+  });
+
   it('rejects a token signed with a different secret', async () => {
     const signer = makeService({ JWT_SECRET: 'a'.repeat(32) });
     const verifier = makeService({ JWT_SECRET: 'b'.repeat(32) });

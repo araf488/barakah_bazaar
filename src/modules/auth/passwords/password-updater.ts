@@ -43,16 +43,22 @@ export class PasswordUpdater {
    * out with the password unchanged: annoying, recoverable, and nobody gains anything. A
    * revocation that cannot be confirmed therefore stops everything with 503.
    *
-   * **The second revoke, after the write, closes a race with login.** `LoginService` reads the
-   * hash, spends ~100 ms in scrypt, then inserts a session, and never rechecks. A login that read
-   * the old hash before the write and inserted its session after the first revoke would survive
-   * the change. Revoking again once the write is done kills that session. If the second revoke
-   * fails it is logged and the change still answers ok: the first revoke succeeded and the
-   * password is already written, so refusing now would only invite a retry of a done change.
+   * **The second revoke, after the write, is half of how a racing login is closed.** A login
+   * reads the account, spends ~100 ms in scrypt, then inserts a session. `SessionService.issue`
+   * re-reads the account *after* that insert and refuses (revoking the new row) when
+   * `passwordChangedAt` no longer matches the snapshot the login authenticated against. That
+   * covers a re-read that runs after this write. The second revoke covers the other
+   * interleaving: a re-read that runs *before* this write saw the old stamp and let the session
+   * through, but its insert also preceded the write, so revoking again here ends that row.
+   * Together the two leave no session authenticated by the old password alive.
    *
-   * **Known remaining gap:** a login whose scrypt finishes *after* the second revoke, having read
-   * the old hash before the write, still gets a session. Closing it needs login to refuse a
-   * session for a hash read before `passwordChangedAt`, a tracked follow-up outside this class.
+   * **Do not remove the second revoke.** The post-insert re-read is only sound because it runs
+   * after the insert *and* this revoke runs after the write; without it, a login whose re-read
+   * lands between the first revoke and the write keeps its session.
+   *
+   * If the second revoke fails it is logged and the change still answers ok: the first revoke
+   * succeeded and the password is already written, so refusing now would only invite a retry of
+   * a done change.
    *
    * `keepSessionId` absent revokes every session (a reset). Present, it revokes every other
    * session and keeps that one (a change made from a signed-in device).

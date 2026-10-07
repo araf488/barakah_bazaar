@@ -318,6 +318,95 @@ describe('SessionService', () => {
     });
   });
 
+  describe('issue — the credential has not changed since it was checked', () => {
+    const CHANGED_AT = new Date(NOW);
+
+    it('issues the session when passwordChangedAt still matches the snapshot', async () => {
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ user: makeUser({ passwordChangedAt: null }) }),
+      );
+      expect(
+        (await service.issue(makeUser({ passwordChangedAt: null }), DEVICE, 'jest', IP)).ok,
+      ).toBe(true);
+
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ user: makeUser({ passwordChangedAt: CHANGED_AT }) }),
+      );
+      const response = await service.issue(
+        makeUser({ passwordChangedAt: new Date(NOW) }),
+        DEVICE,
+        'jest',
+        IP,
+      );
+
+      expect(response.ok).toBe(true);
+      expect(repository.revoke).not.toHaveBeenCalled();
+    });
+
+    it('revokes the new session and refuses with the sign-in message when the password changed meanwhile', async () => {
+      const signSpy = jest.spyOn(tokens, 'sign');
+      repository.findByIdWithUser.mockResolvedValue(
+        makeSession({ user: makeUser({ passwordChangedAt: new Date(NOW) }) }),
+      );
+
+      const response = await service.issue(
+        makeUser({ passwordChangedAt: null }),
+        DEVICE,
+        'jest',
+        IP,
+      );
+
+      expect(response).toEqual({
+        ok: false,
+        status: 401,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+      expect(signSpy).not.toHaveBeenCalled();
+      expect(events.recordLogin).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the account vanished between insert and re-read', async () => {
+      const signSpy = jest.spyOn(tokens, 'sign');
+      repository.findByIdWithUser.mockResolvedValue(undefined);
+
+      const response = await service.issue(makeUser(), DEVICE, 'jest', IP);
+
+      expect(response).toEqual({
+        ok: false,
+        status: 401,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+      expect(signSpy).not.toHaveBeenCalled();
+      expect(events.recordLogin).not.toHaveBeenCalled();
+    });
+
+    it('fails closed with 503 when the re-read faults, revoking the new row', async () => {
+      const signSpy = jest.spyOn(tokens, 'sign');
+      repository.findByIdWithUser.mockResolvedValue(null);
+
+      const response = await service.issue(makeUser(), DEVICE, 'jest', IP);
+
+      expect(response).toEqual({
+        ok: false,
+        status: 503,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+      expect(signSpy).not.toHaveBeenCalled();
+      expect(events.recordLogin).not.toHaveBeenCalled();
+    });
+
+    it('re-reads only after the row exists', async () => {
+      await service.issue(makeUser(), DEVICE, 'jest', IP);
+
+      expect(repository.create.mock.invocationCallOrder[0]).toBeLessThan(
+        repository.findByIdWithUser.mock.invocationCallOrder[0],
+      );
+    });
+  });
+
   describe('validate', () => {
     const validated = (response: ServiceResponse<ValidatedSession>): ValidatedSession => {
       if (!response.ok) {

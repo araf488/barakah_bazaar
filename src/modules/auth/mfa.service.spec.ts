@@ -113,6 +113,7 @@ describe('MfaService', () => {
           role: UserRole.CUSTOMER,
           email: 'customer@example.com',
           type: 'mfa',
+          credentialStamp: 0,
         },
       }),
     };
@@ -201,7 +202,45 @@ describe('MfaService', () => {
         expect(result.data.recoveryCodes).toHaveLength(AuthConstants.TotpRecoveryCodeCount);
         expect(new Set(result.data.recoveryCodes).size).toBe(AuthConstants.TotpRecoveryCodeCount);
       }
-      expect(repository.enableTotp).toHaveBeenCalledWith('user-1', 11, expect.any(Array));
+      expect(repository.enableTotp).toHaveBeenCalledWith('user-1', null, 11, expect.any(Array));
+    });
+
+    it('guards the enable on the passwordChangedAt the user was read with', async () => {
+      repository.enableTotp.mockResolvedValue(userRow({ totpEnabledAt: new Date() }));
+      const changedAt = new Date('2026-10-01T09:00:00.000Z');
+
+      await service.enable(userRow({ passwordChangedAt: changedAt }), '123456');
+
+      expect(repository.enableTotp).toHaveBeenCalledWith(
+        'user-1',
+        new Date('2026-10-01T09:00:00.000Z'),
+        11,
+        expect.any(Array),
+      );
+    });
+
+    it('answers 401 with the sign-in message, handing back no codes, when the password changed before the write', async () => {
+      repository.enableTotp.mockResolvedValue(undefined);
+
+      const result = await service.enable(userRow(), '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+    });
+
+    it('answers 503 when the enable write faults', async () => {
+      repository.enableTotp.mockResolvedValue(null);
+
+      const result = await service.enable(userRow(), '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
     });
 
     it('rejects when no secret has been set up', async () => {
@@ -264,6 +303,144 @@ describe('MfaService', () => {
 
       await service.verifyLogin('mfa-token', { code: '123456' }, DEVICE_ID, 'ua', null);
 
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
+    });
+
+    it('refuses a stale credential stamp, issuing no session', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ passwordChangedAt: new Date('2026-05-01T00:00:00.000Z') }),
+      );
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(sessions.issue).not.toHaveBeenCalled();
+      expect(crypto.totp.verify).not.toHaveBeenCalled();
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
+      expect(repository.resetTotpState).not.toHaveBeenCalled();
+      expect(repository.recordTotpFailure).not.toHaveBeenCalled();
+    });
+
+    it('refuses a stale or missing stamp before any second-factor work, for either credential', async () => {
+      const staleUser = userRow({ passwordChangedAt: new Date('2026-05-01T00:00:00.000Z') });
+      const noStamp = {
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'c@example.com',
+          type: 'mfa',
+        },
+      };
+      // A wrong code and a live recovery code: had the second factor run first, the one would
+      // record an MFA failure and the other would burn the code.
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+      repository.findUnusedRecoveryCode.mockResolvedValue({ id: 'code-1' });
+
+      repository.findById.mockResolvedValue(staleUser);
+      const staleCode = await service.verifyLogin('t', { code: '000000' }, DEVICE_ID, null, null);
+      const staleRecovery = await service.verifyLogin(
+        't',
+        { recoveryCode: 'abc123' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+      tokens.verify.mockResolvedValue(noStamp);
+      repository.findById.mockResolvedValue(userRow());
+      const missingCode = await service.verifyLogin('t', { code: '000000' }, DEVICE_ID, null, null);
+      const missingRecovery = await service.verifyLogin(
+        't',
+        { recoveryCode: 'abc123' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      const expected = {
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      };
+      expect([staleCode, staleRecovery, missingCode, missingRecovery]).toEqual([
+        expected,
+        expected,
+        expected,
+        expected,
+      ]);
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
+      expect(crypto.totp.verify).not.toHaveBeenCalled();
+      expect(repository.findUnusedRecoveryCode).not.toHaveBeenCalled();
+      expect(repository.burnRecoveryCode).not.toHaveBeenCalled();
+      expect(repository.recordTotpFailure).not.toHaveBeenCalled();
+      expect(sessions.issue).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the stamp equals the current passwordChangedAt epoch', async () => {
+      const changedAt = new Date('2026-05-01T00:00:00.000Z');
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'c@example.com',
+          type: 'mfa',
+          credentialStamp: changedAt.getTime(),
+        },
+      });
+      repository.findById.mockResolvedValue(userRow({ passwordChangedAt: changedAt }));
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses a token with no credential stamp, as one from before the stamp existed', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'c@example.com',
+          type: 'mfa',
+        },
+      });
+      repository.findById.mockResolvedValue(userRow());
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(sessions.issue).not.toHaveBeenCalled();
+      expect(crypto.totp.verify).not.toHaveBeenCalled();
       expect(events.recordMfaFailed).not.toHaveBeenCalled();
     });
 
@@ -613,6 +790,7 @@ describe('MfaService', () => {
         role: UserRole.OPS,
         email: 'ops@barakahbazaar.com.bd',
         type: 'enrolment',
+        credentialStamp: 0,
       },
     };
 
@@ -652,6 +830,42 @@ describe('MfaService', () => {
       expect(repository.saveTotpSecret).not.toHaveBeenCalled();
     });
 
+    it('refuses a stale or missing credential stamp', async () => {
+      repository.findById.mockResolvedValue(userRow({ passwordChangedAt: new Date(5) }));
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      const stale = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: undefined },
+      });
+      repository.findById.mockResolvedValue(userRow());
+      const missing = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      const expected = {
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      };
+      expect(stale).toEqual(expected);
+      expect(missing).toEqual(expected);
+      expect(repository.saveTotpSecret).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the stamp equals the current passwordChangedAt epoch', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
+      });
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: null, passwordChangedAt: new Date(5) }),
+      );
+      repository.saveTotpSecret.mockResolvedValue(userRow());
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result.ok).toBe(true);
+    });
+
     it('answers 401 for an account that has since been deleted', async () => {
       tokens.verify.mockResolvedValue(enrolmentClaims);
       repository.findById.mockResolvedValue(undefined);
@@ -688,6 +902,7 @@ describe('MfaService', () => {
         role: UserRole.OPS,
         email: 'ops@barakahbazaar.com.bd',
         type: 'enrolment',
+        credentialStamp: 0,
       },
     };
 
@@ -712,6 +927,78 @@ describe('MfaService', () => {
       await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
 
       expect(tokens.verify).toHaveBeenCalledWith('enrol-token', DEVICE_ID, 'enrolment');
+    });
+
+    it('refuses a stale or missing credential stamp without enabling anything', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+      );
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      const stale = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: undefined },
+      });
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      const missing = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      const expected = {
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      };
+      expect(stale).toEqual(expected);
+      expect(missing).toEqual(expected);
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the stamp equals the current passwordChangedAt epoch', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
+      });
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+      );
+      repository.enableTotp.mockResolvedValue(true);
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses, storing nothing, when a reset lands between the stamp check and the enable write', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
+      });
+      // The resolver reads the row before the reset: its stamp matches the token.
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+      );
+      // By the write, the reset has stamped a newer passwordChangedAt on the live row.
+      const live = { passwordChangedAt: new Date(9) };
+      repository.enableTotp.mockImplementation((_userId: string, expected: Date | null) =>
+        Promise.resolve(
+          expected?.getTime() === live.passwordChangedAt.getTime()
+            ? userRow({ totpEnabledAt: new Date() })
+            : undefined,
+        ),
+      );
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(repository.enableTotp).toHaveBeenCalledWith(
+        'user-1',
+        new Date(5),
+        11,
+        expect.any(Array),
+      );
     });
 
     it('refuses a wrong code without enabling anything', async () => {

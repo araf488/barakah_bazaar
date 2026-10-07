@@ -58,7 +58,11 @@ const jwtConfig = {
 };
 
 describe('LoginService', () => {
-  let repository: { findByEmail: jest.Mock; updatePasswordHash: jest.Mock };
+  let repository: {
+    findByEmail: jest.Mock;
+    updatePasswordHash: jest.Mock;
+    updatePasswordEncoding: jest.Mock;
+  };
   let hasher: { verify: jest.Mock; needsRehash: jest.Mock; hash: jest.Mock };
   let settings: { current: jest.Mock };
   let tokens: { sign: jest.Mock };
@@ -85,7 +89,11 @@ describe('LoginService', () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(NOW);
 
-    repository = { findByEmail: jest.fn(), updatePasswordHash: jest.fn() };
+    repository = {
+      findByEmail: jest.fn(),
+      updatePasswordHash: jest.fn(),
+      updatePasswordEncoding: jest.fn().mockResolvedValue(true),
+    };
     hasher = {
       verify: jest.fn().mockResolvedValue(true),
       needsRehash: jest.fn().mockReturnValue(false),
@@ -267,6 +275,58 @@ describe('LoginService', () => {
     );
   });
 
+  it('stamps the mfa token with 0 for an account whose password never changed', async () => {
+    repository.findByEmail.mockResolvedValue(userRow({ totpEnabledAt: new Date() }));
+
+    await service.login(dto, DEVICE_ID, null, null);
+
+    expect(tokens.sign).toHaveBeenCalledWith(
+      expect.objectContaining({ credentialStamp: 0 }),
+      expect.any(Number),
+      'mfa',
+    );
+  });
+
+  it('stamps the mfa token with the passwordChangedAt epoch otherwise', async () => {
+    const changedAt = new Date('2026-03-04T05:06:07.000Z');
+    repository.findByEmail.mockResolvedValue(
+      userRow({ totpEnabledAt: new Date(), passwordChangedAt: changedAt }),
+    );
+
+    await service.login(dto, DEVICE_ID, null, null);
+
+    expect(tokens.sign).toHaveBeenCalledWith(
+      expect.objectContaining({ credentialStamp: changedAt.getTime() }),
+      expect.any(Number),
+      'mfa',
+    );
+  });
+
+  it('stamps the enrolment token with the passwordChangedAt epoch, or 0 when never changed', async () => {
+    const changedAt = new Date('2026-03-04T05:06:07.000Z');
+    settings.current.mockResolvedValue(settingsRow({ staffMfaRequired: true }));
+
+    repository.findByEmail.mockResolvedValue(userRow({ role: UserRole.OPS }));
+    await service.login(dto, DEVICE_ID, null, null);
+    repository.findByEmail.mockResolvedValue(
+      userRow({ role: UserRole.OPS, passwordChangedAt: changedAt }),
+    );
+    await service.login(dto, DEVICE_ID, null, null);
+
+    expect(tokens.sign).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ credentialStamp: 0 }),
+      expect.any(Number),
+      'enrolment',
+    );
+    expect(tokens.sign).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ credentialStamp: changedAt.getTime() }),
+      expect.any(Number),
+      'enrolment',
+    );
+  });
+
   it('returns enrolmentRequired for staff with MFA required and none enrolled', async () => {
     repository.findByEmail.mockResolvedValue(userRow({ role: UserRole.OPS }));
     settings.current.mockResolvedValue(settingsRow({ staffMfaRequired: true }));
@@ -297,17 +357,79 @@ describe('LoginService', () => {
     await service.login(dto, DEVICE_ID, null, null);
 
     expect(hasher.hash).toHaveBeenCalledWith(dto.password);
-    expect(repository.updatePasswordHash).toHaveBeenCalledWith('user-1', 'scrypt$new');
+    expect(repository.updatePasswordEncoding).toHaveBeenCalledWith(
+      'user-1',
+      'scrypt$32768$8$3$c2FsdA==$aGFzaA==',
+      'scrypt$new',
+    );
+  });
+
+  it('guards the rehash on the exact hash the password was verified against', async () => {
+    // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+    repository.findByEmail.mockResolvedValue(userRow({ passwordHash: 'scrypt$weak-params' }));
+    hasher.needsRehash.mockReturnValue(true);
+
+    await service.login(dto, DEVICE_ID, null, null);
+
+    expect(hasher.verify).toHaveBeenCalledWith(dto.password, 'scrypt$weak-params');
+    expect(repository.updatePasswordEncoding).toHaveBeenCalledWith(
+      'user-1',
+      'scrypt$weak-params',
+      'scrypt$new',
+    );
+  });
+
+  it('continues the login, writing nothing else, when a newer password superseded the rehash', async () => {
+    repository.findByEmail.mockResolvedValue(userRow());
+    hasher.needsRehash.mockReturnValue(true);
+    repository.updatePasswordEncoding.mockResolvedValue(false);
+
+    const result = await service.login(dto, DEVICE_ID, null, null);
+
+    expect(result).toMatchObject({ ok: true, data: { kind: 'session' } });
+    expect(repository.updatePasswordEncoding).toHaveBeenCalledTimes(1);
+    expect(repository.updatePasswordHash).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { userId: 'user-1' },
+      'Password rehash superseded by a newer password; nothing written, continuing',
+    );
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Password rehash failed to persist; continuing',
+    );
+  });
+
+  it('logs nothing when the rehash lands', async () => {
+    repository.findByEmail.mockResolvedValue(userRow());
+    hasher.needsRehash.mockReturnValue(true);
+
+    await service.login(dto, DEVICE_ID, null, null);
+
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('rehashes through the encoding write, never the password-change write', async () => {
+    repository.findByEmail.mockResolvedValue(userRow());
+    hasher.needsRehash.mockReturnValue(true);
+
+    await service.login(dto, DEVICE_ID, null, null);
+
+    expect(repository.updatePasswordEncoding).toHaveBeenCalledTimes(1);
+    expect(repository.updatePasswordHash).not.toHaveBeenCalled();
   });
 
   it('does not fail the login when the rehash write fails', async () => {
     repository.findByEmail.mockResolvedValue(userRow());
     hasher.needsRehash.mockReturnValue(true);
-    repository.updatePasswordHash.mockResolvedValue(null);
+    repository.updatePasswordEncoding.mockResolvedValue(null);
 
     const result = await service.login(dto, DEVICE_ID, null, null);
 
     expect(result).toMatchObject({ ok: true, data: { kind: 'session' } });
+    expect(logger.warn).toHaveBeenCalledWith(
+      { userId: 'user-1' },
+      'Password rehash failed to persist; continuing',
+    );
   });
 
   it('does not fail the login when the rehash itself throws', async () => {

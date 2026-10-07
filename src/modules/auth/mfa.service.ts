@@ -13,6 +13,7 @@ import { TotpVerification, TotpService } from './crypto/totp.service';
 import { AuthSettingsService } from './settings/auth-settings.service';
 import { IssuedSession, SessionService } from './sessions/session.service';
 import { AccessTokenService } from './tokens/access-token.service';
+import { credentialStampOf } from './tokens/credential-stamp';
 
 /**
  * The crypto/hashing collaborators `MfaService` needs, bundled into one injected dependency
@@ -115,14 +116,24 @@ export class MfaService {
       }
 
       const codes = MfaService.generateRecoveryCodes();
+      // Conditional on the `passwordChangedAt` this `user` was read with — for the enrolment
+      // path, the value `resolveEnrolmentUser` just checked the token's stamp against. A reset
+      // landing in between makes the write match nothing, and nothing is stored.
       const enabled = await this.repository.enableTotp(
         user.id,
+        user.passwordChangedAt,
         verification.step,
         codes.map((plain) => MfaService.hashRecoveryCode(plain)),
       );
 
-      if (!enabled) {
+      if (enabled === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      if (enabled === undefined) {
+        // Answered exactly like a stale token: a credential that changed mid-enrolment must
+        // look no different from one that was never right.
+        return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
       }
 
       return serviceOk({ recoveryCodes: codes });
@@ -306,6 +317,13 @@ export class MfaService {
       return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
     }
 
+    // The password this intermediate token proved must still be the account's password — a
+    // reset between login and the second factor would otherwise let the old password finish
+    // signing in.
+    if (verified.claims.credentialStamp !== credentialStampOf(user)) {
+      return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
+    }
+
     return serviceOk(user);
   }
 
@@ -332,6 +350,13 @@ export class MfaService {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
     if (user === undefined) {
+      return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
+    }
+
+    // The password this intermediate token proved must still be the account's password — a
+    // reset between login and the second factor would otherwise let the old password finish
+    // signing in.
+    if (verified.claims.credentialStamp !== credentialStampOf(user)) {
       return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
     }
 

@@ -5,6 +5,7 @@ import { PrismaClient, UserRole } from '../src/infra/prisma/prisma-client';
 import { AuthConstants, AuthTokens } from '../src/modules/auth/auth.constants';
 import { SecretCipher } from '../src/modules/auth/crypto/secret-cipher';
 import { AccessTokenService } from '../src/modules/auth/tokens/access-token.service';
+import { PasswordHasher } from '../src/modules/auth/crypto/password-hasher';
 import { TotpService } from '../src/modules/auth/crypto/totp.service';
 import { EmailVerificationService } from '../src/modules/auth/verification/email-verification.service';
 import {
@@ -1703,6 +1704,126 @@ describe('Identity (end to end)', () => {
         'Your password must include an uppercase letter, a lowercase letter, a number and a special character.',
       );
       await expect(loginAs(app, CUSTOMER_EMAIL, PASSWORD, OTHER_DEVICE)).resolves.toBeDefined();
+    });
+  });
+
+  describe('a password change ends sign-ins that proved the old one', () => {
+    const totp = new TotpService();
+
+    /** Enrols TOTP the way the service does, so login sees a genuinely enrolled account. */
+    const enrolTotp = async (userId: string): Promise<string> => {
+      const cipher = new SecretCipher({
+        get: () => process.env.TOTP_ENCRYPTION_KEY,
+      } as never);
+      const secret = totp.generateSecret();
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: { totpSecretEncrypted: cipher.encrypt(secret), totpEnabledAt: new Date() },
+      });
+
+      return secret;
+    };
+
+    it('an MFA sign-in in flight dies when the password is reset, and a fresh one succeeds', async () => {
+      const user = await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+      const secret = await enrolTotp(user.id);
+
+      const started = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: STAFF_EMAIL, password: PASSWORD });
+      expect(started.body.kind).toBe('mfa');
+
+      const alreadySeen = countEmailsTo(emailSender, STAFF_EMAIL);
+      await request(app.getHttpServer()).post(FORGOT_PASSWORD).send({ email: STAFF_EMAIL });
+      const code = extractVerificationCode(
+        (await waitForEmailTo(emailSender, STAFF_EMAIL, alreadySeen)).body,
+      );
+      const reset = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({ email: STAFF_EMAIL, code, newPassword: REGISTRATION_PASSWORD });
+      expect(reset.status).toBe(200);
+
+      // A genuinely valid code for the current step: the token's stamp is what is refused.
+      const stale = await request(app.getHttpServer())
+        .post(LOGIN_MFA)
+        .set('x-device-id', DEVICE)
+        .send({ mfaToken: started.body.mfaToken, code: totp.codeFor(secret) });
+
+      expect(stale.status).toBe(401);
+      expect(stale.body.message).toBe(INVALID_CREDENTIALS);
+      expect(await prisma.session.count()).toBe(0);
+
+      const again = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: STAFF_EMAIL, password: REGISTRATION_PASSWORD });
+      expect(again.body.kind).toBe('mfa');
+
+      const finished = await request(app.getHttpServer())
+        .post(LOGIN_MFA)
+        .set('x-device-id', DEVICE)
+        .send({
+          mfaToken: again.body.mfaToken,
+          // The next step's code, so a step the refused attempt may have touched cannot be
+          // mistaken for a replay; no 30-second sleep needed.
+          code: totp.codeFor(secret, Date.now() + AuthConstants.TotpStepSeconds * 1000),
+        });
+
+      expect(finished.status).toBe(200);
+      expect(finished.body.accessToken).toEqual(expect.any(String));
+      expect(await prisma.session.count()).toBe(1);
+    });
+
+    it('a login that rehashes the password still signs in, leaving passwordChangedAt as it was', async () => {
+      const changedAt = new Date('2026-05-01T00:00:00.000Z');
+      const user = await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      // One cost step below what the app runs at, so this login must rewrite the hash.
+      const weaker = new PasswordHasher({
+        ...SEED_SCRYPT_PARAMETERS,
+        costLog2: SEED_SCRYPT_PARAMETERS.costLog2 - 1,
+      });
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash: await weaker.hash(PASSWORD), passwordChangedAt: changedAt },
+      });
+
+      const signedIn = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE);
+
+      const row = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(row.passwordHash).toMatch(/^scrypt\$4096\$/);
+      expect(row.passwordChangedAt).toEqual(changedAt);
+      // Access tokens never carry the credential stamp — only intermediate tokens do.
+      const [, payload] = signedIn.accessToken.split('.');
+      expect(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))).not.toHaveProperty(
+        'pca',
+      );
+      const me = await request(app.getHttpServer())
+        .get(ME)
+        .set(authHeaders(signedIn.accessToken, DEVICE));
+      expect(me.status).toBe(200);
+    });
+
+    it('a direct sign-in made before a password change does not survive it', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const before = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE);
+      const changer = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, OTHER_DEVICE);
+
+      const changed = await request(app.getHttpServer())
+        .patch(CHANGE_PASSWORD)
+        .set(authHeaders(changer.accessToken, OTHER_DEVICE))
+        .send({ currentPassword: PASSWORD, newPassword: REGISTRATION_PASSWORD });
+      expect(changed.status).toBe(204);
+
+      const me = await request(app.getHttpServer())
+        .get(ME)
+        .set(authHeaders(before.accessToken, DEVICE));
+      expect(me.status).toBe(401);
     });
   });
 });

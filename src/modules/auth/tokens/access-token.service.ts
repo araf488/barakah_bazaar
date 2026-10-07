@@ -15,6 +15,11 @@ export interface AccessTokenClaims {
   readonly role: UserRole;
   readonly email: string;
   readonly type: TokenType;
+  /**
+   * The `passwordChangedAt` epoch (ms, 0 if never changed) an intermediate token authenticated
+   * against. Absent on ordinary access tokens.
+   */
+  readonly credentialStamp?: number;
 }
 
 /**
@@ -89,6 +94,9 @@ export class AccessTokenService {
         role: claims.role,
         email: claims.email,
         bnd: AccessTokenService.bindingFor(claims.deviceId),
+        ...(claims.credentialStamp === undefined
+          ? {}
+          : { [AuthConstants.CredentialStampClaim]: claims.credentialStamp }),
       })
         .setProtectedHeader({ alg: AuthConstants.JwtAlgorithm })
         .setSubject(claims.userId)
@@ -154,6 +162,7 @@ export class AccessTokenService {
           role: payload.role as UserRole,
           email: String(payload.email),
           type: expected,
+          ...AccessTokenService.stampClaim(payload[AuthConstants.CredentialStampClaim]),
         },
       };
     } catch (error) {
@@ -163,6 +172,10 @@ export class AccessTokenService {
       this.logger.debug({ err: error }, 'Access token failed verification');
       return { ok: false };
     }
+  }
+
+  private static stampClaim(value: unknown): { credentialStamp?: number } {
+    return typeof value === 'number' && Number.isFinite(value) ? { credentialStamp: value } : {};
   }
 
   private static bindingMatches(claimed: unknown, deviceId: string): boolean {

@@ -139,6 +139,8 @@ export const AuthConstants = {
   AccessTokenMaxMinutes: 120,
   /** HS256: exactly one service both signs and verifies this application's tokens. */
   JwtAlgorithm: 'HS256',
+  /** Claim an intermediate token carries its `passwordChangedAt` epoch in (credential stamp). */
+  CredentialStampClaim: 'pca',
   /** Seconds of clock drift tolerated either side of `exp`/`iat` on verification. */
   JwtClockToleranceSeconds: 30,
   /** HS256 secret size for the generated fallback signing key, in bytes. */
