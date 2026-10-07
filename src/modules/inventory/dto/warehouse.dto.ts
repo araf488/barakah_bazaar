@@ -155,6 +155,12 @@ export class WarehouseDto {
   @ApiProperty() isActive!: boolean;
 }
 
+/** A hub after a deactivation or reactivation, with the active hub count that resulted. */
+export class WarehouseLifecycleDto extends WarehouseDto {
+  @ApiProperty({ description: 'Active hubs after this change, including this one if active' })
+  activeWarehousesRemaining!: number;
+}
+
 export class WarehouseQueryDto {
   @ApiPropertyOptional({ description: 'Include deactivated hubs' })
   @IsOptional()

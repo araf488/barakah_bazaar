@@ -15,6 +15,7 @@ import {
   CreateWarehouseDto,
   UpdateWarehouseDto,
   WarehouseDto,
+  WarehouseLifecycleDto,
   WarehouseQueryDto,
 } from './dto/warehouse.dto';
 import {
@@ -22,7 +23,15 @@ import {
   InventoryConstants,
   InventoryMessages,
 } from './inventory.constants';
-import { InventoryRepository, WarehouseResult } from './inventory.repository';
+import {
+  DeactivationResult,
+  InventoryRepository,
+  LastColdCapableRefusal,
+  ReactivationResult,
+  StorageEditResult,
+  WarehouseAuditBuilder,
+  WarehouseResult,
+} from './inventory.repository';
 
 /**
  * Warehouses: the places stock sits.
@@ -118,6 +127,21 @@ export class WarehouseService {
         return guard;
       }
 
+      if (dto.storageTypes !== undefined) {
+        return WarehouseService.toStorageEditResponse(
+          await this.repository.updateWarehouseStorage(
+            id,
+            WarehouseService.toUpdateInput(dto),
+            dto.storageTypes,
+            WarehouseService.lifecycleAudit(
+              actor.data,
+              user,
+              InventoryAuditActions.WarehouseUpdated,
+            ),
+          ),
+        );
+      }
+
       const updated = await this.repository.updateWarehouse(
         id,
         WarehouseService.toUpdateInput(dto),
@@ -143,14 +167,16 @@ export class WarehouseService {
   /**
    * Takes a hub out of service.
    *
-   * Refused while it still holds stock: those units would become invisible to every stock
-   * screen while remaining physically on a shelf, which is how inventory quietly stops
-   * matching reality.
+   * Every refusal is decided inside the repository transaction, under the lifecycle lock, so a
+   * concurrent receipt, deactivation or storage edit cannot slip past it. In priority order:
+   * the hub still holds stock (those units would vanish from every stock screen while still on a
+   * shelf), it is the last active hub, or it is the last active hub able to hold CHILLED or
+   * FROZEN goods. Deactivating an already-inactive hub is idempotent and writes nothing.
    */
   async deactivateWarehouse(
     user: AuthenticatedUser,
     id: string,
-  ): Promise<ServiceResponse<WarehouseDto>> {
+  ): Promise<ServiceResponse<WarehouseLifecycleDto>> {
     try {
       const actor = await this.authService.resolveActiveUserId(user);
       if (!actor.ok) {
@@ -162,30 +188,58 @@ export class WarehouseService {
         return WarehouseService.missing(existing);
       }
 
-      const held = await this.repository.countStockInWarehouse(id);
-
-      if (held === null) {
-        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
-      }
-
-      if (held > 0) {
-        return serviceFail(HttpStatus.CONFLICT, InventoryMessages.WarehouseHoldsStock);
-      }
-
-      const updated = await this.repository.updateWarehouse(id, { isActive: false }, (warehouse) =>
-        WarehouseService.auditRow(actor.data, user, {
-          action: InventoryAuditActions.WarehouseDeactivated,
-          entityId: warehouse.id,
-          before: existing,
-          after: warehouse,
-        }),
+      const result = await this.repository.deactivateWarehouse(
+        id,
+        WarehouseService.lifecycleAudit(
+          actor.data,
+          user,
+          InventoryAuditActions.WarehouseDeactivated,
+        ),
       );
 
-      return WarehouseService.written(updated);
+      return WarehouseService.toLifecycleResponse(result);
     } catch (error) {
       this.logger.error(
         { err: error, warehouseId: id },
         'Exception occurred in WarehouseService.deactivateWarehouse',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * Puts a hub back into service. Never refused: more active hubs only loosen the lifecycle
+   * rules. Reactivating an active hub is idempotent and writes nothing.
+   */
+  async reactivateWarehouse(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<ServiceResponse<WarehouseLifecycleDto>> {
+    try {
+      const actor = await this.authService.resolveActiveUserId(user);
+      if (!actor.ok) {
+        return actor;
+      }
+
+      const existing = await this.repository.findWarehouseById(id);
+      if (!existing) {
+        return WarehouseService.missing(existing);
+      }
+
+      const result = await this.repository.reactivateWarehouse(
+        id,
+        WarehouseService.lifecycleAudit(
+          actor.data,
+          user,
+          InventoryAuditActions.WarehouseReactivated,
+        ),
+      );
+
+      return WarehouseService.toLifecycleResponse(result);
+    } catch (error) {
+      this.logger.error(
+        { err: error, warehouseId: id },
+        'Exception occurred in WarehouseService.reactivateWarehouse',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
@@ -316,6 +370,16 @@ export class WarehouseService {
     };
   }
 
+  /** Audit builder for the locked paths: `before` is the row read under the lifecycle lock. */
+  private static lifecycleAudit(
+    actorId: string,
+    user: AuthenticatedUser,
+    action: string,
+  ): WarehouseAuditBuilder {
+    return (before, after) =>
+      WarehouseService.auditRow(actorId, user, { action, entityId: after.id, before, after });
+  }
+
   private static toJson(value: unknown): AuditLogWriteData['before'] {
     if (value === undefined || value === null) {
       return undefined;
@@ -336,7 +400,48 @@ export class WarehouseService {
     return serviceOk(WarehouseService.toDto(result));
   }
 
-  private static missing(result: WarehouseResult): ServiceResponse<WarehouseDto> {
+  private static toLifecycleResponse(
+    result: DeactivationResult | ReactivationResult,
+  ): ServiceResponse<WarehouseLifecycleDto> {
+    if (result === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+
+    switch (result.kind) {
+      case 'holds-stock':
+        return serviceFail(HttpStatus.CONFLICT, InventoryMessages.WarehouseHoldsStock);
+      case 'last-active':
+        return serviceFail(HttpStatus.CONFLICT, InventoryMessages.LastActiveWarehouse);
+      case 'last-cold-capable':
+        return WarehouseService.lastColdCapable(result);
+      default:
+        return serviceOk({
+          ...WarehouseService.toDto(result.warehouse),
+          activeWarehousesRemaining: result.activeRemaining,
+        });
+    }
+  }
+
+  private static toStorageEditResponse(result: StorageEditResult): ServiceResponse<WarehouseDto> {
+    if (result === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+
+    if (result.kind === 'last-cold-capable') {
+      return WarehouseService.lastColdCapable(result);
+    }
+
+    return serviceOk(WarehouseService.toDto(result.warehouse));
+  }
+
+  private static lastColdCapable<T>(refusal: LastColdCapableRefusal): ServiceResponse<T> {
+    return serviceFail(
+      HttpStatus.CONFLICT,
+      formatMessage(InventoryMessages.LastColdCapableWarehouseTemplate, refusal.storageType),
+    );
+  }
+
+  private static missing<T>(result: WarehouseResult): ServiceResponse<T> {
     if (result === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }

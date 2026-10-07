@@ -1,3 +1,5 @@
+import { StorageType } from '../../infra/prisma/prisma-client';
+
 /** Inventory-module constants. Cross-cutting values live in app.constants.ts. */
 export const InventoryConstants = {
   RouteBase: 'admin/inventory',
@@ -11,12 +13,24 @@ export const InventoryConstants = {
   MaxMovementQuantity: 1_000_000,
   /** How far ahead "expiring soon" looks by default. */
   DefaultExpiryHorizonDays: 7,
+  /**
+   * Postgres advisory-lock key serialising hub activation changes. Arbitrary but fixed; it must
+   * never be reused by another lock.
+   */
+  WarehouseLifecycleLockKey: 7_301_001,
+  /**
+   * Storage conditions that need equipment (a chiller or a freezer). Taking the last active hub
+   * that can hold one of these out of service, or editing it out of the hub, is refused: every
+   * product in that condition would become unreceivable.
+   */
+  ColdStorageTypes: [StorageType.CHILLED, StorageType.FROZEN],
 } as const;
 
 export const InventoryAuditActions = {
   WarehouseCreated: 'warehouse.created',
   WarehouseUpdated: 'warehouse.updated',
   WarehouseDeactivated: 'warehouse.deactivated',
+  WarehouseReactivated: 'warehouse.reactivated',
   StockReceived: 'stock.received',
   StockAdjusted: 'stock.adjusted',
 } as const;
@@ -50,6 +64,15 @@ export const InventoryMessages = {
   /** Refusing to deactivate a warehouse that still holds stock. */
   WarehouseHoldsStock:
     'This warehouse still holds stock. Transfer or write it off before deactivating.',
+  /** Refusing to deactivate the only active hub. */
+  LastActiveWarehouse:
+    'This is the only active warehouse. Open or reactivate another hub before taking this one out of service.',
+  /** Refusing to take, or edit out, the last active hub able to hold a cold condition. {0} = storage type. */
+  LastColdCapableWarehouseTemplate:
+    'This is the only active hub that can store {0} items. Open or reactivate another {0}-capable hub first.',
+  /** Refusing a receipt into a hub that is out of service. */
+  WarehouseInactive:
+    'This warehouse is out of service. Reactivate it before receiving stock into it.',
   /** No stock line exists yet for this warehouse and variant. */
   NoStockLine: 'No stock has ever been received for this variant at this warehouse.',
 } as const;

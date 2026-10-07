@@ -34,6 +34,7 @@ import {
   CreateWarehouseDto,
   UpdateWarehouseDto,
   WarehouseDto,
+  WarehouseLifecycleDto,
   WarehouseQueryDto,
 } from './dto/warehouse.dto';
 
@@ -71,6 +72,10 @@ export class InventoryController {
   @ApiOperation({ summary: 'Book a delivery into a warehouse' })
   @ApiResponse({ status: HttpStatus.CREATED, type: StockMovementDto })
   @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Missing or past expiry' })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description: 'The hub cannot store this condition, or is out of service',
+  })
   async receive(
     @CurrentUser() user: AuthenticatedUser | undefined,
     @Body() dto: ReceiveStockDto,
@@ -140,11 +145,12 @@ export class InventoryController {
   }
 
   /**
-   * SUPER_ADMIN only. Opening a hub is a structural decision about where the business
-   * operates — WAREHOUSE staff work the shelves of hubs that already exist.
+   * Opening, editing and retiring hubs belongs to WAREHOUSE as well as SUPER_ADMIN — the
+   * people who run the hubs own their lifecycle. Deactivation refuses a hub holding stock, the
+   * last active hub and the last active cold-capable hub; see
+   * `WarehouseService.deactivateWarehouse`.
    */
   @Post('warehouses')
-  @Roles(UserRole.SUPER_ADMIN)
   @ApiOperation({ summary: 'Open a warehouse' })
   @ApiResponse({ status: HttpStatus.CREATED, type: WarehouseDto })
   @ApiResponse({ status: HttpStatus.CONFLICT, description: 'Code already in use' })
@@ -167,9 +173,13 @@ export class InventoryController {
   }
 
   @Patch('warehouses/:id')
-  @Roles(UserRole.SUPER_ADMIN)
   @ApiOperation({ summary: 'Edit a warehouse' })
   @ApiResponse({ status: HttpStatus.OK, type: WarehouseDto })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description:
+      'Code already in use, or the edit drops CHILLED or FROZEN from the last active hub that holds it',
+  })
   async updateWarehouse(
     @CurrentUser() user: AuthenticatedUser | undefined,
     @Param('id', ParseUUIDPipe) id: string,
@@ -190,14 +200,20 @@ export class InventoryController {
 
   @Patch('warehouses/:id/deactivate')
   @HttpCode(HttpStatus.OK)
-  @Roles(UserRole.SUPER_ADMIN)
-  @ApiOperation({ summary: 'Take a hub out of service' })
-  @ApiResponse({ status: HttpStatus.OK, type: WarehouseDto })
-  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'Still holds stock' })
+  @ApiOperation({
+    summary: 'Take a hub out of service',
+    description: 'Idempotent: an already-inactive hub answers 200 and writes no audit row.',
+  })
+  @ApiResponse({ status: HttpStatus.OK, type: WarehouseLifecycleDto })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description:
+      'Still holds stock, is the last active hub, or is the last active hub able to hold CHILLED or FROZEN goods',
+  })
   async deactivateWarehouse(
     @CurrentUser() user: AuthenticatedUser | undefined,
     @Param('id', ParseUUIDPipe) id: string,
-  ): Promise<WarehouseDto> {
+  ): Promise<WarehouseLifecycleDto> {
     try {
       return unwrapOrThrow(
         await this.warehouseService.deactivateWarehouse(InventoryController.require(user), id),
@@ -206,6 +222,31 @@ export class InventoryController {
       this.logger.error(
         { err: error, warehouseId: id },
         'Exception occurred in InventoryController.deactivateWarehouse',
+      );
+      throw error;
+    }
+  }
+
+  @Patch('warehouses/:id/reactivate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Put a hub back into service',
+    description: 'Idempotent: an already-active hub answers 200 and writes no audit row.',
+  })
+  @ApiResponse({ status: HttpStatus.OK, type: WarehouseLifecycleDto })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'No such hub' })
+  async reactivateWarehouse(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<WarehouseLifecycleDto> {
+    try {
+      return unwrapOrThrow(
+        await this.warehouseService.reactivateWarehouse(InventoryController.require(user), id),
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error, warehouseId: id },
+        'Exception occurred in InventoryController.reactivateWarehouse',
       );
       throw error;
     }

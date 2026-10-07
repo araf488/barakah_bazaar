@@ -62,11 +62,15 @@ describe('InventoryService', () => {
       findPage: jest
         .fn()
         .mockResolvedValue({ items: [stockRow()], total: 1, nextExpiry: new Map() }),
-      receive: jest.fn().mockResolvedValue({ id: 'batch-1', createdAt: new Date() }),
+      receive: jest.fn().mockResolvedValue({
+        kind: 'received',
+        batch: { id: 'batch-1', createdAt: new Date() },
+      }),
       adjust: jest.fn().mockResolvedValue({ quantityOnHand: 17 }),
       listMovements: jest.fn().mockResolvedValue([]),
       findWarehouseById: jest.fn().mockResolvedValue({
         id: 'wh-1',
+        isActive: true,
         storageTypes: [StorageType.AMBIENT, StorageType.CHILLED, StorageType.FROZEN],
       }),
     };
@@ -244,6 +248,49 @@ describe('InventoryService', () => {
       );
     });
 
+    it('refuses a receipt into a hub that is out of service, before writing', async () => {
+      repository.findWarehouseById.mockResolvedValue({
+        id: 'wh-1',
+        isActive: false,
+        storageTypes: [StorageType.AMBIENT],
+      });
+
+      const result = await service.receiveStock(staff, receiveDto());
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This warehouse is out of service. Reactivate it before receiving stock into it.',
+      });
+      expect(repository.receive).not.toHaveBeenCalled();
+    });
+
+    it('answers 409 when the hub went out of service before the locked write', async () => {
+      repository.receive.mockResolvedValue({ kind: 'warehouse-inactive' });
+
+      const result = await service.receiveStock(staff, receiveDto());
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This warehouse is out of service. Reactivate it before receiving stock into it.',
+      });
+    });
+
+    it('answers 503 when the receipt transaction faults', async () => {
+      repository.receive.mockResolvedValue(null);
+
+      const result = await service.receiveStock(staff, receiveDto());
+
+      expect(!result.ok && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('reports the booked batch id', async () => {
+      const result = await service.receiveStock(staff, receiveDto());
+
+      expect(result.ok && result.data.id).toBe('batch-1');
+    });
+
     it('converts unit cost to BigInt poysha', async () => {
       await service.receiveStock(staff, receiveDto({ unitCostPoysha: 90000 }));
 
@@ -419,6 +466,7 @@ describe('InventoryService', () => {
       catalog.findProductById.mockResolvedValue(product({ storageType: StorageType.FROZEN }));
       repository.findWarehouseById.mockResolvedValue({
         id: 'wh-1',
+        isActive: true,
         storageTypes: [StorageType.AMBIENT],
       });
 
@@ -436,6 +484,7 @@ describe('InventoryService', () => {
       catalog.findProductById.mockResolvedValue(product({ storageType: StorageType.FROZEN }));
       repository.findWarehouseById.mockResolvedValue({
         id: 'wh-1',
+        isActive: true,
         storageTypes: [StorageType.AMBIENT, StorageType.FROZEN],
       });
 

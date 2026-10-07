@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { INestApplication } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { Client } from 'pg';
 import request from 'supertest';
 import { PrismaClient, User, UserRole } from '../../src/infra/prisma/prisma-client';
 import { PasswordHasher, ScryptParameters } from '../../src/modules/auth/crypto/password-hasher';
@@ -127,6 +128,58 @@ export const resetDatabase = async (prisma: PrismaClient): Promise<void> => {
       '"public"."admin_audit_log", "public"."staff_invitations", "public"."email_verifications", ' +
       '"public"."password_resets", "public"."users" CASCADE',
   );
+};
+
+/**
+ * Session advisory-lock key that serialises the suites sharing the test database. Arbitrary but
+ * fixed; it must never be reused by another lock, in the suite or in the application.
+ */
+export const DATABASE_SUITE_LOCK_KEY = 7_301_900;
+
+/**
+ * How long a suite waits for another to release the database. Kept below the 120 s `beforeAll`
+ * budget, so the bounded wait always fails first, with its own message.
+ */
+export const DATABASE_SUITE_LOCK_TIMEOUT_SECONDS = 100;
+
+export const DATABASE_SUITE_LOCK_TIMEOUT_MESSAGE =
+  `Timed out after ${DATABASE_SUITE_LOCK_TIMEOUT_SECONDS}s waiting for the database suite lock ` +
+  `(pg_advisory_lock ${DATABASE_SUITE_LOCK_KEY}). Another database suite is still holding it; ` +
+  'check for a hung test run against the test database.';
+
+/** Held for a whole suite; releasing it lets the next database suite start. */
+export interface DatabaseSuiteLock {
+  release(): Promise<void>;
+}
+
+/**
+ * Waits until no other suite is using the test database, then claims it.
+ *
+ * Every suite that touches the database clears it with `resetDatabase` before each test. Jest
+ * runs suites in parallel workers, so two such suites would wipe each other's users, sessions
+ * and audit rows mid-test. Call this first in `beforeAll` and release it in a `finally` in `afterAll`.
+ *
+ * A dedicated connection, not `testPrisma()`: a session-level advisory lock belongs to the one
+ * connection that took it, and a pooled client may answer the unlock on a different one.
+ */
+export const acquireDatabaseSuiteLock = async (): Promise<DatabaseSuiteLock> => {
+  const client = new Client({ connectionString: TEST_DATABASE_URL });
+  await client.connect();
+
+  try {
+    // Bounded, so a stuck holder fails this suite with a clear message instead of the 120 s
+    // beforeAll timeout, which would abandon the wait while it was still queued for the lock.
+    await client.query(`SET lock_timeout = '${DATABASE_SUITE_LOCK_TIMEOUT_SECONDS}s'`);
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [DATABASE_SUITE_LOCK_KEY]);
+  } catch (error) {
+    // Ending the session cancels the queued request, so no orphaned acquisition ever takes the
+    // lock later and blocks the next suite.
+    await client.end();
+    throw new Error(DATABASE_SUITE_LOCK_TIMEOUT_MESSAGE, { cause: error });
+  }
+
+  // Ending the session releases every session-level lock it holds.
+  return { release: () => client.end() };
 };
 
 export interface SeedUserOptions {

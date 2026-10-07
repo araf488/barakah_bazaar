@@ -10,9 +10,11 @@ import { TotpService } from '../src/modules/auth/crypto/totp.service';
 import { EmailVerificationService } from '../src/modules/auth/verification/email-verification.service';
 import {
   DATABASE_UNREACHABLE_MESSAGE,
+  DatabaseSuiteLock,
   RecordingEmailSender,
   SEED_SCRYPT_PARAMETERS,
   TEST_DATABASE_URL,
+  acquireDatabaseSuiteLock,
   applyMigrations,
   authHeaders,
   countEmailsTo,
@@ -109,6 +111,7 @@ const REGISTRATION_PASSWORD = 'Kiwi9!Lagoon$47';
 describe('Identity (end to end)', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
+  let suiteLock: DatabaseSuiteLock | undefined;
   // Registration/verification mail an EMAIL_PROVIDER=noop app never actually sends. This
   // records it instead, so the registration journey below can read the token and code the
   // way a real recipient would — out of the email, since POST /auth/register never echoes
@@ -143,6 +146,8 @@ describe('Identity (end to end)', () => {
       throw new Error(DATABASE_UNREACHABLE_MESSAGE);
     }
 
+    // Other database suites reset the same tables; wait for them to finish.
+    suiteLock = await acquireDatabaseSuiteLock();
     applyMigrations();
     prisma = testPrisma();
 
@@ -161,8 +166,13 @@ describe('Identity (end to end)', () => {
   }, 120_000);
 
   afterAll(async () => {
-    await app?.close();
-    await prisma?.$disconnect();
+    // Released whatever throws above, or the next database suite waits on a dead holder.
+    try {
+      await app?.close();
+      await prisma?.$disconnect();
+    } finally {
+      await suiteLock?.release();
+    }
   });
 
   beforeEach(async () => {

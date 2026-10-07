@@ -95,7 +95,7 @@ export class InventoryService {
         return guard;
       }
 
-      const batch = await this.repository.receive({
+      const receipt = await this.repository.receive({
         warehouseId: dto.warehouseId,
         variantId: dto.variantId,
         quantity: dto.quantity,
@@ -109,10 +109,16 @@ export class InventoryService {
         actorId: actor.data,
       });
 
-      if (batch === null) {
+      if (receipt === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
       }
 
+      // The hub went out of service between the guard above and the locked write.
+      if (receipt.kind === 'warehouse-inactive') {
+        return serviceFail(HttpStatus.CONFLICT, InventoryMessages.WarehouseInactive);
+      }
+
+      const { batch } = receipt;
       return serviceOk({
         id: batch.id,
         delta: dto.quantity,
@@ -258,7 +264,7 @@ export class InventoryService {
   }
 
   /**
-   * Refuses stock a hub cannot hold.
+   * Refuses stock a hub cannot hold, or a hub that is out of service.
    *
    * Enforced at RECEIPT rather than only at checkout, because by checkout the frozen goods are
    * already sitting in a dry room. The delivery rules stop it being sold; this stops it
@@ -279,6 +285,12 @@ export class InventoryService {
         HttpStatus.NOT_FOUND,
         formatMessage(ErrorMessageTemplates.NotFound, InventoryConstants.WarehouseResourceName),
       );
+    }
+
+    // Checked here for a fast, clear answer; `InventoryRepository.receive` re-checks under the
+    // lifecycle lock, which is what actually keeps stock out of an inactive hub.
+    if (!warehouse.isActive) {
+      return serviceFail(HttpStatus.CONFLICT, InventoryMessages.WarehouseInactive);
     }
 
     if (!warehouse.storageTypes.includes(storageType)) {

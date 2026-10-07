@@ -1,6 +1,8 @@
-import { HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { HttpException, HttpStatus, RequestMethod, UnauthorizedException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import { MetadataKeys } from '../../common/constants/app.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { StockMovementReason, UserRole } from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
@@ -42,12 +44,107 @@ describe('InventoryController', () => {
       createWarehouse: jest.fn().mockResolvedValue({ ok: true, data: { id: 'wh-1' } }),
       updateWarehouse: jest.fn().mockResolvedValue({ ok: true, data: { id: 'wh-1' } }),
       deactivateWarehouse: jest.fn().mockResolvedValue({ ok: true, data: { id: 'wh-1' } }),
+      reactivateWarehouse: jest.fn().mockResolvedValue({ ok: true, data: { id: 'wh-1' } }),
     };
     controller = new InventoryController(
       inventoryService as unknown as InventoryService,
       warehouseService as unknown as WarehouseService,
       createMockLogger(),
     );
+  });
+
+  describe('warehouse lifecycle roles', () => {
+    const reflector = new Reflector();
+    const methodRoles = (method: keyof InventoryController) =>
+      reflector.get<string[] | undefined>(
+        MetadataKeys.Roles,
+        InventoryController.prototype[method],
+      );
+
+    it.each([
+      'createWarehouse',
+      'updateWarehouse',
+      'deactivateWarehouse',
+      'reactivateWarehouse',
+    ] as const)('%s carries no method-level Roles metadata', (method) => {
+      expect(methodRoles(method)).toBeUndefined();
+    });
+
+    it('keeps the class-level roles at SUPER_ADMIN and WAREHOUSE', () => {
+      expect(reflector.get(MetadataKeys.Roles, InventoryController)).toEqual([
+        'SUPER_ADMIN',
+        'WAREHOUSE',
+      ]);
+    });
+
+    it('passes the remaining active hub count through on deactivation', async () => {
+      warehouseService.deactivateWarehouse.mockResolvedValue({
+        ok: true,
+        data: { id: 'wh-1', activeWarehousesRemaining: 2 },
+      });
+
+      const result = await controller.deactivateWarehouse(
+        staff,
+        '11111111-1111-1111-1111-111111111111',
+      );
+
+      expect(result).toEqual({ id: 'wh-1', activeWarehousesRemaining: 2 });
+    });
+
+    it('routes PATCH warehouses/:id/reactivate with 200', () => {
+      const handler = InventoryController.prototype.reactivateWarehouse;
+
+      expect(Reflect.getMetadata('path', handler)).toBe('warehouses/:id/reactivate');
+      expect(Reflect.getMetadata('method', handler)).toBe(RequestMethod.PATCH);
+      expect(Reflect.getMetadata('__httpCode__', handler)).toBe(200);
+    });
+
+    it('reactivates for the verified caller and passes the active count through', async () => {
+      warehouseService.reactivateWarehouse.mockResolvedValue({
+        ok: true,
+        data: { id: 'wh-1', isActive: true, activeWarehousesRemaining: 3 },
+      });
+
+      const result = await controller.reactivateWarehouse(staff, 'wh-1');
+
+      expect(result).toEqual({ id: 'wh-1', isActive: true, activeWarehousesRemaining: 3 });
+      expect(warehouseService.reactivateWarehouse).toHaveBeenCalledWith(staff, 'wh-1');
+    });
+
+    it('surfaces a missing hub on reactivation as 404', async () => {
+      warehouseService.reactivateWarehouse.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.NOT_FOUND,
+        message: 'Warehouse was not found.',
+      });
+
+      await expect(controller.reactivateWarehouse(staff, 'wh-9')).rejects.toMatchObject({
+        status: 404,
+        message: 'Warehouse was not found.',
+      });
+    });
+
+    it('refuses a reactivation with no verified caller', async () => {
+      await expect(controller.reactivateWarehouse(undefined, 'wh-1')).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(warehouseService.reactivateWarehouse).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the last cold-capable hub conflict on deactivation', async () => {
+      warehouseService.deactivateWarehouse.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message:
+          'This is the only active hub that can store CHILLED items. Open or reactivate another CHILLED-capable hub first.',
+      });
+
+      await expect(controller.deactivateWarehouse(staff, 'wh-1')).rejects.toMatchObject({
+        status: 409,
+        message:
+          'This is the only active hub that can store CHILLED items. Open or reactivate another CHILLED-capable hub first.',
+      });
+    });
   });
 
   describe('routing', () => {
