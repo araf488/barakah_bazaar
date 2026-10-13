@@ -164,7 +164,7 @@ export class InventoryService {
         return guard;
       }
 
-      const updated = await this.repository.adjust({
+      const adjusted = await this.repository.adjust({
         warehouseId: dto.warehouseId,
         variantId: dto.variantId,
         delta: dto.delta,
@@ -173,8 +173,13 @@ export class InventoryService {
         actorId: actor.data,
       });
 
-      if (updated === null) {
+      if (adjusted === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      // The hub went out of service before the locked write; a positive adjustment is refused.
+      if (adjusted.kind === 'warehouse-inactive') {
+        return serviceFail(HttpStatus.CONFLICT, InventoryMessages.WarehouseInactiveForAdjustment);
       }
 
       const page = await this.repository.findPage(

@@ -965,7 +965,7 @@ describe('SessionService', () => {
       expect(repository.rotate).not.toHaveBeenCalled();
     });
 
-    it('reports 503 when the rotation cannot be written, and hands back no token', async () => {
+    it('reports 503 and hands back no token when rotate fails and the re-read is still current', async () => {
       repository.rotate.mockResolvedValue(null);
 
       expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP)).status).toBe(503);
@@ -1055,6 +1055,94 @@ describe('SessionService', () => {
         results.map((result) => lookup(sha256(issued(result).refreshToken))),
       );
       expect(resolvable.every((session) => session !== undefined)).toBe(true);
+    });
+
+    /**
+     * The race the staggered test above cannot reach: every racer read the row *before* the
+     * winner rotated it, so all of them took the rotate path and all but one lost the
+     * compare-and-swap. A loser re-reads the row and is answered from what it finds there.
+     */
+    describe('a lost rotation race', () => {
+      it('re-reads the row and answers from the grace window when another request rotated first', async () => {
+        repository.findByRefreshHash
+          .mockResolvedValueOnce(makeSession())
+          .mockResolvedValueOnce(rotatedSession(0));
+        repository.rotate.mockResolvedValue(null);
+
+        const session = issued(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP));
+
+        expect(session.refreshToken).toBe(RAW_TOKEN);
+        await expect(tokens.verify(session.accessToken, DEVICE, 'access')).resolves.toMatchObject({
+          ok: true,
+          claims: { sessionId: 'session-1' },
+        });
+        expect(repository.findByRefreshHash).toHaveBeenCalledTimes(2);
+        expect(repository.findByRefreshHash).toHaveBeenLastCalledWith(sha256(RAW_TOKEN));
+        expect(repository.rotate).toHaveBeenCalledTimes(1);
+        expect(repository.revoke).not.toHaveBeenCalled();
+      });
+
+      it('reports 503 without rotating again when the presented token is still the current one', async () => {
+        repository.findByRefreshHash
+          .mockResolvedValueOnce(makeSession())
+          .mockResolvedValueOnce(makeSession());
+        repository.rotate.mockResolvedValue(null);
+
+        expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP)).status).toBe(503);
+        expect(repository.findByRefreshHash).toHaveBeenCalledTimes(2);
+        expect(repository.rotate).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses when the session was revoked after the other request rotated it', async () => {
+        repository.findByRefreshHash
+          .mockResolvedValueOnce(makeSession())
+          .mockResolvedValueOnce({ ...rotatedSession(0), revokedAt: NOW });
+        repository.rotate.mockResolvedValue(null);
+
+        expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP))).toEqual({
+          status: 401,
+          message: 'Those sign-in details are not correct.',
+        });
+        expect(repository.rotate).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses when the re-read finds no row for the presented token', async () => {
+        repository.findByRefreshHash
+          .mockResolvedValueOnce(makeSession())
+          .mockResolvedValueOnce(undefined);
+        repository.rotate.mockResolvedValue(null);
+
+        expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP))).toEqual({
+          status: 401,
+          message: 'Those sign-in details are not correct.',
+        });
+        expect(repository.rotate).toHaveBeenCalledTimes(1);
+      });
+
+      it('revokes and refuses when the re-read shows the token rotated away outside the grace window', async () => {
+        // Default grace is 30 seconds; stamped one second beyond it.
+        repository.findByRefreshHash
+          .mockResolvedValueOnce(makeSession())
+          .mockResolvedValueOnce(rotatedSession(31_000));
+        repository.rotate.mockResolvedValue(null);
+
+        expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP))).toEqual({
+          status: 401,
+          message: 'Those sign-in details are not correct.',
+        });
+        expect(repository.revoke).toHaveBeenCalledWith('session-1');
+        expect(repository.rotate).toHaveBeenCalledTimes(1);
+      });
+
+      it('reports 503 when the re-read faults', async () => {
+        repository.findByRefreshHash
+          .mockResolvedValueOnce(makeSession())
+          .mockResolvedValueOnce(null);
+        repository.rotate.mockResolvedValue(null);
+
+        expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP)).status).toBe(503);
+        expect(repository.findByRefreshHash).toHaveBeenCalledTimes(2);
+      });
     });
   });
 

@@ -62,7 +62,7 @@ advisory lock `WarehouseLifecycleLockKey`, released at commit or rollback:
 | Operation                                             | Lock form                             | Why                                                                                 |
 | ----------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------- |
 | Deactivate, reactivate, edit that sets `storageTypes` | exclusive `pg_advisory_xact_lock`     | They change which hubs are active or what they can hold, so they run one at a time. |
-| Stock receipt                                         | shared `pg_advisory_xact_lock_shared` | Receipts never block each other, but they cannot overlap a deactivation.            |
+| Stock receipt, stock adjustment                       | shared `pg_advisory_xact_lock_shared` | They never block each other, but they cannot overlap a deactivation.                |
 
 So a deactivation either commits first, and the receipt then re-reads `isActive` under its
 shared lock and is refused (`WarehouseInactive`, 409), or it waits for the receipt to commit
@@ -71,6 +71,10 @@ deactivations of the last two hubs both succeed and leave none.
 `test/warehouse-lifecycle.e2e-spec.ts` proves this against a real Postgres. The lock runs
 through `$executeRaw`, not `$queryRaw`, because the pg adapter cannot map the `void` column
 that the lock function returns. Edits that do not set `storageTypes` take no lock.
+
+Positive stock adjustments are refused on an inactive hub (`WarehouseInactiveForAdjustment`,
+409), re-checked under the shared lock; write-offs (negative deltas) are still allowed, as the
+only way to clear stock stranded there.
 
 ### Responses
 

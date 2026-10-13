@@ -1,8 +1,9 @@
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
+import { StockMovementReason } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { AuditLogRepository, AuditLogWriteData } from '../admin/audit-log.repository';
-import { InventoryRepository, ReceiptData } from './inventory.repository';
+import { AdjustmentData, InventoryRepository, ReceiptData } from './inventory.repository';
 
 const warehouse = (overrides: Record<string, unknown> = {}) => ({
   id: 'wh-1',
@@ -20,6 +21,15 @@ const receipt: ReceiptData = {
   expiresAt: null,
   unitCostPoysha: null,
   note: null,
+  actorId: 'user-1',
+};
+
+const adjustment: AdjustmentData = {
+  warehouseId: 'wh-1',
+  variantId: 'var-1',
+  delta: 5,
+  reason: StockMovementReason.ADJUSTMENT,
+  note: 'Recount',
   actorId: 'user-1',
 };
 
@@ -51,8 +61,8 @@ describe('InventoryRepository', () => {
   let tx: {
     $executeRaw: jest.Mock;
     warehouse: { findUniqueOrThrow: jest.Mock; count: jest.Mock; update: jest.Mock };
-    inventory: { aggregate: jest.Mock; upsert: jest.Mock };
-    inventoryBatch: { create: jest.Mock };
+    inventory: { aggregate: jest.Mock; upsert: jest.Mock; update: jest.Mock };
+    inventoryBatch: { create: jest.Mock; findMany: jest.Mock; update: jest.Mock };
     stockMovement: { create: jest.Mock };
   };
   let prisma: { $transaction: jest.Mock };
@@ -73,8 +83,13 @@ describe('InventoryRepository', () => {
       inventory: {
         aggregate: jest.fn().mockResolvedValue({ _sum: { quantityOnHand: null } }),
         upsert: jest.fn().mockResolvedValue({}),
+        update: jest.fn().mockResolvedValue({ quantityOnHand: 15 }),
       },
-      inventoryBatch: { create: jest.fn().mockResolvedValue({ id: 'batch-1' }) },
+      inventoryBatch: {
+        create: jest.fn().mockResolvedValue({ id: 'batch-1' }),
+        findMany: jest.fn().mockResolvedValue([]),
+        update: jest.fn().mockResolvedValue({}),
+      },
       stockMovement: { create: jest.fn().mockResolvedValue({}) },
     };
     prisma = { $transaction: jest.fn((cb: (t: unknown) => unknown) => cb(tx)) };
@@ -483,6 +498,65 @@ describe('InventoryRepository', () => {
       expect(logger.error).toHaveBeenCalledWith(
         { err: expect.any(Error), warehouseId: 'wh-1', variantId: 'var-1' },
         'Exception occurred in InventoryRepository.receive',
+      );
+    });
+  });
+
+  describe('adjust', () => {
+    it('takes the SHARED lifecycle lock as the first call in the transaction', async () => {
+      await repository.adjust(adjustment);
+
+      const { sql, values } = sqlOf(tx.$executeRaw);
+      expect(sql).toContain('pg_advisory_xact_lock_shared');
+      expect(sql).toContain('::bigint');
+      expect(values).toEqual([7301001]);
+      const lock = tx.$executeRaw.mock.invocationCallOrder[0];
+      expect(lock).toBeLessThan(tx.warehouse.findUniqueOrThrow.mock.invocationCallOrder[0]);
+      expect(lock).toBeLessThan(tx.inventory.update.mock.invocationCallOrder[0]);
+    });
+
+    it('refuses a positive adjustment, writing nothing, when the hub is out of service', async () => {
+      tx.warehouse.findUniqueOrThrow.mockResolvedValue({ isActive: false });
+
+      const result = await repository.adjust(adjustment);
+
+      expect(result).toEqual({ kind: 'warehouse-inactive' });
+      expect(tx.warehouse.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'wh-1' },
+        select: { isActive: true },
+      });
+      expect(tx.inventory.update).not.toHaveBeenCalled();
+      expect(tx.stockMovement.create).not.toHaveBeenCalled();
+    });
+
+    it('still writes a write-off into an inactive hub, without reading isActive', async () => {
+      tx.warehouse.findUniqueOrThrow.mockResolvedValue({ isActive: false });
+
+      const result = await repository.adjust({ ...adjustment, delta: -3 });
+
+      expect(result).toEqual({ kind: 'adjusted', inventory: { quantityOnHand: 15 } });
+      expect(tx.warehouse.findUniqueOrThrow).not.toHaveBeenCalled();
+      expect(tx.inventory.update).toHaveBeenCalledTimes(1);
+      expect(tx.stockMovement.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('books a positive adjustment into an active hub', async () => {
+      const result = await repository.adjust(adjustment);
+
+      expect(result).toEqual({ kind: 'adjusted', inventory: { quantityOnHand: 15 } });
+      expect(tx.inventory.update).toHaveBeenCalledTimes(1);
+      expect(tx.stockMovement.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports null on a database fault', async () => {
+      prisma.$transaction.mockRejectedValue(new Error('connection lost'));
+
+      const result = await repository.adjust(adjustment);
+
+      expect(result).toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error), warehouseId: 'wh-1', variantId: 'var-1' },
+        'Exception occurred in InventoryRepository.adjust',
       );
     });
   });

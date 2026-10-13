@@ -63,6 +63,15 @@ export type ReceiptResult =
   | { readonly kind: 'warehouse-inactive' }
   | null;
 
+/**
+ * `null` = the database failed; `warehouse-inactive` = a positive adjustment found the hub out
+ * of service under the lifecycle lock, so nothing was written.
+ */
+export type AdjustmentResult =
+  | { readonly kind: 'adjusted'; readonly inventory: Inventory }
+  | { readonly kind: 'warehouse-inactive' }
+  | null;
+
 const stockInclude = {
   warehouse: { select: { id: true, code: true } },
   variant: {
@@ -521,10 +530,29 @@ export class InventoryRepository {
    * FEFO is not a preference: the oldest stock is the stock about to become unsellable, so
    * taking from anywhere else guarantees waste. A positive adjustment has no batch to belong
    * to — it is a correction of a miscount, not a delivery — so it records none.
+   *
+   * Stock may not land in a hub that is out of service, so a positive adjustment takes the same
+   * SHARED lifecycle lock as `receive` and re-reads `isActive` under it (see `receive`). A
+   * write-off is deliberately NOT refused on an inactive hub: it is the only way to clear stock
+   * stranded there. It still takes the lock — shared locks do not block each other — so every
+   * adjustment orders itself against a deactivation the same way.
    */
-  async adjust(data: AdjustmentData): Promise<Inventory | null> {
+  async adjust(data: AdjustmentData): Promise<AdjustmentResult> {
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      return await this.prisma.$transaction(async (tx): Promise<AdjustmentResult> => {
+        // $executeRaw, not $queryRaw: the lock returns void, which the pg adapter cannot map.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${InventoryConstants.WarehouseLifecycleLockKey}::bigint)`;
+
+        if (data.delta > 0) {
+          const hub = await tx.warehouse.findUniqueOrThrow({
+            where: { id: data.warehouseId },
+            select: { isActive: true },
+          });
+          if (!hub.isActive) {
+            return { kind: 'warehouse-inactive' };
+          }
+        }
+
         // Consumed first, so the movements below can name the batches they came off.
         const takes =
           data.delta < 0
@@ -557,7 +585,7 @@ export class InventoryRepository {
           });
         }
 
-        return updated;
+        return { kind: 'adjusted', inventory: updated };
       });
     } catch (error) {
       this.logger.error(

@@ -42,6 +42,9 @@ describe('Degraded boot (no Supabase, no database)', () => {
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     );
     await app.init();
+    // Listen once: an unlistened server makes supertest listen per request and close the
+    // shared server when the first of a concurrent burst finishes, resetting its siblings.
+    await app.listen(0);
   }, 30_000);
 
   afterAll(async () => {

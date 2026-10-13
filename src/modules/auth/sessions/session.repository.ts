@@ -141,8 +141,8 @@ export class SessionRepository {
    * both reach this point would otherwise both rotate, and the token the loser already
    * returned to the client would be left resolving to nothing. With the condition, exactly
    * one rotation per generation succeeds and the loser writes nothing at all — its caller
-   * hands out no token, and the client's retry finds the hash in the previous slot and is
-   * served from the reuse grace window instead.
+   * re-reads the row, finds the presented hash in the previous slot, and answers the lost
+   * race from the reuse grace window instead.
    *
    * `absoluteExpiresAt` is never touched. It is the ceiling, and a rotation that could raise
    * it would make an endlessly-refreshed session immortal.
@@ -182,7 +182,7 @@ export class SessionRepository {
         // with a stack trace would bury the rotation faults that genuinely need reading.
         this.logger.warn(
           { sessionId: id },
-          'Session rotation matched no live row; no token was issued',
+          'Session rotation matched no live row; nothing rotated',
         );
         return null;
       }

@@ -52,6 +52,18 @@ interface SignedAccess {
 }
 
 /**
+ * What a session row, read by a presented refresh hash, allows: a refusal already decided,
+ * a reissue inside the reuse grace window, or an ordinary rotation.
+ */
+type RefreshDecision =
+  | { readonly kind: 'refuse'; readonly response: ServiceResponse<never> }
+  | {
+      readonly kind: 'grace' | 'rotate';
+      readonly session: SessionWithUser;
+      readonly settings: ResolvedAuthSettings;
+    };
+
+/**
  * Owns the lifecycle of a signed-in device: issue, validate, rotate, revoke.
  *
  * The refresh token is a random 32 bytes, and only its SHA-256 is stored — a database dump
@@ -258,6 +270,10 @@ export class SessionService {
    * Every failure that is not a server fault answers with the same 401 and the same message.
    * "That token was already used" would confirm to whoever holds it that they hold a real
    * one, and tell them exactly how recently it worked.
+   *
+   * A request that loses the rotation race — it read the row before a concurrent refresh of
+   * the same token rotated it — is answered from the grace window, not refused: see
+   * `rotateAndIssue`.
    */
   async refresh(
     rawRefreshToken: string,
@@ -267,50 +283,38 @@ export class SessionService {
   ): Promise<ServiceResponse<IssuedSession>> {
     try {
       const presentedHash = SessionService.hashToken(rawRefreshToken);
-      const session = await this.repository.findByRefreshHash(presentedHash);
+      const decision = await this.decideRefresh(
+        await this.repository.findByRefreshHash(presentedHash),
+        presentedHash,
+        deviceId,
+      );
 
-      if (session === null) {
-        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      if (decision.kind === 'refuse') {
+        return decision.response;
       }
 
-      if (session === undefined) {
-        return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
-      }
-
-      const settings = await this.settings.current();
-      // Confirmed by a positive match on the previous slot, not inferred from "it is not the
-      // current hash". The two are equivalent only while `findByRefreshHash` returns a row
-      // solely when the hash matched one of the two columns; if that method ever becomes a
-      // `findFirst` with an `OR`, inequality would classify a hash matching *neither* column
-      // as a previous-hash reuse and let it into the grace window instead of rejecting it.
-      const rotatedAway = session.previousRefreshTokenHash === presentedHash;
-
-      if (rotatedAway && !SessionService.withinReuseGrace(session, settings)) {
-        await this.repository.revoke(session.id);
-        this.logger.warn(
-          { sessionId: session.id },
-          'Refresh token replay detected, session revoked',
-        );
-        return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
-      }
-
-      const failure = await this.assertUsable(session, deviceId, AuthMessages.InvalidCredentials);
-
-      if (failure) {
-        return failure;
-      }
-
-      if (rotatedAway) {
+      if (decision.kind === 'grace') {
         // Awaited, not returned bare: an unawaited promise rejects *outside* this method's
         // try/catch, so a signing failure here would escape as an unhandled rejection with no
         // `ServiceResponse` and nothing logged.
-        return await this.reissueWithinGrace(session, deviceId, settings, rawRefreshToken);
+        return await this.reissueWithinGrace(
+          decision.session,
+          deviceId,
+          decision.settings,
+          rawRefreshToken,
+        );
       }
 
-      return await this.rotateAndIssue(session, deviceId, settings, presentedHash, {
-        userAgent,
-        ipAddress: ip,
-      });
+      return await this.rotateAndIssue(
+        decision.session,
+        deviceId,
+        decision.settings,
+        rawRefreshToken,
+        {
+          userAgent,
+          ipAddress: ip,
+        },
+      );
     } catch (error) {
       // No session id in this line: resolving the token is the first thing that happens, and
       // a throw before that leaves nothing safe to name. The token itself is never logged.
@@ -881,14 +885,75 @@ export class SessionService {
     });
   }
 
-  /** The ordinary refresh: mint a new token, keep the presented hash as the previous one. */
+  /**
+   * Classifies a row read by a presented refresh hash into what `refresh` does next.
+   *
+   * The one place that decision is made: both the first read in `refresh` and the re-read
+   * after a lost rotation (`answerLostRotation`) come through here, so the two cannot drift.
+   * A previous-generation hash outside the grace window revokes the session here, as a
+   * replay, before the refusal is returned.
+   */
+  private async decideRefresh(
+    session: SessionWithUser | null | undefined,
+    presentedHash: string,
+    deviceId: string,
+  ): Promise<RefreshDecision> {
+    if (session === null) {
+      return {
+        kind: 'refuse',
+        response: serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable),
+      };
+    }
+
+    if (session === undefined) {
+      return {
+        kind: 'refuse',
+        response: serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials),
+      };
+    }
+
+    const settings = await this.settings.current();
+    // Confirmed by a positive match on the previous slot, not inferred from "it is not the
+    // current hash". The two are equivalent only while `findByRefreshHash` returns a row
+    // solely when the hash matched one of the two columns; if that method ever becomes a
+    // `findFirst` with an `OR`, inequality would classify a hash matching *neither* column
+    // as a previous-hash reuse and let it into the grace window instead of rejecting it.
+    const rotatedAway = session.previousRefreshTokenHash === presentedHash;
+
+    if (rotatedAway && !SessionService.withinReuseGrace(session, settings)) {
+      await this.repository.revoke(session.id);
+      this.logger.warn({ sessionId: session.id }, 'Refresh token replay detected, session revoked');
+      return {
+        kind: 'refuse',
+        response: serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials),
+      };
+    }
+
+    const failure = await this.assertUsable(session, deviceId, AuthMessages.InvalidCredentials);
+
+    if (failure) {
+      return { kind: 'refuse', response: failure };
+    }
+
+    return { kind: rotatedAway ? 'grace' : 'rotate', session, settings };
+  }
+
+  /**
+   * The ordinary refresh: mint a new token, keep the presented hash as the previous one.
+   *
+   * A rotation that matches no live row is not answered 503 outright. Concurrent refreshes
+   * of one token can all read the row before any of them rotates it; all take this path, one
+   * wins the compare-and-swap, and the rest lose it. A lost rotation race is answered from
+   * the grace window, after re-reading the row — see `answerLostRotation`.
+   */
   private async rotateAndIssue(
     session: SessionWithUser,
     deviceId: string,
     settings: ResolvedAuthSettings,
-    presentedHash: string,
+    presentedToken: string,
     sighting: SessionSighting,
   ): Promise<ServiceResponse<IssuedSession>> {
+    const presentedHash = SessionService.hashToken(presentedToken);
     const nextRaw = randomBytes(AuthConstants.RefreshTokenBytes).toString('base64url');
     const rotated = await this.repository.rotate(
       session.id,
@@ -899,9 +964,7 @@ export class SessionService {
     );
 
     if (!rotated) {
-      // The old token is still the live one, so the client can retry with it. Handing back a
-      // token whose hash was never stored would have burned the session instead.
-      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      return await this.answerLostRotation(presentedToken, presentedHash, deviceId);
     }
 
     const access = await this.signAccessToken(session.user, session.id, deviceId, settings);
@@ -913,6 +976,49 @@ export class SessionService {
       refreshExpiresAt: rotated.expiresAt,
       user: session.user,
     });
+  }
+
+  /**
+   * Answers a refresh whose rotation matched no live row, from a fresh read of that row.
+   *
+   * The re-read is classified exactly as `refresh` classifies its first read. A presented
+   * hash now in the previous slot means a concurrent refresh won the race, and this request
+   * is that same client — it is served from the grace window. A row now revoked, expired or
+   * otherwise unusable is refused as `refresh` would refuse it. That includes a session
+   * revoked concurrently, whose compare-and-swap failed on `revokedAt` while the presented
+   * hash is still current: it now answers 401 through `assertUsable` rather than 503, which
+   * is deliberate and is exactly what `refresh` would say about that row.
+   *
+   * A presented hash that is *still* current means the rotation failed for a reason other
+   * than a race. The old token is still the live one, so the client can retry with it: 503,
+   * and no second rotation here. Handing back a token whose hash was never stored would have
+   * burned the session instead.
+   */
+  private async answerLostRotation(
+    presentedToken: string,
+    presentedHash: string,
+    deviceId: string,
+  ): Promise<ServiceResponse<IssuedSession>> {
+    const decision = await this.decideRefresh(
+      await this.repository.findByRefreshHash(presentedHash),
+      presentedHash,
+      deviceId,
+    );
+
+    if (decision.kind === 'refuse') {
+      return decision.response;
+    }
+
+    if (decision.kind === 'grace') {
+      return await this.reissueWithinGrace(
+        decision.session,
+        deviceId,
+        decision.settings,
+        presentedToken,
+      );
+    }
+
+    return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
   }
 
   /**

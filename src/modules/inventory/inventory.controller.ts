@@ -98,6 +98,10 @@ export class InventoryController {
     status: HttpStatus.CONFLICT,
     description: 'Would go below zero or eat reserved stock',
   })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description: 'Hub is out of service (positive adjustment)',
+  })
   async adjust(
     @CurrentUser() user: AuthenticatedUser | undefined,
     @Body() dto: AdjustStockDto,

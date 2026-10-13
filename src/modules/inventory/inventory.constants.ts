@@ -73,6 +73,9 @@ export const InventoryMessages = {
   /** Refusing a receipt into a hub that is out of service. */
   WarehouseInactive:
     'This warehouse is out of service. Reactivate it before receiving stock into it.',
+  /** Refusing a positive adjustment into a hub that is out of service. */
+  WarehouseInactiveForAdjustment:
+    'This warehouse is out of service. Reactivate it before adding stock to it.',
   /** No stock line exists yet for this warehouse and variant. */
   NoStockLine: 'No stock has ever been received for this variant at this warehouse.',
 } as const;

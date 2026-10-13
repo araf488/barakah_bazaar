@@ -51,6 +51,7 @@ const WAREHOUSE_EMAIL = 'hub-lead@barakahbazaar.com.bd';
 
 const WAREHOUSES = '/api/v1/admin/inventory/warehouses';
 const RECEIPTS = '/api/v1/admin/inventory/receipts';
+const ADJUSTMENTS = '/api/v1/admin/inventory/adjustments';
 const deactivatePath = (id: string): string => `${WAREHOUSES}/${id}/deactivate`;
 const reactivatePath = (id: string): string => `${WAREHOUSES}/${id}/reactivate`;
 
@@ -58,6 +59,8 @@ const LAST_ACTIVE =
   'This is the only active warehouse. Open or reactivate another hub before taking this one out of service.';
 const WAREHOUSE_INACTIVE =
   'This warehouse is out of service. Reactivate it before receiving stock into it.';
+const WAREHOUSE_INACTIVE_FOR_ADJUSTMENT =
+  'This warehouse is out of service. Reactivate it before adding stock to it.';
 const LAST_CHILLED =
   'This is the only active hub that can store CHILLED items. Open or reactivate another CHILLED-capable hub first.';
 const HOLDS_STOCK =
@@ -189,6 +192,9 @@ describe('Warehouse hub lifecycle (end to end)', () => {
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     );
     await app.init();
+    // Listen once: an unlistened server makes supertest listen per request and close the
+    // shared server when the first of a concurrent burst finishes, resetting its siblings.
+    await app.listen(0);
   }, 120_000);
 
   afterAll(async () => {
@@ -324,6 +330,38 @@ describe('Warehouse hub lifecycle (end to end)', () => {
     expect(response.body.message).toBe(WAREHOUSE_INACTIVE);
     expect(await prisma.inventory.count({ where: { warehouseId: retired.id } })).toBe(0);
     expect(await prisma.inventoryBatch.count({ where: { warehouseId: retired.id } })).toBe(0);
+  });
+
+  it('refuses a positive adjustment into an inactive hub with 409 and leaves the count at 0', async () => {
+    const retiring = await seedHub('DHK-OLD');
+    await seedHub('DHK-SAV');
+    const variant = await seedVariant();
+    const headers = await signInAs(UserRole.WAREHOUSE, WAREHOUSE_EMAIL);
+    const line = { warehouseId: retiring.id, variantId: variant.id };
+    const received = await request(app.getHttpServer())
+      .post(RECEIPTS)
+      .set(headers)
+      .send({ ...line, quantity: 4 });
+    expect(received.status).toBe(201);
+    const writtenOff = await request(app.getHttpServer())
+      .post(ADJUSTMENTS)
+      .set(headers)
+      .send({ ...line, delta: -4, reason: 'DAMAGE', note: 'Written off before closing' });
+    expect(writtenOff.status).toBe(200);
+    const deactivated = await request(app.getHttpServer())
+      .patch(deactivatePath(retiring.id))
+      .set(headers);
+    expect(deactivated.status).toBe(200);
+
+    const response = await request(app.getHttpServer())
+      .post(ADJUSTMENTS)
+      .set(headers)
+      .send({ ...line, delta: 5, reason: 'ADJUSTMENT', note: 'Recount' });
+
+    expect(response.status).toBe(409);
+    expect(response.body.message).toBe(WAREHOUSE_INACTIVE_FOR_ADJUSTMENT);
+    const stored = await prisma.inventory.findFirstOrThrow({ where: { warehouseId: retiring.id } });
+    expect(stored.quantityOnHand).toBe(0);
   });
 
   it('refuses to deactivate a hub that holds stock, checked inside the transaction', async () => {

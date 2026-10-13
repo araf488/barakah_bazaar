@@ -66,7 +66,7 @@ describe('InventoryService', () => {
         kind: 'received',
         batch: { id: 'batch-1', createdAt: new Date() },
       }),
-      adjust: jest.fn().mockResolvedValue({ quantityOnHand: 17 }),
+      adjust: jest.fn().mockResolvedValue({ kind: 'adjusted', inventory: { quantityOnHand: 17 } }),
       listMovements: jest.fn().mockResolvedValue([]),
       findWarehouseById: jest.fn().mockResolvedValue({
         id: 'wh-1',
@@ -341,6 +341,28 @@ describe('InventoryService', () => {
       const result = await service.adjustStock(staff, adjustDto({ delta: 500 }));
 
       expect(result.ok).toBe(true);
+    });
+
+    it('answers 409 when the hub went out of service under the locked write', async () => {
+      repository.adjust.mockResolvedValue({ kind: 'warehouse-inactive' });
+
+      const result = await service.adjustStock(staff, adjustDto({ delta: 5 }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This warehouse is out of service. Reactivate it before adding stock to it.',
+      });
+      expect(repository.findPage).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when the adjustment write faults', async () => {
+      repository.adjust.mockResolvedValue(null);
+
+      const result = await service.adjustStock(staff, adjustDto());
+
+      expect(!result.ok && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(repository.findPage).not.toHaveBeenCalled();
     });
 
     it('answers 404 when no stock line exists yet', async () => {
