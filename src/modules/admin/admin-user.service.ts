@@ -100,8 +100,8 @@ export class AdminUserService {
         AdminUserService.auditRow(actor.data, {
           action: enabled ? AdminAuditActions.CustomerEnabled : AdminAuditActions.CustomerDisabled,
           entityId: row.id,
-          before: target.data,
-          after: row,
+          before: AdminMapper.toAdminUser(target.data),
+          after: AdminMapper.toAdminUser(row),
         }),
       );
 
@@ -159,8 +159,8 @@ export class AdminUserService {
         AdminUserService.auditRow(actor.data, {
           action: AdminAuditActions.StaffRoleChanged,
           entityId: row.id,
-          before: target.data,
-          after: row,
+          before: AdminMapper.toAdminUser(target.data),
+          after: AdminMapper.toAdminUser(row),
         }),
       );
 
@@ -228,6 +228,10 @@ export class AdminUserService {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  /**
+   * Builds the audit row. `before`/`after` must be allowlisted DTOs, never raw `User` rows —
+   * the row carries the password hash and the encrypted TOTP secret.
+   */
   private static auditRow(
     actor: Actor,
     entry: { action: string; entityId: string; before: unknown; after: unknown },

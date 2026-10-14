@@ -51,6 +51,36 @@ describe('AdminUserService', () => {
     return build(target());
   };
 
+  const SECRET_HASH = 'scrypt$secret-hash';
+  const SECRET_TOTP = 'enc.secret.value';
+  const ALLOWLISTED_KEYS = [
+    'createdAt',
+    'email',
+    'fullName',
+    'id',
+    'isActive',
+    'lastSeenAt',
+    'phone',
+    'role',
+  ];
+  const withSecrets = () => target({ passwordHash: SECRET_HASH, totpSecretEncrypted: SECRET_TOTP });
+
+  const expectNoCredentialsInAudit = (mock: jest.Mock) => {
+    const calls = mock.mock.calls as unknown[][];
+    const build = calls[0][calls[0].length - 1] as (row: unknown) => Record<string, unknown>;
+    const audit = build(withSecrets());
+    const serialised = JSON.stringify(audit);
+
+    expect(serialised).not.toContain(SECRET_HASH);
+    expect(serialised).not.toContain(SECRET_TOTP);
+    expect(Object.keys(audit.before as object).sort((a, b) => a.localeCompare(b))).toEqual(
+      ALLOWLISTED_KEYS,
+    );
+    expect(Object.keys(audit.after as object).sort((a, b) => a.localeCompare(b))).toEqual(
+      ALLOWLISTED_KEYS,
+    );
+  };
+
   describe('listUsers', () => {
     it('returns the mapped page including staff-only fields', async () => {
       const result = await service.listUsers(listQuery());
@@ -76,6 +106,14 @@ describe('AdminUserService', () => {
       expect(result.ok).toBe(true);
       expect(repository.updateAudited.mock.calls[0][1]).toEqual({ isActive: false });
       expect(auditOf(repository.updateAudited).action).toBe('customer.disabled');
+    });
+
+    it('keeps credentials out of the audit trail', async () => {
+      repository.findById.mockResolvedValue(withSecrets());
+
+      await service.setAccountEnabled(actor, 'user-2', false);
+
+      expectNoCredentialsInAudit(repository.updateAudited);
     });
 
     it('re-enables and records the opposite action', async () => {
@@ -142,6 +180,14 @@ describe('AdminUserService', () => {
 
       expect(repository.updateAudited.mock.calls[0][1]).toEqual({ role: UserRole.OPS });
       expect(auditOf(repository.updateAudited).action).toBe('staff.role_changed');
+    });
+
+    it('keeps credentials out of the audit trail', async () => {
+      repository.findById.mockResolvedValue(withSecrets());
+
+      await service.changeRole(actor, 'user-2', { role: UserRole.OPS });
+
+      expectNoCredentialsInAudit(repository.updateAudited);
     });
 
     it('changes nothing when the write and its audit row roll back', async () => {
