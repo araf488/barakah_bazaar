@@ -7,6 +7,7 @@ describe('hashInvitationToken', () => {
   });
 
   it('never returns the raw token', () => {
-    expect(hashInvitationToken('abc')).not.toContain('abc');
+    const raw = 'q8Zk3pV0mN7xR2tL5wB9cY1dH4fJ6gS0aE3uI8oP2kQ';
+    expect(hashInvitationToken(raw)).not.toContain(raw);
   });
 });

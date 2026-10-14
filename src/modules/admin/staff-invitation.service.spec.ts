@@ -117,6 +117,25 @@ describe('StaffInvitationService', () => {
       expect(emailed).toContain(`https://admin.example.com/accept-invitation?token=${token}\n`);
     });
 
+    it('emails the role, the link and the validity in days, with no sign-in-and-enter-a-code step', async () => {
+      await service.invite(superAdmin, { email: 'ops@barakahbazaar.com.bd', role: UserRole.OPS });
+
+      const sent = email.send.mock.calls[0][0] as { to: string; subject: string; body: string };
+      const token = extractToken(sent.body);
+
+      expect(sent.to).toBe('ops@barakahbazaar.com.bd');
+      expect(sent.subject).toBe('You have been invited to the Barakah Bazaar backoffice');
+      expect(sent.body).toBe(
+        'You have been invited to join the Barakah Bazaar backoffice as OPS.\n\n' +
+          'Open this link to choose your password and create your account:\n\n' +
+          `  https://admin.example.com/accept-invitation?token=${token}\n\n` +
+          'The invitation is valid for 7 days. If you were not expecting this, ignore it.',
+      );
+      // The removed flow told the invitee to sign in first and type a code.
+      expect(sent.body.toLowerCase()).not.toContain('sign in');
+      expect(sent.body.toLowerCase()).not.toContain('code');
+    });
+
     it('lowercases the address so one email cannot hold two invitations by case', async () => {
       await service.invite(superAdmin, {
         email: 'OPS@BarakahBazaar.com.bd',

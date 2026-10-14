@@ -116,7 +116,8 @@ describe('StaffInvitationController', () => {
     acceptService.accept.mockResolvedValue({
       ok: false,
       status: HttpStatus.CONFLICT,
-      message: 'An account with this email already exists.',
+      message:
+        'An account already exists for this email address. Sign in, and ask an administrator to change your role.',
     });
 
     await expect(acceptController.accept(acceptBody)).rejects.toMatchObject({
@@ -180,8 +181,34 @@ describe('AcceptInvitationDto validation', () => {
     await expect(failedFields({ ...valid, token: 'a'.repeat(129) })).resolves.toContain('token');
   });
 
+  it('rejects a password longer than 128 characters', async () => {
+    await expect(failedFields({ ...valid, password: 'a'.repeat(129) })).resolves.toContain(
+      'password',
+    );
+  });
+
+  it('rejects an empty-string token', async () => {
+    await expect(failedFields({ ...valid, token: '' })).resolves.toContain('token');
+  });
+
+  it('rejects a null token', async () => {
+    await expect(failedFields({ ...valid, token: null })).resolves.toContain('token');
+  });
+
+  it('rejects a null password', async () => {
+    await expect(failedFields({ ...valid, password: null })).resolves.toContain('password');
+  });
+
+  it('rejects a null fullName', async () => {
+    await expect(failedFields({ ...valid, fullName: null })).resolves.toContain('fullName');
+  });
+
   it('reports token, password and fullName for an empty payload', async () => {
     const fields = await failedFields({});
-    expect(fields).toEqual(expect.arrayContaining(['token', 'password', 'fullName']));
+    expect([...fields].sort((a, b) => a.localeCompare(b))).toEqual([
+      'fullName',
+      'password',
+      'token',
+    ]);
   });
 });

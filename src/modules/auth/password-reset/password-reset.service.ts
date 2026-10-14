@@ -157,8 +157,8 @@ export class PasswordResetService {
 
   /**
    * An account that may receive a reset: enabled, and already holding a password. A row with
-   * no password is a pending staff invitation. Setting its first password is the invitation
-   * flow's job, and doing it here would activate an invitation an admin may have revoked.
+   * no password belongs to an account that never set one, such as a future phone-only account
+   * (sub-project 5). A reset must not be the way such an account gains its first password.
    */
   private static mayReset(user: User | undefined): user is User {
     return user !== undefined && user.isActive && user.passwordHash !== null;

@@ -1,7 +1,9 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { PrismaClient, UserRole } from '../src/infra/prisma/prisma-client';
+import { AdminTokens } from '../src/modules/admin/admin.constants';
 import { AuthConstants, AuthTokens } from '../src/modules/auth/auth.constants';
 import { SecretCipher } from '../src/modules/auth/crypto/secret-cipher';
 import { AccessTokenService } from '../src/modules/auth/tokens/access-token.service';
@@ -88,6 +90,8 @@ const INVITATION_ACCOUNT_EXISTS =
   'An account already exists for this email address. Sign in, and ask an administrator to change your role.';
 const INVITATION_NOT_OPEN = 'This invitation is no longer open.';
 const PASSWORD_TOO_COMMON = 'That password is too common. Please choose a different one.';
+const PASSWORD_CONTAINS_IDENTITY = 'Your password must not contain your name or email address.';
+const VALIDATION_FAILED = 'The request contains invalid or missing fields.';
 
 const INVALID_TOKEN = 'Your session is invalid or has expired. Please sign in again.';
 const INVALID_CREDENTIALS = 'Those sign-in details are not correct.';
@@ -164,6 +168,10 @@ describe('Identity (end to end)', () => {
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(AuthTokens.EmailSender)
+      .useValue(emailSender)
+      // The invitation email too, so the invitation journey can read its token out of the link
+      // the way an invitee would. EMAIL_PROVIDER stays noop, so invite still echoes the token.
+      .overrideProvider(AdminTokens.EmailSender)
       .useValue(emailSender)
       .compile();
 
@@ -1986,6 +1994,111 @@ describe('Identity (end to end)', () => {
       expect(
         await prisma.adminAuditLog.count({ where: { action: 'staff.invitation_accepted' } }),
       ).toBe(1);
+    });
+
+    it('the emailed link is built from APP_PUBLIC_BASE_URL and carries the token that accepts', async () => {
+      await invite(await adminHeaders(), INVITEE_EMAIL);
+
+      const { body } = emailSender.latestTo(INVITEE_EMAIL);
+      const base = app.get(ConfigService).get<string>('APP_PUBLIC_BASE_URL');
+      const prefix = `${base}/accept-invitation?token=`;
+      expect(body).toContain(prefix);
+      expect(body).toContain('as OPS');
+      expect(body).toContain('valid for 7 days');
+      const linkToken = body.split(prefix)[1].split('\n')[0];
+      expect(linkToken).toMatch(/^[\w-]{43}$/);
+
+      const response = await accept(linkToken);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toStrictEqual({ accepted: true });
+    });
+
+    it('a token pasted with surrounding whitespace still accepts', async () => {
+      const { token } = await invite(await adminHeaders(), INVITEE_EMAIL);
+
+      const response = await accept(`  ${token}\n`);
+
+      expect(response.status).toBe(200);
+      expect(await prisma.user.count({ where: { email: INVITEE_EMAIL } })).toBe(1);
+    });
+
+    it('the old signed-in shape, a bearer and a token alone, is refused with 400 and changes nothing', async () => {
+      const headers = await adminHeaders();
+      const { id, token } = await invite(headers, INVITEE_EMAIL);
+
+      const response = await request(app.getHttpServer())
+        .post(ACCEPT_INVITATION)
+        .set(headers)
+        .send({ token });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe(VALIDATION_FAILED);
+      const errors = response.body.errors as string[];
+      expect(errors.some((error) => error.startsWith('password '))).toBe(true);
+      expect(errors.some((error) => error.startsWith('fullName '))).toBe(true);
+      expect(await prisma.user.count({ where: { email: INVITEE_EMAIL } })).toBe(0);
+      const invitation = await prisma.staffInvitation.findUniqueOrThrow({ where: { id } });
+      expect(invitation.status).toBe('PENDING');
+    });
+
+    it("a signed-in caller's own address plays no part: the invitation's address gets the account", async () => {
+      // The removed path refused a caller whose address differed from the invitation's.
+      const headers = await adminHeaders();
+      const { token } = await invite(headers, INVITEE_EMAIL);
+
+      const response = await request(app.getHttpServer())
+        .post(ACCEPT_INVITATION)
+        .set(headers)
+        .send({ token, password: REGISTRATION_PASSWORD, fullName: INVITEE_NAME });
+
+      expect(response.status).toBe(200);
+      const created = await prisma.user.findUniqueOrThrow({ where: { email: INVITEE_EMAIL } });
+      expect(created.role).toBe('OPS');
+      const admin = await prisma.user.findUniqueOrThrow({
+        where: { email: 'root@barakahbazaar.com.bd' },
+      });
+      expect(admin.role).toBe('SUPER_ADMIN');
+    });
+
+    it('a password carrying the invited address or the submitted name is refused', async () => {
+      // The caller never sends the address: the policy must be fed the invitation's.
+      const { id, token } = await invite(await adminHeaders(), INVITEE_EMAIL);
+
+      const byAddress = await accept(token, 'Ops-New!Lagoon$47');
+      const byName = await accept(token, 'Rafiq Ahmed!Lagoon9');
+
+      expect(byAddress.status).toBe(400);
+      expect(byAddress.body.message).toBe(PASSWORD_CONTAINS_IDENTITY);
+      expect(byName.status).toBe(400);
+      expect(byName.body.message).toBe(PASSWORD_CONTAINS_IDENTITY);
+      expect(await prisma.user.count({ where: { email: INVITEE_EMAIL } })).toBe(0);
+      const invitation = await prisma.staffInvitation.findUniqueOrThrow({ where: { id } });
+      expect(invitation.status).toBe('PENDING');
+    });
+
+    it('a mixed-case invitation still collides with an account registered in another case', async () => {
+      const { id, token } = await invite(await adminHeaders(), 'Ops-New@BarakahBazaar.com.bd');
+      const registered = await request(app.getHttpServer()).post(REGISTER).send({
+        email: 'OPS-NEW@barakahbazaar.com.bd',
+        password: REGISTRATION_PASSWORD,
+        fullName: 'Early Customer',
+      });
+      expect(registered.status).toBe(202);
+
+      const response = await accept(token);
+
+      expect(response.status).toBe(409);
+      expect(response.body.message).toBe(INVITATION_ACCOUNT_EXISTS);
+      const users = await prisma.user.findMany({
+        where: { email: { equals: INVITEE_EMAIL, mode: 'insensitive' } },
+      });
+      expect(users).toHaveLength(1);
+      expect(users[0].email).toBe(INVITEE_EMAIL);
+      expect(users[0].role).toBe('CUSTOMER');
+      const invitation = await prisma.staffInvitation.findUniqueOrThrow({ where: { id } });
+      expect(invitation.email).toBe(INVITEE_EMAIL);
+      expect(invitation.status).toBe('PENDING');
     });
 
     it('a weak password changes nothing, and the same link then works', async () => {

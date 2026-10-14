@@ -54,6 +54,7 @@ const REFRESH = '/api/v1/auth/refresh';
 const REGISTER = '/api/v1/auth/register';
 const VERIFY_EMAIL = '/api/v1/auth/verify-email';
 const RESEND_VERIFICATION = '/api/v1/auth/resend-verification';
+const ACCEPT_INVITATION = '/api/v1/staff/invitations/accept';
 const GEO_SEARCH = '/api/v1/geo/search';
 const GEO_DIVISIONS = '/api/v1/geo/divisions';
 
@@ -311,6 +312,32 @@ describe('Rate limiting (HTTP)', () => {
 
       expect(statuses.slice(0, AUTH_ACCOUNT_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
       expect(statuses[AUTH_ACCOUNT_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+  });
+
+  describe('the staff invitation accept route', () => {
+    // @Public() and credential-testing: the emailed token is the whole proof, so the only
+    // gate in front of a token-guessing run is the per-IP auth bucket.
+    const postAcceptInvitation = (ip: string = DEFAULT_IP) =>
+      request(app.getHttpServer()).post(ACCEPT_INVITATION).set('X-Forwarded-For', ip).send({
+        token: 'not-a-real-token',
+        password: 'Correct Horse Battery 41!',
+        fullName: 'Rate Limit Test',
+      });
+
+    it('holds accept to the auth-ip limit, below the write baseline', async () => {
+      const statuses = await fire(AUTH_LIMIT + 1, () => postAcceptInvitation());
+
+      expect(statuses.slice(0, AUTH_LIMIT)).not.toContain(HttpStatus.TOO_MANY_REQUESTS);
+      expect(statuses[AUTH_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('counts per IP, so a second caller is not blocked by the first', async () => {
+      await fire(AUTH_LIMIT + 1, () => postAcceptInvitation());
+
+      const other = await postAcceptInvitation('198.51.100.2');
+
+      expect(other.status).not.toBe(HttpStatus.TOO_MANY_REQUESTS);
     });
   });
 
