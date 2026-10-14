@@ -165,6 +165,10 @@ import { EmailVerificationService } from './verification/email-verification.serv
     AccessTokenService,
     SessionService,
     AuthTokens.SessionCache,
+    // The admin module's invitation accept creates accounts with the same hasher and policy
+    // that registration uses.
+    PasswordHasher,
+    PasswordPolicy,
   ],
 })
 export class AuthModule {

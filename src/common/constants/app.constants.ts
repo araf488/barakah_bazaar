@@ -47,6 +47,8 @@ export const PrismaErrorCodes = {
    * did not hold, not that anything is broken.
    */
   RecordNotFound: 'P2025',
+  /** A unique index rejected the write: another row already holds that value. */
+  UniqueConstraint: 'P2002',
 } as const;
 
 /** Shutdown grace period, in milliseconds, for in-flight requests. */

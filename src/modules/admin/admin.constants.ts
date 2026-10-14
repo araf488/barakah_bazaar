@@ -25,17 +25,21 @@ export const AdminConstants = {
   /** Bytes of entropy in the emailed token, before base64url encoding. */
   InvitationTokenBytes: 32,
   MaxInvitationPageSize: 50,
+  /** Longest invitation token accepted on the accept endpoint. */
+  InvitationTokenMaxLength: 128,
+  /** Frontend path the emailed invitation link points at; the token is appended as a query. */
+  InvitationAcceptPath: '/accept-invitation',
   /** Subject line of the staff invitation email. */
   InvitationEmailSubject: 'You have been invited to the Barakah Bazaar backoffice',
   /**
-   * Body of the staff invitation email: role, token, validity in days.
+   * Body of the staff invitation email: role, link, validity in days.
    *
-   * The token is the whole point of the message, so this template is the one place a raw
-   * token is allowed to appear. It must never be logged.
+   * The raw token appears only inside the link ({1}), which makes this template the one place
+   * a raw token is allowed to appear. It must never be logged.
    */
   InvitationEmailTemplate:
     'You have been invited to join the Barakah Bazaar backoffice as {0}.\n\n' +
-    'Sign in with this email address, then enter this invitation code:\n\n  {1}\n\n' +
+    'Open this link to choose your password and create your account:\n\n  {1}\n\n' +
     'The invitation is valid for {2} days. If you were not expecting this, ignore it.',
   MaxUserSearchLength: 120,
   ImageResourceName: 'Product image',
@@ -132,13 +136,13 @@ export const AdminMessages = {
   /** A second invitation while one is still open for the same address. */
   InvitationAlreadyOpen:
     'That email already has an open invitation. Revoke it before sending another.',
+  /** An accept was attempted for an address that already has an account. */
+  InvitationAccountExists:
+    'An account already exists for this email address. Sign in, and ask an administrator to change your role.',
   /** The token did not match any invitation, or matched one no longer usable. */
   InvitationInvalid: 'This invitation link is not valid. Ask for a new one.',
   /** The invitation was valid but its deadline has passed. */
   InvitationExpired: 'This invitation has expired. Ask for a new one.',
-  /** The signed-in account is not the address the invitation was sent to. */
-  InvitationEmailMismatch:
-    'This invitation was sent to a different email address. Sign in as that address to accept it.',
   /** Acting on an invitation that is already accepted or revoked. */
   InvitationNotPending: 'This invitation is no longer open.',
   /** Refusing an action a staff member aimed at their own account. */

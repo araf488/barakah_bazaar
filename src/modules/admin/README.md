@@ -41,24 +41,24 @@ one. The raw value exists once, in the email. While `EMAIL_PROVIDER=noop` the cr
 echoes it so the flow can be completed without a mailbox; with a real provider that field is
 null.
 
-**Possession of the token is not sufficient.** Acceptance also requires the signed-in
-account's email to match the invitation's, case-insensitively. Without that check a forwarded
-invitation email would let the wrong person take the role.
+`POST /staff/invitations/accept` is **public**: the invitee has no account yet, so the emailed
+token is the credential, and the route sits in the per-IP auth throttle bucket. It carries no
+`@Roles`, and lives on its own controller because the class-level `@Roles(SUPER_ADMIN)` on the
+management controller would otherwise apply. The account is created on accept, with a verified
+email (the invitation link proved the address) and the invited role. **No session is returned**:
+staff accounts require a second factor, so the invitee signs in afterwards and enrols MFA. An
+address that already has an account gets a 409; the admin role-change endpoint is the path for
+that case.
 
 An unknown token and a revoked one return the **same** 404, so the endpoint cannot be used to
 discover which tokens exist. An expired one returns 410, which is safe to distinguish because
 the caller already proved possession.
 
-`POST /staff/invitations/accept` carries **no `@Roles`**, and must not: the invitee has no
-staff role yet — granting them one is the point. It lives on its own controller for exactly
-that reason, since a class-level `@Roles(SUPER_ADMIN)` would make it unreachable by the people
-it exists for. It is still authenticated.
-
-Granting closes the invitation and writes the invitee's role in **one transaction**
-(`StaffInvitationRepository.acceptAudited`). The two must not be able to disagree: the column
-is the only place the grant exists, so a closed invitation whose role never landed would spend
-the token and give the invitee nothing. A failure therefore grants nothing and leaves the
-invitation open, and the caller can retry.
+Accepting closes the invitation and creates the account in **one transaction**
+(`StaffInvitationRepository.acceptCreatingAccount`). The two must not be able to disagree: a
+closed invitation whose account never landed would spend the token and give the invitee
+nothing. A failure therefore creates nothing and leaves the invitation open, and the caller can
+retry. A weak password is refused before anything is written, so the same link works again.
 
 Two invitations racing to accept the same token cannot both win: the `UPDATE` filters on
 `status = PENDING`, so the loser writes nothing, grants nothing, and gets a conflict rather

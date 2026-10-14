@@ -13,14 +13,19 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { ThrottleBuckets } from '../../config/throttler.config';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { UserRole } from '../../infra/prisma/prisma-client';
 import { AdminConstants } from './admin.constants';
+import { StaffInvitationAcceptService } from './staff-invitation-accept.service';
 import { StaffInvitationService } from './staff-invitation.service';
 import {
   AcceptInvitationDto,
+  InvitationAcceptedDto,
   InvitationCreatedDto,
   InvitationListDto,
   InvitationQueryDto,
@@ -101,37 +106,39 @@ export class StaffInvitationController {
 /**
  * Taking up an invitation.
  *
- * A separate controller because it carries **no `@Roles`**, and it must not: the invitee has
- * no staff role yet — granting them one is the entire point. Folding this route into the
- * `SUPER_ADMIN`-guarded controller above would make it unreachable by exactly the people it
- * exists for.
+ * **Public**, because the invitee has no account yet and so nothing to sign in with: the emailed
+ * token is the credential. It carries no `@Roles` for the same reason, and it joins the per-IP
+ * auth throttle bucket since it is an unauthenticated token-guessing surface.
  *
- * It is still authenticated. The caller must already be signed in as the invited address, and
- * the service refuses when the signed-in email does not match the invitation.
+ * The account is created here with a verified email. **No session is returned**: staff accounts
+ * require a second factor, so the invitee signs in afterwards and enrols MFA. An address that
+ * already has an account gets a 409, and the admin role-change endpoint is the path for it.
  */
 @ApiTags('Admin')
-@ApiBearerAuth()
 @Controller('staff/invitations')
 export class StaffInvitationAcceptController {
   constructor(
-    private readonly invitations: StaffInvitationService,
+    private readonly invitations: StaffInvitationAcceptService,
     @InjectPinoLogger(StaffInvitationAcceptController.name) private readonly logger: PinoLogger,
   ) {}
 
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp)
   @Post('accept')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Accept a staff invitation as the signed-in account' })
-  @ApiResponse({ status: HttpStatus.OK, type: StaffInvitationDto })
-  async accept(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: AcceptInvitationDto,
-  ): Promise<StaffInvitationDto> {
+  @ApiOperation({ summary: 'Accept a staff invitation by creating the account it offers' })
+  @ApiResponse({ status: HttpStatus.OK, type: InvitationAcceptedDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid payload or weak password' })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Invalid link' })
+  @ApiResponse({ status: HttpStatus.GONE, description: 'Expired' })
+  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'Account exists, or already accepted' })
+  async accept(@Body() dto: AcceptInvitationDto): Promise<InvitationAcceptedDto> {
     try {
-      return unwrapOrThrow(await this.invitations.accept(user, dto));
+      return unwrapOrThrow(await this.invitations.accept(dto));
     } catch (error) {
       // The token is deliberately absent from this log line: it is a live credential.
       this.logger.error(
-        { err: error, userId: user.userId },
+        { err: error },
         'Exception occurred in StaffInvitationAcceptController.accept',
       );
       throw error;

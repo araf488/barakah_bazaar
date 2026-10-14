@@ -19,6 +19,7 @@ import {
   StaffInvitationAcceptController,
   StaffInvitationController,
 } from './staff-invitation.controller';
+import { StaffInvitationAcceptService } from './staff-invitation-accept.service';
 import { StaffInvitationRepository } from './staff-invitation.repository';
 import { StaffInvitationService } from './staff-invitation.service';
 
@@ -51,6 +52,7 @@ import { StaffInvitationService } from './staff-invitation.service';
     AdminUserService,
     AdminUserRepository,
     StaffInvitationService,
+    StaffInvitationAcceptService,
     StaffInvitationRepository,
     {
       provide: AdminTokens.EmailSender,

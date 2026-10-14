@@ -1,8 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEmail, IsEnum, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import {
+  IsEmail,
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { StaffInvitationStatus, UserRole } from '../../../infra/prisma/prisma-client';
 import { TrimString } from '../../../common/dto/trim.decorator';
+import { AuthConstants } from '../../auth/auth.constants';
 import { AdminConstants } from '../admin.constants';
 
 export class InviteStaffDto {
@@ -18,11 +29,34 @@ export class InviteStaffDto {
 }
 
 export class AcceptInvitationDto {
-  @ApiProperty({ description: 'The token from the invitation email.' })
+  @ApiProperty({ description: 'The token from the invitation link.' })
   @TrimString()
   @IsString()
-  @MaxLength(200)
+  @IsNotEmpty()
+  @MaxLength(AdminConstants.InvitationTokenMaxLength)
   token!: string;
+
+  @ApiProperty({
+    minLength: AuthConstants.PasswordMinLength,
+    maxLength: AuthConstants.PasswordMaxLength,
+  })
+  @IsString()
+  @MinLength(AuthConstants.PasswordMinLength)
+  @MaxLength(AuthConstants.PasswordMaxLength)
+  password!: string;
+
+  @ApiProperty({ example: 'Rafiq Ahmed' })
+  @TrimString()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(AuthConstants.FullNameMaxLength)
+  fullName!: string;
+}
+
+/** What accepting answers. Deliberately nothing that could act as a session. */
+export class InvitationAcceptedDto {
+  @ApiProperty({ example: true })
+  accepted!: boolean;
 }
 
 export class InvitationQueryDto {

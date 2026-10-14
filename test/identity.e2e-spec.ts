@@ -78,6 +78,16 @@ const RESEND_VERIFICATION = '/api/v1/auth/resend-verification';
 const FORGOT_PASSWORD = '/api/v1/auth/forgot-password';
 const RESET_PASSWORD = '/api/v1/auth/reset-password';
 const CHANGE_PASSWORD = '/api/v1/auth/password';
+const STAFF_INVITATIONS = '/api/v1/admin/staff/invitations';
+const ACCEPT_INVITATION = '/api/v1/staff/invitations/accept';
+const INVITEE_EMAIL = 'ops-new@barakahbazaar.com.bd';
+const INVITEE_NAME = 'Rafiq Ahmed';
+const INVITATION_NOT_VALID = 'This invitation link is not valid. Ask for a new one.';
+const INVITATION_EXPIRED = 'This invitation has expired. Ask for a new one.';
+const INVITATION_ACCOUNT_EXISTS =
+  'An account already exists for this email address. Sign in, and ask an administrator to change your role.';
+const INVITATION_NOT_OPEN = 'This invitation is no longer open.';
+const PASSWORD_TOO_COMMON = 'That password is too common. Please choose a different one.';
 
 const INVALID_TOKEN = 'Your session is invalid or has expired. Please sign in again.';
 const INVALID_CREDENTIALS = 'Those sign-in details are not correct.';
@@ -1837,6 +1847,159 @@ describe('Identity (end to end)', () => {
         .get(ME)
         .set(authHeaders(before.accessToken, DEVICE));
       expect(me.status).toBe(401);
+    });
+  });
+
+  describe('staff invitation creates the account', () => {
+    /** Seeds a SUPER_ADMIN, signs them in, and returns the headers for the admin routes. */
+    const adminHeaders = async (): Promise<Record<string, string>> => {
+      await seedVerifiedUser(prisma, {
+        email: 'root@barakahbazaar.com.bd',
+        password: PASSWORD,
+        role: UserRole.SUPER_ADMIN,
+      });
+      const tokens = await loginAs(app, 'root@barakahbazaar.com.bd', PASSWORD, DEVICE);
+      return authHeaders(tokens.accessToken, DEVICE);
+    };
+
+    /** Invites an address as OPS; the raw token comes back because EMAIL_PROVIDER is noop. */
+    const invite = async (
+      headers: Record<string, string>,
+      email: string,
+    ): Promise<{ id: string; token: string }> => {
+      const response = await request(app.getHttpServer())
+        .post(STAFF_INVITATIONS)
+        .set(headers)
+        .send({ email, role: UserRole.OPS });
+      expect(response.status).toBe(201);
+      return { id: response.body.invitation.id, token: response.body.token };
+    };
+
+    const accept = (token: string, password = REGISTRATION_PASSWORD) =>
+      request(app.getHttpServer())
+        .post(ACCEPT_INVITATION)
+        .send({ token, password, fullName: INVITEE_NAME });
+
+    it('an invitation creates a verified staff account that must enrol MFA', async () => {
+      const { token } = await invite(await adminHeaders(), INVITEE_EMAIL);
+
+      const response = await accept(token);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toStrictEqual({ accepted: true });
+
+      const user = await prisma.user.findUniqueOrThrow({ where: { email: INVITEE_EMAIL } });
+      expect(user.role).toBe('OPS');
+      expect(user.emailVerifiedAt).not.toBeNull();
+      expect(user.isActive).toBe(true);
+
+      const audit = await prisma.adminAuditLog.findMany({
+        where: { action: 'staff.invitation_accepted' },
+      });
+      expect(audit).toHaveLength(1);
+      expect(audit[0].actorId).toBe(user.id);
+
+      await writeSettings({ staffMfaRequired: true });
+      const login = await request(app.getHttpServer())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: INVITEE_EMAIL, password: REGISTRATION_PASSWORD });
+      expect(login.body.kind).toBe('enrolment');
+    });
+
+    it('a used, revoked or unknown token answers 404; an expired one 410', async () => {
+      const headers = await adminHeaders();
+      const used = await invite(headers, INVITEE_EMAIL);
+      expect((await accept(used.token)).status).toBe(200);
+
+      const replay = await accept(used.token);
+      expect(replay.status).toBe(404);
+      expect(replay.body.message).toBe(INVITATION_NOT_VALID);
+
+      const revoked = await invite(headers, 'ops-revoked@barakahbazaar.com.bd');
+      const revoke = await request(app.getHttpServer())
+        .delete(`${STAFF_INVITATIONS}/${revoked.id}`)
+        .set(headers);
+      expect(revoke.status).toBe(200);
+      const afterRevoke = await accept(revoked.token);
+      expect(afterRevoke.status).toBe(404);
+      expect(afterRevoke.body.message).toBe(INVITATION_NOT_VALID);
+
+      const unknown = await accept('this-token-was-never-issued');
+      expect(unknown.status).toBe(404);
+      expect(unknown.body.message).toBe(INVITATION_NOT_VALID);
+
+      const expired = await invite(headers, 'ops-expired@barakahbazaar.com.bd');
+      await prisma.staffInvitation.update({
+        where: { id: expired.id },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const afterExpiry = await accept(expired.token);
+      expect(afterExpiry.status).toBe(410);
+      expect(afterExpiry.body.message).toBe(INVITATION_EXPIRED);
+    });
+
+    it('an address that registered as a customer first gets 409 and keeps its role', async () => {
+      const { id, token } = await invite(await adminHeaders(), INVITEE_EMAIL);
+      await seedVerifiedUser(prisma, { email: INVITEE_EMAIL, password: PASSWORD });
+
+      const response = await accept(token);
+
+      expect(response.status).toBe(409);
+      expect(response.body.message).toBe(INVITATION_ACCOUNT_EXISTS);
+      const user = await prisma.user.findUniqueOrThrow({ where: { email: INVITEE_EMAIL } });
+      expect(user.role).toBe('CUSTOMER');
+      const invitation = await prisma.staffInvitation.findUniqueOrThrow({ where: { id } });
+      expect(invitation.status).toBe('PENDING');
+      expect(invitation.acceptedBy).toBeNull();
+      expect(
+        await prisma.adminAuditLog.count({ where: { action: 'staff.invitation_accepted' } }),
+      ).toBe(0);
+    });
+
+    it('two concurrent accepts of one token create one account', async () => {
+      const { id, token } = await invite(await adminHeaders(), INVITEE_EMAIL);
+
+      const responses = await Promise.all([accept(token), accept(token)]);
+
+      const winners = responses.filter((r) => r.status === 200);
+      const losers = responses.filter((r) => r.status !== 200);
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      const [loser] = losers;
+      // The loser either blocked on the claim's row lock and found the row no longer pending
+      // (409), or its token lookup ran after the winner committed and found no pending
+      // invitation at all (404). Both mean the claim serialised the two accepts.
+      expect([
+        { status: 409, message: INVITATION_NOT_OPEN },
+        { status: 404, message: INVITATION_NOT_VALID },
+      ]).toContainEqual({ status: loser.status, message: loser.body.message });
+      // This message would mean the claim lock failed and the users.email unique index caught
+      // the race instead.
+      expect(loser.body.message).not.toBe(INVITATION_ACCOUNT_EXISTS);
+
+      const users = await prisma.user.findMany({ where: { email: INVITEE_EMAIL } });
+      expect(users).toHaveLength(1);
+      const invitation = await prisma.staffInvitation.findUniqueOrThrow({ where: { id } });
+      expect(invitation.status).toBe('ACCEPTED');
+      expect(invitation.acceptedBy).toBe(users[0].id);
+      expect(
+        await prisma.adminAuditLog.count({ where: { action: 'staff.invitation_accepted' } }),
+      ).toBe(1);
+    });
+
+    it('a weak password changes nothing, and the same link then works', async () => {
+      const { id, token } = await invite(await adminHeaders(), INVITEE_EMAIL);
+
+      const weak = await accept(token, 'aaaaaaaaaaaaaaaa');
+
+      expect(weak.status).toBe(400);
+      expect(weak.body.message).toBe(PASSWORD_TOO_COMMON);
+      expect(await prisma.user.count({ where: { email: INVITEE_EMAIL } })).toBe(0);
+      const invitation = await prisma.staffInvitation.findUniqueOrThrow({ where: { id } });
+      expect(invitation.status).toBe('PENDING');
+
+      expect((await accept(token)).status).toBe(200);
     });
   });
 });

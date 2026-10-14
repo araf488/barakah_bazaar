@@ -1,5 +1,5 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import {
   ErrorMessageTemplates,
@@ -12,7 +12,6 @@ import {
   Prisma,
   StaffInvitation,
   StaffInvitationStatus,
-  User,
   UserRole,
 } from '../../infra/prisma/prisma-client';
 import { ConfigService } from '@nestjs/config';
@@ -27,10 +26,11 @@ import {
   AdminTokens,
 } from './admin.constants';
 import { AuditLogWriteData } from './audit-log.repository';
+import { invitationAuditJson } from './staff-invitation.audit';
 import { StaffInvitationRepository } from './staff-invitation.repository';
+import { hashInvitationToken } from './staff-invitation.token';
 import { StaffInvitationMapper } from './staff-invitation.mapper';
 import {
-  AcceptInvitationDto,
   InvitationCreatedDto,
   InvitationListDto,
   InvitationQueryDto,
@@ -52,12 +52,8 @@ interface Actor {
  * 32 bytes of entropy, only its SHA-256 stored, and never logged or returned once created.
  * A leaked table dump must not hand anyone a working grant.
  *
- * Acceptance additionally requires the signed-in account's email to match the invitation's.
- * Without that, the token alone would be enough and a forwarded invitation email would let
- * the wrong person take the role.
- *
- * The grant itself is one transaction: the invitation closes and the role lands on the
- * invitee's row together, because the `role` column is the only place a grant exists.
+ * Taking an invitation up is `StaffInvitationAcceptService`'s job: it creates the invitee's
+ * account, so it runs before anyone is signed in.
  */
 @Injectable()
 export class StaffInvitationService {
@@ -92,7 +88,7 @@ export class StaffInvitationService {
         {
           email,
           role: dto.role,
-          tokenHash: StaffInvitationService.hash(token),
+          tokenHash: hashInvitationToken(token),
           expiresAt: StaffInvitationService.deadline(),
           invitedBy: inviter.data.id,
         },
@@ -117,49 +113,6 @@ export class StaffInvitationService {
       this.logger.error(
         { err: error, email: dto.email },
         'Exception occurred in StaffInvitationService.invite',
-      );
-      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
-    }
-  }
-
-  /**
-   * Takes up an invitation.
-   *
-   * Not a staff route: the invitee has no role yet, which is the whole point. It is
-   * authenticated, though — the caller must already be signed in as the invited address.
-   */
-  async accept(
-    user: AuthenticatedUser,
-    dto: AcceptInvitationDto,
-  ): Promise<ServiceResponse<StaffInvitationDto>> {
-    try {
-      const account = await this.users.findById(user.userId);
-
-      if (account === null) {
-        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
-      }
-
-      if (account === undefined) {
-        return serviceFail(
-          HttpStatus.NOT_FOUND,
-          formatMessage(ErrorMessageTemplates.NotFound, AdminConstants.UserResourceName),
-        );
-      }
-
-      const invitation = await this.repository.findByTokenHash(
-        StaffInvitationService.hash(dto.token),
-      );
-
-      const usable = StaffInvitationService.assertUsable(invitation, account);
-      if (usable) {
-        return usable;
-      }
-
-      return await this.grant(invitation as StaffInvitation, account);
-    } catch (error) {
-      this.logger.error(
-        { err: error, userId: user.userId },
-        'Exception occurred in StaffInvitationService.accept',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
@@ -248,41 +201,6 @@ export class StaffInvitationService {
     }
   }
 
-  /**
-   * Closing the invitation and granting its role are one transaction — see
-   * `StaffInvitationRepository.acceptAudited`. A failure therefore changes nothing, so the
-   * caller can simply try again, and the answer is the same conflict a lost race gets.
-   */
-  private async grant(
-    invitation: StaffInvitation,
-    account: User,
-  ): Promise<ServiceResponse<StaffInvitationDto>> {
-    const settled = await this.repository.acceptAudited(
-      invitation.id,
-      {
-        status: StaffInvitationStatus.ACCEPTED,
-        acceptedBy: account.id,
-        acceptedAt: new Date(),
-      },
-      { userId: account.id, role: invitation.role },
-      (row) =>
-        StaffInvitationService.audit(
-          // The invitee is the actor here: they are the one taking the role.
-          { id: account.id, email: account.email, role: invitation.role },
-          AdminAuditActions.StaffInvitationAccepted,
-          row,
-          invitation,
-          row,
-        ),
-    );
-
-    if (!settled) {
-      return serviceFail(HttpStatus.CONFLICT, AdminMessages.InvitationNotPending);
-    }
-
-    return serviceOk(StaffInvitationMapper.toDto(settled));
-  }
-
   /** Sends the email, and surfaces the raw token only while no provider is configured. */
   private async deliver(invitation: StaffInvitation, token: string): Promise<InvitationCreatedDto> {
     const sent = await this.email
@@ -292,7 +210,7 @@ export class StaffInvitationService {
         body: formatMessage(
           AdminConstants.InvitationEmailTemplate,
           invitation.role,
-          token,
+          this.acceptLink(token),
           String(AdminConstants.InvitationValidDays),
         ),
       })
@@ -311,6 +229,11 @@ export class StaffInvitationService {
       emailSent: sent,
       token: this.isEmailDisabled() ? token : null,
     };
+  }
+
+  /** The link the invitee opens; the raw token rides only in its query string. */
+  private acceptLink(token: string): string {
+    return `${this.config.get('APP_PUBLIC_BASE_URL', { infer: true })}${AdminConstants.InvitationAcceptPath}?token=${token}`;
   }
 
   /**
@@ -373,36 +296,6 @@ export class StaffInvitationService {
     return serviceOk({ id: account.id, email: account.email, role: account.role });
   }
 
-  /**
-   * Every reason an invitation cannot be taken up, in the order that leaks the least.
-   *
-   * A bad token and a revoked one answer identically, so the endpoint cannot be used to
-   * discover which tokens exist.
-   */
-  private static assertUsable(
-    invitation: StaffInvitation | null | undefined,
-    account: User,
-  ): ServiceResponse<never> | null {
-    if (invitation === null) {
-      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
-    }
-
-    if (invitation === undefined || invitation.status !== StaffInvitationStatus.PENDING) {
-      return serviceFail(HttpStatus.NOT_FOUND, AdminMessages.InvitationInvalid);
-    }
-
-    if (invitation.expiresAt.getTime() <= Date.now()) {
-      return serviceFail(HttpStatus.GONE, AdminMessages.InvitationExpired);
-    }
-
-    // The check that makes the token safe to email: possession alone is not enough.
-    if (account.email.toLowerCase() !== invitation.email) {
-      return serviceFail(HttpStatus.FORBIDDEN, AdminMessages.InvitationEmailMismatch);
-    }
-
-    return null;
-  }
-
   private static audit(
     actor: Actor,
     action: string,
@@ -421,43 +314,10 @@ export class StaffInvitationService {
       action,
       entityType: AdminAuditEntities.StaffInvitation,
       entityId: row.id,
-      before: StaffInvitationService.toJson(before),
-      after: StaffInvitationService.toJson(after),
+      before: invitationAuditJson(before),
+      after: invitationAuditJson(after),
       requestId: null,
     };
-  }
-
-  /**
-   * Serialises for the trail with the token hash stripped and BigInts widened.
-   *
-   * The explicit replacer rather than the global hook `main.ts` installs, so this behaves
-   * identically outside the bootstrap — the same reasoning as AuditLogService.toJson.
-   */
-  private static toJson(row: StaffInvitation | null): AuditLogWriteData['before'] {
-    if (!row) {
-      return undefined;
-    }
-
-    // An allowlist, not an omit: a future column added to this model must be chosen into the
-    // trail deliberately rather than appearing in it by default. tokenHash is the credential
-    // this exists to keep out.
-    return {
-      id: row.id,
-      email: row.email,
-      role: row.role,
-      status: row.status,
-      expiresAt: row.expiresAt.toISOString(),
-      invitedBy: row.invitedBy,
-      acceptedBy: row.acceptedBy,
-      acceptedAt: row.acceptedAt ? row.acceptedAt.toISOString() : null,
-      revokedBy: row.revokedBy,
-      revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
-      createdAt: row.createdAt.toISOString(),
-    };
-  }
-
-  private static hash(token: string): string {
-    return createHash('sha256').update(token).digest('hex');
   }
 
   private static deadline(): Date {

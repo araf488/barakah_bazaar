@@ -16,12 +16,6 @@ const superAdmin: AuthenticatedUser = {
   email: 'boss@barakahbazaar.com.bd',
   role: UserRole.SUPER_ADMIN,
 };
-const invitee: AuthenticatedUser = {
-  userId: 'user-2',
-  sessionId: 'session-1',
-  email: 'ops@barakahbazaar.com.bd',
-  role: UserRole.CUSTOMER,
-};
 
 const hourFromNow = () => new Date(Date.now() + 60 * 60 * 1000);
 const hourAgo = () => new Date(Date.now() - 60 * 60 * 1000);
@@ -52,8 +46,6 @@ describe('StaffInvitationService', () => {
   let repository: {
     createAudited: jest.Mock;
     settleAudited: jest.Mock;
-    acceptAudited: jest.Mock;
-    findByTokenHash: jest.Mock;
     findById: jest.Mock;
     findOpenForEmail: jest.Mock;
     findPage: jest.Mock;
@@ -68,7 +60,10 @@ describe('StaffInvitationService', () => {
       repository as unknown as StaffInvitationRepository,
       users as unknown as AuthRepository,
       sender,
-      createMockConfig({ EMAIL_PROVIDER: provider }),
+      createMockConfig({
+        EMAIL_PROVIDER: provider,
+        APP_PUBLIC_BASE_URL: 'https://admin.example.com',
+      }),
       logger,
     );
 
@@ -76,8 +71,6 @@ describe('StaffInvitationService', () => {
     repository = {
       createAudited: jest.fn().mockResolvedValue(invitation()),
       settleAudited: jest.fn().mockResolvedValue(invitation()),
-      acceptAudited: jest.fn().mockResolvedValue(invitation()),
-      findByTokenHash: jest.fn(),
       findById: jest.fn(),
       findOpenForEmail: jest.fn().mockResolvedValue(undefined),
       findPage: jest.fn(),
@@ -109,6 +102,19 @@ describe('StaffInvitationService', () => {
       expect(createHash('sha256').update(extractToken(emailed)).digest('hex')).toBe(
         stored.tokenHash,
       );
+    });
+
+    it('emails a link built from APP_PUBLIC_BASE_URL, with the token only inside it', async () => {
+      await service.invite(superAdmin, { email: 'ops@barakahbazaar.com.bd', role: UserRole.OPS });
+
+      const emailed = (email.send.mock.calls[0][0] as { body: string }).body;
+      const token = extractToken(emailed);
+
+      expect(emailed).toContain('https://admin.example.com/accept-invitation?token=');
+      expect(token).not.toBe('');
+      // The raw token appears exactly once, and only as the link's query value.
+      expect(emailed.split(token)).toHaveLength(2);
+      expect(emailed).toContain(`https://admin.example.com/accept-invitation?token=${token}\n`);
     });
 
     it('lowercases the address so one email cannot hold two invitations by case', async () => {
@@ -222,122 +228,6 @@ describe('StaffInvitationService', () => {
     });
   });
 
-  describe('accept', () => {
-    beforeEach(() => {
-      users.findById.mockResolvedValue(
-        userFixture({ id: 'user-2', email: 'ops@barakahbazaar.com.bd', role: UserRole.CUSTOMER }),
-      );
-      repository.findByTokenHash.mockResolvedValue(invitation());
-      repository.acceptAudited.mockResolvedValue(
-        invitation({ status: StaffInvitationStatus.ACCEPTED, acceptedBy: 'user-2' }),
-      );
-    });
-
-    it('looks the invitation up by hash, never by the raw token', async () => {
-      await service.accept(invitee, { token: 'plain-token' });
-
-      expect(repository.findByTokenHash).toHaveBeenCalledWith(
-        createHash('sha256').update('plain-token').digest('hex'),
-      );
-    });
-
-    it('closes the invitation and grants the role on the invitee own row together', async () => {
-      // One call, so one transaction: an invitation cannot close without its role landing,
-      // and that column is now the only place the grant exists.
-      await service.accept(invitee, { token: 'plain-token' });
-
-      expect(repository.acceptAudited).toHaveBeenCalledTimes(1);
-      expect(repository.acceptAudited.mock.calls[0][1]).toMatchObject({
-        status: StaffInvitationStatus.ACCEPTED,
-        acceptedBy: 'user-2',
-      });
-      expect(repository.acceptAudited.mock.calls[0][2]).toEqual({
-        userId: 'user-2',
-        role: UserRole.OPS,
-      });
-    });
-
-    it('refuses when the signed-in email is not the invited one', async () => {
-      // The check that makes the token safe to email: possession alone is not enough.
-      users.findById.mockResolvedValue(
-        userFixture({ id: 'user-3', email: 'someone.else@example.com' }),
-      );
-
-      const result = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(result).toEqual({
-        ok: false,
-        status: HttpStatus.FORBIDDEN,
-        message:
-          'This invitation was sent to a different email address. Sign in as that address to accept it.',
-      });
-      expect(repository.acceptAudited).not.toHaveBeenCalled();
-    });
-
-    it('matches the invited email case-insensitively', async () => {
-      users.findById.mockResolvedValue(
-        userFixture({ id: 'user-2', email: 'OPS@BarakahBazaar.com.bd' }),
-      );
-
-      const result = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(result.ok).toBe(true);
-    });
-
-    it('answers a revoked invitation exactly as it answers an unknown token', async () => {
-      // Otherwise the endpoint tells an attacker which tokens exist.
-      repository.findByTokenHash.mockResolvedValue(undefined);
-      const unknown = await service.accept(invitee, { token: 'plain-token' });
-
-      repository.findByTokenHash.mockResolvedValue(
-        invitation({ status: StaffInvitationStatus.REVOKED }),
-      );
-      const revoked = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(unknown).toEqual(revoked);
-      expect(unknown).toEqual({
-        ok: false,
-        status: HttpStatus.NOT_FOUND,
-        message: 'This invitation link is not valid. Ask for a new one.',
-      });
-    });
-
-    it('refuses an expired invitation', async () => {
-      repository.findByTokenHash.mockResolvedValue(invitation({ expiresAt: hourAgo() }));
-
-      const result = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(result).toEqual({
-        ok: false,
-        status: HttpStatus.GONE,
-        message: 'This invitation has expired. Ask for a new one.',
-      });
-      expect(repository.acceptAudited).not.toHaveBeenCalled();
-    });
-
-    it('grants nothing when the transaction fails, and says so as a conflict', async () => {
-      // Either someone else accepted first or the write rolled back. Both leave the account
-      // exactly as it was, so there is no partial grant to report and nothing to reconcile.
-      repository.acceptAudited.mockResolvedValue(null);
-
-      const result = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(result).toEqual({
-        ok: false,
-        status: HttpStatus.CONFLICT,
-        message: 'This invitation is no longer open.',
-      });
-    });
-
-    it('reports 503 rather than an invalid token when the lookup failed', async () => {
-      repository.findByTokenHash.mockResolvedValue(null);
-
-      const result = await service.accept(invitee, { token: 'plain-token' });
-
-      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
-    });
-  });
-
   describe('revoke', () => {
     it('closes an open invitation', async () => {
       repository.findById.mockResolvedValue(invitation());
@@ -420,8 +310,8 @@ describe('StaffInvitationService', () => {
   });
 });
 
-/** Pulls the token back out of the rendered email body. */
+/** Pulls the token back out of the link in the rendered email body. */
 function extractToken(body: string): string {
-  const match = /\n\s{2}(\S+)\n/.exec(body);
+  const match = /\?token=(\S+)\n/.exec(body);
   return match ? match[1] : '';
 }

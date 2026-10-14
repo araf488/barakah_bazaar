@@ -1,14 +1,14 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import {
   Prisma,
   StaffInvitation,
   StaffInvitationStatus,
+  User,
   UserRole,
 } from '../../infra/prisma/prisma-client';
+import { PrismaErrorCodes } from '../../common/constants/app.constants';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { AuthTokens } from '../auth/auth.constants';
-import { SessionCachePort } from '../auth/sessions/session-cache.port';
 import { AuditLogRepository, AuditLogWriteData } from './audit-log.repository';
 
 /** `undefined` means no such row; `null` means the query itself failed. */
@@ -22,6 +22,19 @@ export interface CreateInvitationData {
   invitedBy: string;
 }
 
+/** What the invitee supplied when accepting; the email and role come from the invitation. */
+export interface NewStaffAccount {
+  readonly passwordHash: string;
+  readonly fullName: string;
+}
+
+/** `null` means the database faulted. */
+export type AcceptResult =
+  | { readonly kind: 'accepted'; readonly userId: string }
+  | { readonly kind: 'not-pending' }
+  | { readonly kind: 'account-exists' }
+  | null;
+
 export interface InvitationPage {
   items: StaffInvitation[];
   total: number;
@@ -32,7 +45,6 @@ export class StaffInvitationRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditLog: AuditLogRepository,
-    @Inject(AuthTokens.SessionCache) private readonly sessionCache: SessionCachePort,
     @InjectPinoLogger(StaffInvitationRepository.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -110,58 +122,90 @@ export class StaffInvitationRepository {
   }
 
   /**
-   * Accepts an invitation: closes it, grants its role on the invitee's own row, and writes the
-   * audit entry — all in ONE transaction.
+   * Accepts an invitation by creating the invitee's account: closes the invitation, creates
+   * the verified staff user with the invited role, and writes the audit row in ONE transaction.
    *
-   * The role write belongs here rather than in a second call because the invitation and the
-   * role it grants must never be able to disagree. The `role` column is now the only place a
-   * grant exists — no token carries a role claim and no identity provider holds a copy — so a
-   * closed invitation whose role never landed would be an unrecoverable grant: the token is
-   * spent and the invitee has nothing.
+   * The invitation and the account it grants must never disagree: a closed invitation with no
+   * account is a spent token and nothing to show for it. A brand-new account has no sessions,
+   * so there is no session cache to invalidate.
    *
-   * Same PENDING guard as `settleAudited`: the loser of two concurrent acceptances updates
-   * nothing, grants nothing, and gets `null`.
+   * The `staff_invitations_settled_has_actor` CHECK constraint requires an ACCEPTED row to carry
+   * both `accepted_by` and `accepted_at`, and `accepted_by` is the id of the user this
+   * transaction creates. So the status cannot change until the user exists. The first write is
+   * therefore a claim: a no-op `updatedAt` write guarded by `status = PENDING`. It takes the row
+   * lock and checks the row is still pending; a concurrent accept blocks on that lock, then
+   * re-evaluates the predicate under READ COMMITTED, matches no row and gets `not-pending`. The
+   * status, `acceptedAt` and `acceptedBy` are then written together in one update, after the
+   * user is created, so the CHECK holds at every statement.
    */
-  async acceptAudited(
-    id: string,
-    data: Prisma.StaffInvitationUncheckedUpdateManyInput,
-    grant: { userId: string; role: UserRole },
-    audit: (updated: StaffInvitation) => AuditLogWriteData,
-  ): Promise<StaffInvitation | null> {
+  async acceptCreatingAccount(
+    invitation: StaffInvitation,
+    account: NewStaffAccount,
+    audit: (updated: StaffInvitation, user: User) => AuditLogWriteData,
+  ): Promise<AcceptResult> {
     try {
-      const settled = await this.prisma.$transaction(async (tx) => {
-        const affected = await tx.staffInvitation.updateMany({
-          where: { id, status: StaffInvitationStatus.PENDING },
-          data,
+      return await this.prisma.$transaction(async (tx) => {
+        const now = new Date();
+        // Claim: lock the row and check it is pending; the status waits until acceptedBy exists.
+        const claimed = await tx.staffInvitation.updateMany({
+          where: { id: invitation.id, status: StaffInvitationStatus.PENDING },
+          data: { updatedAt: now },
         });
 
-        if (affected.count === 0) {
+        if (claimed.count === 0) {
           throw new InvitationNoLongerPendingError();
         }
 
-        await tx.user.update({ where: { id: grant.userId }, data: { role: grant.role } });
+        const user = await tx.user.create({
+          data: {
+            email: invitation.email,
+            role: invitation.role,
+            passwordHash: account.passwordHash,
+            fullName: account.fullName,
+            emailVerifiedAt: now,
+            isActive: true,
+          },
+        });
+        const updated = await tx.staffInvitation.update({
+          where: { id: invitation.id },
+          data: {
+            status: StaffInvitationStatus.ACCEPTED,
+            acceptedAt: now,
+            acceptedBy: user.id,
+          },
+        });
+        await this.auditLog.appendWithin(tx, audit(updated, user));
 
-        const updated = await tx.staffInvitation.findUniqueOrThrow({ where: { id } });
-        await this.auditLog.appendWithin(tx, audit(updated));
-        return updated;
+        return { kind: 'accepted', userId: user.id } as const;
       });
-
-      // After the commit rather than inside it, for the reason given in
-      // `AdminUserRepository.updateAudited`: bumping first leaves a window where a concurrent
-      // read repopulates the cache from the pre-grant row, and the new staff member keeps
-      // validating as a customer until the entry expires.
-      await this.sessionCache.invalidateUser(grant.userId);
-
-      return settled;
     } catch (error) {
       if (error instanceof InvitationNoLongerPendingError) {
-        this.logger.info({ invitationId: id }, 'Invitation was already settled by someone else');
-        return null;
+        this.logger.info(
+          { invitationId: invitation.id },
+          'Invitation was already settled by someone else',
+        );
+        return { kind: 'not-pending' };
       }
 
+      // `users.email` is the only unique constraint this transaction can hit (phone is unset, the
+      // invitation write touches no unique column, the audit insert has only a PK), so the error
+      // is not narrowed by `meta.target`.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PrismaErrorCodes.UniqueConstraint
+      ) {
+        // The address registered between the invitation being sent and being accepted.
+        this.logger.info(
+          { invitationId: invitation.id },
+          'Invitation accept found an existing account; nothing created',
+        );
+        return { kind: 'account-exists' };
+      }
+
+      // The account's password hash is deliberately not logged.
       this.logger.error(
-        { err: error, invitationId: id, userId: grant.userId },
-        'Exception occurred in StaffInvitationRepository.acceptAudited',
+        { err: error, invitationId: invitation.id },
+        'Exception occurred in StaffInvitationRepository.acceptCreatingAccount',
       );
       return null;
     }

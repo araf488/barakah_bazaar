@@ -1,8 +1,13 @@
 import { PinoLogger } from 'nestjs-pino';
-import { StaffInvitationStatus, UserRole } from '../../infra/prisma/prisma-client';
+import {
+  Prisma,
+  StaffInvitation,
+  StaffInvitationStatus,
+  User,
+  UserRole,
+} from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
-import { SessionCachePort } from '../auth/sessions/session-cache.port';
 import { AuditLogRepository } from './audit-log.repository';
 import { StaffInvitationRepository } from './staff-invitation.repository';
 
@@ -23,9 +28,10 @@ describe('StaffInvitationRepository', () => {
     staffInvitation: {
       create: jest.Mock;
       updateMany: jest.Mock;
+      update: jest.Mock;
       findUniqueOrThrow: jest.Mock;
     };
-    user: { update: jest.Mock };
+    user: { create: jest.Mock };
   };
   let prisma: {
     $transaction: jest.Mock;
@@ -37,7 +43,6 @@ describe('StaffInvitationRepository', () => {
     };
   };
   let auditLog: { appendWithin: jest.Mock };
-  let sessionCache: { invalidateUser: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let repository: StaffInvitationRepository;
 
@@ -46,9 +51,12 @@ describe('StaffInvitationRepository', () => {
       staffInvitation: {
         create: jest.fn().mockResolvedValue({ id: 'inv-1' }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue({ id: 'inv-1', acceptedBy: 'user-9' }),
         findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'inv-1' }),
       },
-      user: { update: jest.fn().mockResolvedValue({ id: 'user-2' }) },
+      user: {
+        create: jest.fn().mockResolvedValue({ id: 'user-9' }),
+      },
     };
     prisma = {
       $transaction: jest.fn((arg: unknown) =>
@@ -64,12 +72,10 @@ describe('StaffInvitationRepository', () => {
       },
     };
     auditLog = { appendWithin: jest.fn() };
-    sessionCache = { invalidateUser: jest.fn().mockResolvedValue(undefined) };
     logger = createMockLogger();
     repository = new StaffInvitationRepository(
       prisma as unknown as PrismaService,
       auditLog as unknown as AuditLogRepository,
-      sessionCache as unknown as SessionCachePort,
       logger,
     );
   });
@@ -148,66 +154,139 @@ describe('StaffInvitationRepository', () => {
     });
   });
 
-  describe('acceptAudited', () => {
-    const grant = { userId: 'user-2', role: UserRole.OPS };
+  describe('acceptCreatingAccount', () => {
+    const invitation = {
+      id: 'inv-1',
+      email: 'ops@barakahbazaar.com.bd',
+      role: UserRole.OPS,
+    } as StaffInvitation;
+    const account = { passwordHash: 'scrypt$x', fullName: 'Rafiq Ahmed' };
+    const audit = () => auditRow();
 
-    it('closes the invitation, grants the role and audits it in one transaction', async () => {
-      await repository.acceptAudited(
-        'inv-1',
-        { status: StaffInvitationStatus.ACCEPTED },
-        grant,
-        () => auditRow(),
-      );
+    it('closes the invitation, creates the verified account with the invited role, and audits it in one transaction', async () => {
+      const auditFn = jest.fn(audit);
+
+      const result = await repository.acceptCreatingAccount(invitation, account, auditFn);
 
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-      expect(tx.user.update).toHaveBeenCalledWith({
-        where: { id: 'user-2' },
-        data: { role: UserRole.OPS },
-      });
-      expect(auditLog.appendWithin).toHaveBeenCalledWith(tx, auditRow());
-    });
-
-    it('only accepts a row that is still pending', async () => {
-      await repository.acceptAudited('inv-1', {}, grant, () => auditRow());
-
-      expect(tx.staffInvitation.updateMany.mock.calls[0][0].where).toEqual({
+      expect(tx.staffInvitation.updateMany).toHaveBeenCalledTimes(1);
+      const claim = tx.staffInvitation.updateMany.mock.calls[0][0];
+      expect(claim.where).toEqual({
         id: 'inv-1',
         status: StaffInvitationStatus.PENDING,
       });
+      // The claim only locks and checks the row: the CHECK constraint forbids ACCEPTED without
+      // acceptedBy, so the status must not move before the user exists.
+      expect(claim.data).toEqual({ updatedAt: expect.any(Date) });
+      expect(claim.data).not.toHaveProperty('status');
+      const created = tx.user.create.mock.calls[0][0].data;
+      expect(created).toMatchObject({
+        email: 'ops@barakahbazaar.com.bd',
+        role: UserRole.OPS,
+        passwordHash: 'scrypt$x',
+        fullName: 'Rafiq Ahmed',
+        isActive: true,
+      });
+      expect(created.emailVerifiedAt).toBeInstanceOf(Date);
+      // Status, acceptedAt and acceptedBy land together in ONE write, after the user exists.
+      expect(tx.staffInvitation.update).toHaveBeenCalledTimes(1);
+      expect(tx.staffInvitation.update).toHaveBeenCalledWith({
+        where: { id: 'inv-1' },
+        data: {
+          status: StaffInvitationStatus.ACCEPTED,
+          acceptedAt: expect.any(Date),
+          acceptedBy: 'user-9',
+        },
+      });
+      // Claim first, then the user, then the single settling write.
+      expect(tx.staffInvitation.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+        tx.user.create.mock.invocationCallOrder[0],
+      );
+      expect(tx.user.create.mock.invocationCallOrder[0]).toBeLessThan(
+        tx.staffInvitation.update.mock.invocationCallOrder[0],
+      );
+      expect(auditFn).toHaveBeenCalledWith({ id: 'inv-1', acceptedBy: 'user-9' }, {
+        id: 'user-9',
+      } as User);
+      expect(auditLog.appendWithin).toHaveBeenCalledWith(tx, auditRow());
+      expect(result).toEqual({ kind: 'accepted', userId: 'user-9' });
     });
 
-    it('grants no role when another caller accepted it first', async () => {
+    it('creates nothing when another caller accepted it first', async () => {
       tx.staffInvitation.updateMany.mockResolvedValue({ count: 0 });
 
-      await expect(
-        repository.acceptAudited('inv-1', {}, grant, () => auditRow()),
-      ).resolves.toBeNull();
+      await expect(repository.acceptCreatingAccount(invitation, account, audit)).resolves.toEqual({
+        kind: 'not-pending',
+      });
 
-      expect(tx.user.update).not.toHaveBeenCalled();
-      expect(auditLog.appendWithin).not.toHaveBeenCalled();
+      expect(tx.user.create).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        { invitationId: 'inv-1' },
+        'Invitation was already settled by someone else',
+      );
     });
 
-    it('grants no role when the audit row cannot be written', async () => {
-      // The whole point of one transaction: a grant with no record of it never commits.
+    it('answers account-exists, rolling everything back, when the address already has an account', async () => {
+      tx.user.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x' }),
+      );
+
+      await expect(repository.acceptCreatingAccount(invitation, account, audit)).resolves.toEqual({
+        kind: 'account-exists',
+      });
+
+      expect(auditLog.appendWithin).not.toHaveBeenCalled();
+      expect(tx.staffInvitation.update).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        { invitationId: 'inv-1' },
+        'Invitation accept found an existing account; nothing created',
+      );
+    });
+
+    it('answers null on a fault and logs it', async () => {
       auditLog.appendWithin.mockRejectedValue(new Error('audit table gone'));
 
       await expect(
-        repository.acceptAudited('inv-1', {}, grant, () => auditRow()),
+        repository.acceptCreatingAccount(invitation, account, audit),
       ).resolves.toBeNull();
+
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error), invitationId: 'inv-1' },
+        'Exception occurred in StaffInvitationRepository.acceptCreatingAccount',
+      );
     });
 
-    it('invalidates the cached session so the new role applies on the next request', async () => {
-      await repository.acceptAudited('inv-1', {}, grant, () => auditRow());
+    it.each([
+      ['not-pending', () => tx.staffInvitation.updateMany.mockResolvedValue({ count: 0 })],
+      [
+        'account-exists',
+        () =>
+          tx.user.create.mockRejectedValue(
+            new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x' }),
+          ),
+      ],
+      ['fault', () => auditLog.appendWithin.mockRejectedValue(new Error('audit table gone'))],
+    ])('never logs the password hash on %s', async (_outcome, arrange) => {
+      arrange();
 
-      expect(sessionCache.invalidateUser).toHaveBeenCalledWith('user-2');
+      await repository.acceptCreatingAccount(invitation, account, audit);
+
+      const logged = JSON.stringify([
+        ...logger.info.mock.calls,
+        ...logger.warn.mock.calls,
+        ...logger.error.mock.calls,
+      ]);
+      expect(logged).not.toContain('scrypt$x');
     });
 
-    it('does not invalidate anything when nothing was granted', async () => {
-      tx.staffInvitation.updateMany.mockResolvedValue({ count: 0 });
+    it('copies the invited role rather than hardcoding one', async () => {
+      await repository.acceptCreatingAccount(
+        { ...invitation, role: UserRole.WAREHOUSE },
+        account,
+        audit,
+      );
 
-      await repository.acceptAudited('inv-1', {}, grant, () => auditRow());
-
-      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+      expect(tx.user.create.mock.calls[0][0].data.role).toBe(UserRole.WAREHOUSE);
     });
   });
 
