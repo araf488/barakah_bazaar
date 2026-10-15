@@ -182,4 +182,118 @@ describe('AuthSettingsService', () => {
   it('freezes the defaults so accidental mutation cannot happen', () => {
     expect(Object.isFrozen(AUTH_SETTINGS_DEFAULTS)).toBe(true);
   });
+
+  it('rejects a stored email verification grace above 720 hours, falling back to 168', async () => {
+    repository.load.mockResolvedValue(row({ emailVerificationGraceHours: 9999 }));
+
+    expect((await service.current()).emailVerificationGraceHours).toBe(168);
+    expect(logger.error.mock.calls[0][0]).toMatchObject({ field: 'emailVerificationGraceHours' });
+  });
+
+  it('rejects a stored refresh reuse grace above 120 seconds, falling back to 30', async () => {
+    repository.load.mockResolvedValue(row({ refreshReuseGraceSeconds: 121 }));
+
+    expect((await service.current()).refreshReuseGraceSeconds).toBe(30);
+  });
+
+  describe('invalidate', () => {
+    it('makes the next current() read the repository again, inside the cache window', async () => {
+      await service.current();
+      service.invalidate();
+      repository.load.mockResolvedValue(row({ accessTokenMinutes: 45 }));
+
+      expect((await service.current()).accessTokenMinutes).toBe(45);
+      expect(repository.load).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('resolveWithFallbacks', () => {
+    it('reports the field that fell back to its default', async () => {
+      const updatedAt = new Date('2026-10-01T00:00:00Z');
+      repository.load.mockResolvedValue(row({ accessTokenMinutes: 500, updatedAt }));
+
+      const result = await service.resolveWithFallbacks();
+
+      expect(result?.fallbacks).toEqual(['accessTokenMinutes']);
+      expect(result?.settings.accessTokenMinutes).toBe(30);
+      expect(result?.updatedAt).toBe(updatedAt);
+    });
+
+    it('reports no fallbacks for a fully valid row', async () => {
+      const result = await service.resolveWithFallbacks();
+
+      expect(result?.fallbacks).toEqual([]);
+      expect(result?.settings).toEqual(AUTH_SETTINGS_DEFAULTS);
+      expect(result?.storedFallbackValues).toEqual({});
+    });
+
+    it('keeps the raw stored value of each field that fell back, and only those', async () => {
+      repository.load.mockResolvedValue(
+        row({ accessTokenMinutes: 500, refreshReuseGraceSeconds: 999 }),
+      );
+
+      const result = await service.resolveWithFallbacks();
+
+      expect(result?.storedFallbackValues).toEqual({
+        accessTokenMinutes: 500,
+        refreshReuseGraceSeconds: 999,
+      });
+      expect(result?.settings.accessTokenMinutes).toBe(30);
+      expect(result?.settings.refreshReuseGraceSeconds).toBe(30);
+    });
+
+    it('reports every field that fell back, in validation order', async () => {
+      repository.load.mockResolvedValue(
+        row({ accessTokenMinutes: 1, emailVerificationGraceHours: 9999, staffMfaRequired: 'x' }),
+      );
+
+      expect((await service.resolveWithFallbacks())?.fallbacks).toEqual([
+        'accessTokenMinutes',
+        'emailVerificationGraceHours',
+        'staffMfaRequired',
+      ]);
+    });
+
+    it('does not read through the cache', async () => {
+      await service.current();
+      await service.resolveWithFallbacks();
+      await service.resolveWithFallbacks();
+
+      expect(repository.load).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not populate the cache either', async () => {
+      await service.resolveWithFallbacks();
+      await service.current();
+
+      expect(repository.load).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns the defaults with no fallbacks and no timestamp when the row is absent', async () => {
+      repository.load.mockResolvedValue(undefined);
+
+      expect(await service.resolveWithFallbacks()).toEqual({
+        settings: AUTH_SETTINGS_DEFAULTS,
+        fallbacks: [],
+        updatedAt: null,
+        storedFallbackValues: {},
+      });
+    });
+
+    it('returns null when the read fails', async () => {
+      repository.load.mockResolvedValue(null);
+
+      expect(await service.resolveWithFallbacks()).toBeNull();
+    });
+
+    it('returns null and logs when the read throws', async () => {
+      repository.load.mockRejectedValue(new Error('boom'));
+
+      expect(await service.resolveWithFallbacks()).toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        'Exception occurred in AuthSettingsService.resolveWithFallbacks',
+      );
+    });
+  });
 });

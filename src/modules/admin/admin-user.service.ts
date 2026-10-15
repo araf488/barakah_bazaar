@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import {
   ErrorMessageTemplates,
@@ -8,8 +9,11 @@ import {
 import { PaginatedResponseDto } from '../../common/dto/pagination.dto';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
-import { User, UserRole } from '../../infra/prisma/prisma-client';
+import { Language, User, UserRole } from '../../infra/prisma/prisma-client';
+import { AuthRepository } from '../auth/auth.repository';
 import { AuthService } from '../auth/auth.service';
+import { PasswordHasher } from '../auth/crypto/password-hasher';
+import { PasswordResetService } from '../auth/password-reset/password-reset.service';
 import {
   AdminAuditActions,
   AdminAuditEntities,
@@ -19,7 +23,13 @@ import {
 import { AdminMapper } from './admin.mapper';
 import { AdminUserRepository } from './admin-user.repository';
 import { AuditLogWriteData } from './audit-log.repository';
-import { AdminUserDto, AdminUserQueryDto, ChangeRoleDto } from './dto/admin-user.dto';
+import {
+  AdminUserDto,
+  AdminUserQueryDto,
+  ChangeRoleDto,
+  CreateCustomerDto,
+  CustomerCreatedDto,
+} from './dto/admin-user.dto';
 
 interface Actor {
   readonly id: string;
@@ -39,6 +49,9 @@ export class AdminUserService {
   constructor(
     private readonly repository: AdminUserRepository,
     private readonly authService: AuthService,
+    private readonly hasher: PasswordHasher,
+    private readonly passwordReset: PasswordResetService,
+    private readonly users: AuthRepository,
     @InjectPinoLogger(AdminUserService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -62,6 +75,78 @@ export class AdminUserService {
       );
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in AdminUserService.listUsers');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * Opens a customer account on someone's behalf.
+   *
+   * The account gets a random password nobody is ever told, so it cannot be signed into until
+   * the customer chooses one through the ordinary password-reset email. The plaintext exists
+   * only long enough to be hashed and is never kept or logged. The reset request runs after the
+   * commit and its outcome is ignored: it never throws, and the account stands either way.
+   */
+  async createCustomer(
+    user: AuthenticatedUser,
+    dto: CreateCustomerDto,
+  ): Promise<ServiceResponse<CustomerCreatedDto>> {
+    try {
+      const actor = await this.resolveActor(user);
+      if (!actor.ok) {
+        return actor;
+      }
+
+      const email = dto.email.trim().toLowerCase();
+
+      // Case-insensitive, and before the scrypt work: an existing address answers 409 cheaply.
+      // The unique index still decides the lost race, below.
+      const existing = await this.users.findByEmail(email);
+      if (existing === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+      if (existing !== undefined) {
+        return serviceFail(HttpStatus.CONFLICT, AdminMessages.CustomerAlreadyExists);
+      }
+
+      const passwordHash = await this.hasher.hash(
+        randomBytes(AdminConstants.PlaceholderPasswordBytes).toString('base64url'),
+      );
+
+      const result = await this.repository.createCustomerAudited(
+        {
+          email,
+          fullName: dto.fullName.trim(),
+          preferredLanguage: dto.preferredLanguage ?? Language.BN,
+          passwordHash,
+        },
+        (created) =>
+          AdminUserService.auditRow(actor.data, {
+            action: AdminAuditActions.CustomerCreatedByStaff,
+            entityId: created.id,
+            before: undefined,
+            after: AdminMapper.toAdminUser(created),
+          }),
+      );
+
+      if (result === null) {
+        // The create and its audit row rolled back together: the same answer every audited
+        // write in this module gives, distinct from the lookup fault above.
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, AdminMessages.AuditTrailUnavailable);
+      }
+
+      if (result.kind === 'exists') {
+        return serviceFail(HttpStatus.CONFLICT, AdminMessages.CustomerAlreadyExists);
+      }
+
+      await this.requestPasswordSetup(email);
+
+      return serviceOk({
+        user: AdminMapper.toAdminUser(result.user),
+        passwordSetupEmailQueued: true,
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AdminUserService.createCustomer');
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
   }
@@ -171,6 +256,22 @@ export class AdminUserService {
         'Exception occurred in AdminUserService.changeRole',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * Asks for the password-setup email once the account is committed. A failure here must never
+   * turn that committed create into an error: staff would retry and meet a 409 on a live
+   * account. The address is deliberately not logged.
+   */
+  private async requestPasswordSetup(email: string): Promise<void> {
+    try {
+      await this.passwordReset.request(email);
+    } catch (error) {
+      this.logger.warn(
+        { err: error },
+        'Password setup request failed after customer creation; the account stands',
+      );
     }
   }
 

@@ -189,6 +189,8 @@ describe('Identity (end to end)', () => {
   afterAll(async () => {
     // Released whatever throws above, or the next database suite waits on a dead holder.
     try {
+      // The suite PATCHes the shared settings row; leave the defaults for the next database suite.
+      await writeSettings();
       await app?.close();
       await prisma?.$disconnect();
     } finally {
@@ -2113,6 +2115,508 @@ describe('Identity (end to end)', () => {
       expect(invitation.status).toBe('PENDING');
 
       expect((await accept(token)).status).toBe(200);
+    });
+  });
+
+  describe('support creates a customer account', () => {
+    const ASSISTED_EMAIL = 'assisted@barakahbazaar.com.bd';
+    const CUSTOMER_ALREADY_EXISTS = 'An account already exists for that email address.';
+
+    /** Seeds a staff user of the given role, signs them in, and returns the admin headers. */
+    const staffHeaders = async (role: UserRole): Promise<Record<string, string>> => {
+      await seedVerifiedUser(prisma, {
+        email: `${role.toLowerCase()}@barakahbazaar.com.bd`,
+        password: PASSWORD,
+        role,
+      });
+      const tokens = await loginAs(
+        app,
+        `${role.toLowerCase()}@barakahbazaar.com.bd`,
+        PASSWORD,
+        DEVICE,
+      );
+      return authHeaders(tokens.accessToken, DEVICE);
+    };
+
+    const createCustomer = (headers: Record<string, string>, email: string) =>
+      request(app.getHttpServer())
+        .post(ADMIN_USERS)
+        .set(headers)
+        .send({ email, fullName: 'Assisted Customer' });
+
+    it('creates an unverified customer, audits it without the hash, and the reset email sets the first password', async () => {
+      const headers = await staffHeaders(UserRole.SUPPORT);
+      const alreadySeen = countEmailsTo(emailSender, ASSISTED_EMAIL);
+
+      const response = await createCustomer(headers, ASSISTED_EMAIL);
+
+      expect(response.status).toBe(201);
+      expect(response.body.user.email).toBe(ASSISTED_EMAIL);
+      expect(response.body.user.role).toBe('CUSTOMER');
+      // The admin DTO does not expose the verification stamp, so the row is read directly.
+      const created = await prisma.user.findUniqueOrThrow({ where: { email: ASSISTED_EMAIL } });
+      expect(created.emailVerifiedAt).toBeNull();
+      expect(JSON.stringify(response.body)).not.toMatch(/passwordHash|scrypt\$|token/i);
+      expect(Object.keys(response.body).sort((a, b) => a.localeCompare(b))).toEqual([
+        'passwordSetupEmailQueued',
+        'user',
+      ]);
+      expect(Object.keys(response.body.user).sort((a, b) => a.localeCompare(b))).toEqual([
+        'createdAt',
+        'email',
+        'fullName',
+        'id',
+        'isActive',
+        'lastSeenAt',
+        'phone',
+        'role',
+      ]);
+      expect(response.body.passwordSetupEmailQueued).toBe(true);
+      // A random 32-byte secret encodes to 43 base64url characters. The ids are 36-character
+      // UUIDs and the timestamps carry colons, so no legitimate field can match.
+      expect(JSON.stringify(response.body)).not.toMatch(/[A-Za-z0-9_-]{43}/);
+
+      const audit = await prisma.adminAuditLog.findMany({
+        where: { action: 'customer.created_by_staff' },
+      });
+      expect(audit).toHaveLength(1);
+      expect(JSON.stringify(audit[0].after)).not.toContain('passwordHash');
+      expect(JSON.stringify(audit[0])).not.toContain('scrypt$');
+
+      const captured = await waitForEmailTo(emailSender, ASSISTED_EMAIL, alreadySeen);
+      const reset = await request(app.getHttpServer())
+        .post(RESET_PASSWORD)
+        .send({
+          email: ASSISTED_EMAIL,
+          code: extractVerificationCode(captured.body),
+          newPassword: REGISTRATION_PASSWORD,
+        });
+      expect(reset.status).toBe(200);
+
+      await expect(
+        loginAs(app, ASSISTED_EMAIL, REGISTRATION_PASSWORD, OTHER_DEVICE),
+      ).resolves.toBeDefined();
+      const user = await prisma.user.findUniqueOrThrow({ where: { email: ASSISTED_EMAIL } });
+      expect(user.emailVerifiedAt).not.toBeNull();
+    });
+
+    it('answers 400 and creates nothing when the body carries a role', async () => {
+      const headers = await staffHeaders(UserRole.SUPPORT);
+
+      const response = await request(app.getHttpServer())
+        .post(ADMIN_USERS)
+        .set(headers)
+        .send({ email: ASSISTED_EMAIL, fullName: 'Assisted Customer', role: 'SUPER_ADMIN' });
+
+      expect(response.status).toBe(400);
+      expect(await prisma.user.count({ where: { email: ASSISTED_EMAIL } })).toBe(0);
+    });
+
+    it('answers 409 for the same address in mixed case with spaces, and 403 for MARKETING', async () => {
+      const headers = await staffHeaders(UserRole.SUPPORT);
+      expect((await createCustomer(headers, ASSISTED_EMAIL)).status).toBe(201);
+
+      const again = await createCustomer(headers, '  Assisted@BarakahBazaar.com.bd ');
+
+      expect(again.status).toBe(409);
+      expect(again.body.message).toBe(CUSTOMER_ALREADY_EXISTS);
+      expect(await prisma.user.count({ where: { email: ASSISTED_EMAIL } })).toBe(1);
+
+      const marketing = await createCustomer(
+        await staffHeaders(UserRole.MARKETING),
+        'another@barakahbazaar.com.bd',
+      );
+      expect(marketing.status).toBe(403);
+      expect(await prisma.user.count({ where: { email: 'another@barakahbazaar.com.bd' } })).toBe(0);
+    });
+  });
+
+  describe('staff invitation resend', () => {
+    const adminHeaders = async (): Promise<Record<string, string>> => {
+      await seedVerifiedUser(prisma, {
+        email: 'root@barakahbazaar.com.bd',
+        password: PASSWORD,
+        role: UserRole.SUPER_ADMIN,
+      });
+      const tokens = await loginAs(app, 'root@barakahbazaar.com.bd', PASSWORD, DEVICE);
+      return authHeaders(tokens.accessToken, DEVICE);
+    };
+
+    const invite = async (
+      headers: Record<string, string>,
+      email: string,
+    ): Promise<{ id: string; token: string }> => {
+      const response = await request(app.getHttpServer())
+        .post(STAFF_INVITATIONS)
+        .set(headers)
+        .send({ email, role: UserRole.OPS });
+      expect(response.status).toBe(201);
+      return { id: response.body.invitation.id, token: response.body.token };
+    };
+
+    const resend = (headers: Record<string, string>, id: string) =>
+      request(app.getHttpServer()).post(`${STAFF_INVITATIONS}/${id}/resend`).set(headers);
+
+    const accept = (token: string) =>
+      request(app.getHttpServer())
+        .post(ACCEPT_INVITATION)
+        .send({ token, password: REGISTRATION_PASSWORD, fullName: INVITEE_NAME });
+
+    it('a resend returns a new token; the old one answers 404 and the new one accepts', async () => {
+      const headers = await adminHeaders();
+      const first = await invite(headers, INVITEE_EMAIL);
+
+      const alreadySeen = countEmailsTo(emailSender, INVITEE_EMAIL);
+
+      const resent = await resend(headers, first.id);
+
+      expect(resent.status).toBe(200);
+      expect(resent.body.token).toEqual(expect.any(String));
+      expect(resent.body.token).not.toBe(first.token);
+      const emailed = await waitForEmailTo(emailSender, INVITEE_EMAIL, alreadySeen);
+      const base = app.get(ConfigService).get<string>('APP_PUBLIC_BASE_URL');
+      const prefix = `${base}/accept-invitation?token=`;
+      expect(emailed.body).toContain(prefix);
+      const emailedToken = emailed.body.split(prefix)[1].split('\n')[0];
+      expect(emailedToken).toMatch(/^[\w-]{43}$/);
+      expect(emailedToken).not.toBe(first.token);
+      expect(
+        await prisma.adminAuditLog.count({ where: { action: 'staff.invitation_resent' } }),
+      ).toBe(1);
+
+      const old = await accept(first.token);
+      expect(old.status).toBe(404);
+      expect(old.body.message).toBe(INVITATION_NOT_VALID);
+      expect((await accept(emailedToken)).status).toBe(200);
+    });
+
+    it('resending an accepted invitation answers 409', async () => {
+      const headers = await adminHeaders();
+      const { id, token } = await invite(headers, INVITEE_EMAIL);
+      expect((await accept(token)).status).toBe(200);
+
+      const response = await resend(headers, id);
+
+      expect(response.status).toBe(409);
+      expect(response.body.message).toBe(INVITATION_NOT_OPEN);
+    });
+
+    it('an expired but still pending invitation resends and then accepts', async () => {
+      const headers = await adminHeaders();
+      const { id, token } = await invite(headers, INVITEE_EMAIL);
+      await prisma.staffInvitation.update({
+        where: { id },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      expect((await accept(token)).status).toBe(410);
+
+      const resent = await resend(headers, id);
+
+      expect(resent.status).toBe(200);
+      expect((await accept(resent.body.token)).status).toBe(200);
+    });
+
+    it('a resend by a non-SUPER_ADMIN answers 403 and rotates nothing', async () => {
+      const { id } = await invite(await adminHeaders(), INVITEE_EMAIL);
+      await seedVerifiedUser(prisma, {
+        email: 'support@barakahbazaar.com.bd',
+        password: PASSWORD,
+        role: UserRole.SUPPORT,
+      });
+      const tokens = await loginAs(app, 'support@barakahbazaar.com.bd', PASSWORD, OTHER_DEVICE);
+
+      const response = await resend(authHeaders(tokens.accessToken, OTHER_DEVICE), id);
+
+      expect(response.status).toBe(403);
+      expect(
+        await prisma.adminAuditLog.count({ where: { action: 'staff.invitation_resent' } }),
+      ).toBe(0);
+    });
+
+    it('resending an unknown invitation id answers 404', async () => {
+      const response = await resend(await adminHeaders(), '00000000-0000-4000-8000-000000000000');
+
+      expect(response.status).toBe(404);
+      expect(response.body.message).toBe('Invitation was not found.');
+    });
+
+    it('resend still succeeds once the address has an account; accept then answers 409', async () => {
+      // Pinned on purpose: resend is not an account lookup, and must not become one.
+      const headers = await adminHeaders();
+      const { id } = await invite(headers, INVITEE_EMAIL);
+      await seedVerifiedUser(prisma, { email: INVITEE_EMAIL, password: PASSWORD });
+
+      const resent = await resend(headers, id);
+
+      expect(resent.status).toBe(200);
+      const response = await accept(resent.body.token);
+      expect(response.status).toBe(409);
+      expect(response.body.message).toBe(INVITATION_ACCOUNT_EXISTS);
+    });
+  });
+
+  describe('auth settings administration', () => {
+    const AUTH_SETTINGS = '/api/v1/admin/auth-settings';
+    const IDLE_NOT_ABOVE_ACCESS =
+      'customerRefreshIdleMinutes must be greater than accessTokenMinutes (30).';
+    const MFA_NEEDS_CONFIRMATION =
+      'Turning off two-factor authentication for staff needs explicit confirmation.';
+
+    const headersFor = async (role: UserRole): Promise<Record<string, string>> => {
+      const email = `${role.toLowerCase()}@barakahbazaar.com.bd`;
+      await seedVerifiedUser(prisma, { email, password: PASSWORD, role });
+      const tokens = await loginAs(app, email, PASSWORD, DEVICE);
+      return authHeaders(tokens.accessToken, DEVICE);
+    };
+
+    const view = (headers: Record<string, string>) =>
+      request(app.getHttpServer()).get(AUTH_SETTINGS).set(headers);
+
+    const patch = (headers: Record<string, string>, body: Record<string, unknown>) =>
+      request(app.getHttpServer()).patch(AUTH_SETTINGS).set(headers).send(body);
+
+    it('a valid PATCH answers 200 and GET shows the new value', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+
+      const response = await patch(headers, { accessTokenMinutes: 45 });
+
+      expect(response.status).toBe(200);
+      expect(response.body.settings.accessTokenMinutes).toBe(45);
+      const read = await view(headers);
+      expect(read.status).toBe(200);
+      expect(read.body.settings.accessTokenMinutes).toBe(45);
+      expect(read.body.fallbacks).toEqual([]);
+      expect(await prisma.adminAuditLog.count({ where: { action: 'auth.settings_updated' } })).toBe(
+        1,
+      );
+    });
+
+    it('a PATCH that breaks a rule answers 400 with the rule message and writes nothing', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+
+      const response = await patch(headers, { customerRefreshIdleMinutes: 10 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe(IDLE_NOT_ABOVE_ACCESS);
+      const row = await prisma.authSettings.findFirstOrThrow();
+      expect(row.customerRefreshIdleMinutes).toBe(43_200);
+    });
+
+    it('turning staff MFA off needs confirmation; with it the change is audited as such', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+      await writeSettings({ staffMfaRequired: true });
+
+      const refused = await patch(headers, { staffMfaRequired: false });
+      expect(refused.status).toBe(400);
+      expect(refused.body.message).toBe(MFA_NEEDS_CONFIRMATION);
+      expect((await prisma.authSettings.findFirstOrThrow()).staffMfaRequired).toBe(true);
+      expect(
+        await prisma.adminAuditLog.count({
+          where: { action: { in: ['auth.settings_updated', 'auth.staff_mfa_disabled'] } },
+        }),
+      ).toBe(0);
+
+      const accepted = await patch(headers, {
+        staffMfaRequired: false,
+        confirmDisableStaffMfa: true,
+      });
+      expect(accepted.status).toBe(200);
+      expect(accepted.body.settings.staffMfaRequired).toBe(false);
+      expect(
+        await prisma.adminAuditLog.count({ where: { action: 'auth.staff_mfa_disabled' } }),
+      ).toBe(1);
+      expect(await prisma.adminAuditLog.count({ where: { action: 'auth.settings_updated' } })).toBe(
+        0,
+      );
+      expect((await prisma.authSettings.findFirstOrThrow()).staffMfaRequired).toBe(false);
+    });
+
+    it('setting staff MFA to false when it is already false needs no confirmation and is no MFA-disable row', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+
+      const response = await patch(headers, { staffMfaRequired: false });
+
+      expect(response.status).toBe(200);
+      expect(response.body.staffSessionsRevoked).toBe(0);
+      expect(
+        await prisma.adminAuditLog.count({ where: { action: 'auth.staff_mfa_disabled' } }),
+      ).toBe(0);
+      expect(await prisma.session.count({ where: { revokedAt: { not: null } } })).toBe(0);
+    });
+
+    it('turning staff MFA back on revokes every staff session, and only staff sessions', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+      await writeSettings({ staffMfaRequired: true });
+      const disabled = await patch(headers, {
+        staffMfaRequired: false,
+        confirmDisableStaffMfa: true,
+      });
+      expect(disabled.status).toBe(200);
+
+      await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const staff = await loginAs(app, STAFF_EMAIL, PASSWORD, DEVICE);
+      const customer = await loginAs(app, CUSTOMER_EMAIL, PASSWORD, DEVICE);
+
+      const enabled = await patch(headers, { staffMfaRequired: true });
+
+      expect(enabled.status).toBe(200);
+      expect(enabled.body.settings.staffMfaRequired).toBe(true);
+      // The OPS session and the acting super admin's own.
+      expect(enabled.body.staffSessionsRevoked).toBe(2);
+
+      const staffRefresh = await request(app.getHttpServer())
+        .post(REFRESH)
+        .set('x-device-id', DEVICE)
+        .send({ refreshToken: staff.refreshToken });
+      expect(staffRefresh.status).toBe(401);
+      expect(staffRefresh.body.message).toBe(INVALID_CREDENTIALS);
+
+      const customerRefresh = await request(app.getHttpServer())
+        .post(REFRESH)
+        .set('x-device-id', DEVICE)
+        .send({ refreshToken: customer.refreshToken });
+      expect(customerRefresh.status).toBe(200);
+
+      // The acting super admin's session went with the rest: the guard reads the row.
+      const own = await view(headers);
+      expect(own.status).toBe(401);
+      expect(own.body.message).toBe(INVALID_TOKEN);
+
+      const audit = await prisma.adminAuditLog.findFirstOrThrow({
+        where: { action: 'auth.staff_mfa_enabled' },
+      });
+      expect(audit.after).toEqual(
+        expect.objectContaining({ staffMfaRequired: true, revokedStaffSessions: 2 }),
+      );
+    });
+
+    it('a PATCH valid only on its own is refused when it breaks a stored value', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+      await writeSettings({ staffRefreshIdleMinutes: 45 });
+
+      const response = await patch(headers, { accessTokenMinutes: 60 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe(
+        'staffRefreshIdleMinutes must be greater than accessTokenMinutes (60).',
+      );
+    });
+
+    it('an empty PATCH body answers 400 and writes nothing', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+
+      const response = await patch(headers, {});
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe('Nothing to change.');
+      expect(
+        await prisma.adminAuditLog.count({
+          where: { action: { in: ['auth.settings_updated', 'auth.staff_mfa_disabled'] } },
+        }),
+      ).toBe(0);
+    });
+
+    it('answers 403 to an OPS user on both verbs', async () => {
+      const headers = await headersFor(UserRole.OPS);
+
+      expect((await view(headers)).status).toBe(403);
+      expect((await patch(headers, { accessTokenMinutes: 45 })).status).toBe(403);
+    });
+
+    it('answers 401 with no token', async () => {
+      expect((await request(app.getHttpServer()).get(AUTH_SETTINGS)).status).toBe(401);
+    });
+
+    it('lists a field whose stored value is invalid in fallbacks, and an unrelated PATCH still works', async () => {
+      const headers = await headersFor(UserRole.SUPER_ADMIN);
+      await prisma.authSettings.update({
+        where: { id: AuthConstants.AuthSettingsRowId },
+        data: { accessTokenMinutes: 500 },
+      });
+
+      const read = await view(headers);
+      expect(read.status).toBe(200);
+      expect(read.body.fallbacks).toContain('accessTokenMinutes');
+
+      const unrelated = await patch(headers, { refreshReuseGraceSeconds: 20 });
+      expect(unrelated.status).toBe(200);
+      const audit = await prisma.adminAuditLog.findFirstOrThrow({
+        where: { action: 'auth.settings_updated' },
+      });
+      // The invalid value the write overwrote survives in the audit row.
+      expect(audit.before).toEqual(
+        expect.objectContaining({
+          accessTokenMinutes: 30,
+          healedFrom: { accessTokenMinutes: 500 },
+        }),
+      );
+      expect(audit.after).toEqual(
+        expect.objectContaining({ healedFallbacks: ['accessTokenMinutes'] }),
+      );
+      // The merge runs over the effective settings, so the write heals the invalid stored value.
+      const row = await prisma.authSettings.findFirstOrThrow();
+      expect(row.refreshReuseGraceSeconds).toBe(20);
+      expect(row.accessTokenMinutes).toBe(30);
+      const after = await view(headers);
+      expect(after.body.settings.refreshReuseGraceSeconds).toBe(20);
+      expect(after.body.settings.accessTokenMinutes).toBe(30);
+      expect(after.body.fallbacks).toEqual([]);
+    });
+  });
+
+  describe('the audit trail holds no credential', () => {
+    it('disabling an account writes before and after rows with no password hash', async () => {
+      await seedVerifiedUser(prisma, {
+        email: 'root@barakahbazaar.com.bd',
+        password: PASSWORD,
+        role: UserRole.SUPER_ADMIN,
+      });
+      const target = await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const tokens = await loginAs(app, 'root@barakahbazaar.com.bd', PASSWORD, DEVICE);
+
+      const response = await request(app.getHttpServer())
+        .patch(`${ADMIN_USERS}/${target.id}/disable`)
+        .set(authHeaders(tokens.accessToken, DEVICE));
+
+      expect(response.status).toBe(200);
+      const rows = await prisma.adminAuditLog.findMany({ where: { action: 'customer.disabled' } });
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0].before)).not.toContain('scrypt$');
+      expect(JSON.stringify(rows[0].after)).not.toContain('scrypt$');
+      expect(JSON.stringify(rows[0].before)).not.toContain('passwordHash');
+      expect(JSON.stringify(rows[0].after)).not.toContain('passwordHash');
+    });
+
+    it('changing a role writes before and after rows with no password hash', async () => {
+      await seedVerifiedUser(prisma, {
+        email: 'root@barakahbazaar.com.bd',
+        password: PASSWORD,
+        role: UserRole.SUPER_ADMIN,
+      });
+      const target = await seedVerifiedUser(prisma, {
+        email: 'support@barakahbazaar.com.bd',
+        password: PASSWORD,
+        role: UserRole.SUPPORT,
+      });
+      const tokens = await loginAs(app, 'root@barakahbazaar.com.bd', PASSWORD, DEVICE);
+
+      const response = await request(app.getHttpServer())
+        .patch(`${ADMIN_USERS}/${target.id}/role`)
+        .set(authHeaders(tokens.accessToken, DEVICE))
+        .send({ role: 'MARKETING' });
+
+      expect(response.status).toBe(200);
+      const rows = await prisma.adminAuditLog.findMany({ where: { action: 'staff.role_changed' } });
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0].before)).not.toContain('scrypt$');
+      expect(JSON.stringify(rows[0].after)).not.toContain('scrypt$');
+      expect(JSON.stringify(rows[0].before)).not.toContain('passwordHash');
+      expect(JSON.stringify(rows[0].after)).not.toContain('passwordHash');
     });
   });
 });

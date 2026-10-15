@@ -13,6 +13,9 @@ import { AdminUserService } from './admin-user.service';
 import { AdminController } from './admin.controller';
 import { AuditLogRepository } from './audit-log.repository';
 import { AuditLogService } from './audit-log.service';
+import { AuthSettingsAdminController } from './auth-settings-admin.controller';
+import { AuthSettingsAdminRepository } from './auth-settings-admin.repository';
+import { AuthSettingsAdminService } from './auth-settings-admin.service';
 import { createEmailSender } from '../notification/gateways/email-sender.factory';
 import { AdminTokens } from './admin.constants';
 import {
@@ -24,7 +27,8 @@ import { StaffInvitationRepository } from './staff-invitation.repository';
 import { StaffInvitationService } from './staff-invitation.service';
 
 /**
- * Backoffice: the audit trail, catalog write-side, account management and staff invitations.
+ * Backoffice: the audit trail, catalog write-side, account management, staff invitations and
+ * the auth settings.
  *
  * Exports AuditLogService because every module that performs a staff write appends to the
  * same trail — a second log would defeat the point of having one.
@@ -41,6 +45,7 @@ import { StaffInvitationService } from './staff-invitation.service';
     AdminUserController,
     StaffInvitationController,
     StaffInvitationAcceptController,
+    AuthSettingsAdminController,
   ],
   providers: [
     AuditLogService,
@@ -54,6 +59,10 @@ import { StaffInvitationService } from './staff-invitation.service';
     StaffInvitationService,
     StaffInvitationAcceptService,
     StaffInvitationRepository,
+    // AuthSettingsService itself comes from AuthModule's export — the one factory-built
+    // instance, so the cache a write invalidates is the cache the guards read.
+    AuthSettingsAdminService,
+    AuthSettingsAdminRepository,
     {
       provide: AdminTokens.EmailSender,
       inject: [ConfigService, PinoLogger],

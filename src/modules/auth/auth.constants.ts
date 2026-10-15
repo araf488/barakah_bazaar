@@ -159,13 +159,25 @@ export const AuthConstants = {
   /** Refresh-token entropy, in bytes, before base64url encoding. */
   RefreshTokenBytes: 32,
   /**
-   * Hard ceiling on the refresh-token reuse grace window, enforced where the window is used
-   * rather than where it is configured. The stored setting is validated as a non-negative
-   * integer but is not bounded above, and the window is the length of time a rotated-away
-   * token still works — so one mistyped value would otherwise switch replay detection off
-   * for as long as it said. Two minutes is far beyond any plausible request race.
+   * Hard ceiling on the refresh-token reuse grace window. Enforced both where the setting is
+   * read and validated (`auth-settings.rules.ts` — a stored value above it falls back to the
+   * default) and, defensively, where the window is used: the window is the length of time a
+   * rotated-away token still works, so one mistyped value would otherwise switch replay
+   * detection off for as long as it said. Two minutes is far beyond any plausible request race.
    */
   RefreshReuseGraceMaxSeconds: 120,
+  /**
+   * Ceiling on `emailVerificationGraceHours`: thirty days. An unverified account is allowed to
+   * sign in for this long, so an unbounded value would quietly make verification optional.
+   */
+  EmailVerificationGraceMaxHours: 720,
+  /**
+   * Upper bound a request may send for any refresh idle or absolute window, in minutes: ten
+   * years (10 × 365 × 24 × 60). Not a policy limit — the cross-field rules in
+   * `auth-settings.rules.ts` are the policy — but a request-validation ceiling, so an absurd
+   * value is refused at the DTO and never reaches a Postgres `int4` column write.
+   */
+  SettingsMinutesMax: 5_256_000,
   /**
    * How stale `lastUsedAt` must be before an authenticated request writes the sliding idle
    * deadline forward. Without a floor, every request on a busy session becomes a write.
@@ -280,4 +292,15 @@ export const AuthMessages = {
   /** A staff account tried to turn MFA off while `staffMfaRequired` is set. */
   MfaCannotBeDisabledForStaff:
     'Two-factor authentication is required for staff accounts and cannot be disabled.',
+  /** An auth setting is not an integer inside its range: {0} field, {1} minimum, {2} maximum. */
+  SettingsIntegerRangeTemplate: '{0} must be a whole number from {1} to {2}.',
+  /** An auth setting is not strictly greater than another: {0} field, {1} other field, {2} its value. */
+  SettingsGreaterThanTemplate: '{0} must be greater than {1} ({2}).',
+  /** An auth setting is below another it must be at least: {0} field, {1} other field, {2} its value. */
+  SettingsAtLeastTemplate: '{0} must be at least {1} ({2}).',
+  /** An auth setting that must be a boolean is not: {0} field. */
+  SettingsBooleanTemplate: '{0} must be true or false.',
+  /** Turning `staffMfaRequired` off was requested without the explicit confirmation flag. */
+  StaffMfaDisableNeedsConfirmation:
+    'Turning off two-factor authentication for staff needs explicit confirmation.',
 } as const;

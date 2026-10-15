@@ -1,12 +1,12 @@
 # Admin / Backoffice module
 
-**Status:** Phase 2B complete — audit trail, catalog write-side, account management and staff invitations
+**Status:** Phase 2B complete — audit trail, catalog write-side, account management, staff invitations (with resend), customer accounts opened by support, and auth settings
 
 Order management, catalog and inventory CRUD, promotions, dispatch, reports, staff roles and the audit log.
 
 ## Owned tables
 
-- `admin_audit_log` ✅ — append-only; no update or delete exists anywhere in the codebase
+- `admin_audit_log` ✅ — append-only; the application has no update or delete. The one exception is the one-time scrub migration `20261014120000_scrub_user_credentials_from_audit`, which stripped password hashes and TOTP fields from existing `User` rows. `AdminMapper.toAdminUser` is an allowlist, so none are written now
 - `staff_invitations` ✅ — pending permission grants; no RLS policy at all, which is a deny
 
 ## Changing a role is one write
@@ -66,6 +66,56 @@ than closing an invitation twice.
 
 Expiry is **derived from `expires_at`, never a status value.** A row cannot claim to be open
 while its deadline has passed, and only a deliberate act moves the status column.
+
+## Customer accounts opened by support
+
+`POST /admin/users` (SUPER_ADMIN, SUPPORT) opens a CUSTOMER account for someone who ordered by
+phone or in person. The role is fixed in code and `forbidNonWhitelisted` rejects a `role` field.
+The account gets a random, never-disclosed scrypt hash, `emailVerifiedAt: null`, and the customer
+sets a real password through the ordinary password-reset email (`PasswordResetService.request`,
+60-minute TTL). That email says "reset your password", which is accepted for assisted sign-ups.
+
+The address is checked case-insensitively before hashing (409 `CustomerAlreadyExists`); a unique
+index on `users.email` decides a lost race to the same 409. The create and its
+`customer.created_by_staff` audit row are one transaction. A failed reset request is logged at warn
+and never fails the committed create, so `passwordSetupEmailQueued: true` means "handed off", not
+"sent". The response never carries the password, token or code. A pending staff invitation for the
+same address is not checked, so a later accept of it answers 409.
+
+## Resending an invitation
+
+`POST /admin/staff/invitations/:id/resend` (SUPER_ADMIN) rotates the token and extends the
+deadline to 7 days from now; role and email never change. In one transaction it updates
+`{ id, status: PENDING }` with the new `tokenHash` and `expiresAt` and appends a
+`staff.invitation_resent` audit row (the hash is never in it). An expired invitation that is still
+PENDING may be resent. The old link dies at commit because its hash is gone.
+
+Resend and accept cannot both win. The accept claim matches `{ id, status: PENDING, tokenHash }`,
+so an accept that read the invitation before a committed resend claims nothing and answers 409
+`InvitationNotPending`; a resend that waits on an accept's row lock finds the status ACCEPTED and
+updates nothing. Revoke vs resend and resend vs resend are status-guarded the same way. The raw token
+is in the response only while `EMAIL_PROVIDER=noop`.
+
+## Auth settings
+
+`GET` / `PATCH /admin/auth-settings` are SUPER_ADMIN only. Read and write share one rulebook
+(`auth-settings.rules.ts`), so a value the write accepts is one the read keeps. The read
+bound is wider: a SQL-set window above `SettingsMinutesMax` (10 years) is enforced but cannot be
+re-submitted.
+
+- **Fallbacks and healing.** GET returns the effective settings plus `fallbacks`, the fields whose stored value was invalid and is served as its default. PATCH merges over the effective settings, so an unrelated change never fails on a bad stored field, and writing heals it. The audit row keeps the evidence: `after.healedFallbacks` and `before.healedFrom` (the raw stored values).
+- **Compare-and-set.** The write is guarded on the `updatedAt` it read. A lost race answers 409 `SettingsChangedConcurrently`; reload and retry. Without it, a stale `staffMfaRequired: false` could re-disable staff MFA with no confirmation.
+- **Turning staff MFA off** needs `confirmDisableStaffMfa: true` (400 otherwise) and is audited as `auth.staff_mfa_disabled`.
+- **Turning staff MFA back on** revokes every active non-CUSTOMER session in the same transaction as the write and its audit row (`auth.staff_mfa_enabled`, `after.revokedStaffSessions`) and returns `staffSessionsRevoked`. The acting admin's own session ends too: the guard checks `revokedAt` per request, so their next call is a 401. After the commit each affected user's Redis session cache is bumped; a failed bump is logged at warn and the cache TTL (300 s) is the backstop.
+- **Propagation.** `propagatesWithinSeconds` (`AUTH_SETTINGS_CACHE_SECONDS`) covers new sign-ins and refreshes on other instances. Existing sessions keep their absolute deadline.
+
+## 503 rule
+
+A **lookup** fault (the read returned `null` before any write) answers 503
+`ErrorMessages.ServiceUnavailable`. A fault in an **audited write** (`*Audited` returned `null`)
+answers 503 `AdminMessages.AuditTrailUnavailable`. This holds for every endpoint here, including
+create customer, invite, revoke, resend and the settings PATCH; both are 503, so clients tell them
+apart by message. A lost race is a 409, never a 503.
 
 ## Product images
 

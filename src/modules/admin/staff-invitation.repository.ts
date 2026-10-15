@@ -35,6 +35,18 @@ export type AcceptResult =
   | { readonly kind: 'account-exists' }
   | null;
 
+/** `null` means the database faulted; `not-pending` means another caller settled it first. */
+export type SettleResult =
+  | { readonly kind: 'settled'; readonly invitation: StaffInvitation }
+  | { readonly kind: 'not-pending' }
+  | null;
+
+/** `null` means the database faulted; `not-pending` means another caller settled it first. */
+export type ResendResult =
+  | { readonly kind: 'resent'; readonly invitation: StaffInvitation }
+  | { readonly kind: 'not-pending' }
+  | null;
+
 export interface InvitationPage {
   items: StaffInvitation[];
   total: number;
@@ -79,7 +91,7 @@ export class StaffInvitationRepository {
    * Moves an invitation out of PENDING, with its audit row, in one transaction.
    *
    * The `status: PENDING` in the where clause is the concurrency guard: two acceptances of
-   * the same token race, and the loser updates nothing and gets a null rather than closing an
+   * the same token race, and the loser updates nothing and gets `not-pending` rather than closing an
    * invitation twice.
    */
   async settleAudited(
@@ -88,7 +100,7 @@ export class StaffInvitationRepository {
     // this write only ever sets the scalar it already has an id for.
     data: Prisma.StaffInvitationUncheckedUpdateManyInput,
     audit: (updated: StaffInvitation) => AuditLogWriteData,
-  ): Promise<StaffInvitation | null> {
+  ): Promise<SettleResult> {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const affected = await tx.staffInvitation.updateMany({
@@ -103,19 +115,61 @@ export class StaffInvitationRepository {
 
         const updated = await tx.staffInvitation.findUniqueOrThrow({ where: { id } });
         await this.auditLog.appendWithin(tx, audit(updated));
-        return updated;
+        return { kind: 'settled', invitation: updated } as const;
       });
     } catch (error) {
       if (error instanceof InvitationNoLongerPendingError) {
         // Expected outcome of a race, not a fault. Logged at info so a genuine spike is
         // still visible without filling the error log.
         this.logger.info({ invitationId: id }, 'Invitation was already settled by someone else');
-        return null;
+        return { kind: 'not-pending' };
       }
 
       this.logger.error(
         { err: error, invitationId: id },
         'Exception occurred in StaffInvitationRepository.settleAudited',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Rotates a pending invitation's token and deadline, with its audit row, in one transaction.
+   *
+   * Guarded by `status: PENDING` exactly like `settleAudited`: a resend racing an acceptance or
+   * a revoke updates nothing and gets `not-pending`, so a closed invitation is never given a live
+   * token. A fault is `null`, kept distinct so the caller does not report it as a lost race.
+   */
+  async resendAudited(
+    id: string,
+    data: { tokenHash: string; expiresAt: Date },
+    audit: (updated: StaffInvitation) => AuditLogWriteData,
+  ): Promise<ResendResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const affected = await tx.staffInvitation.updateMany({
+          where: { id, status: StaffInvitationStatus.PENDING },
+          data,
+        });
+
+        if (affected.count === 0) {
+          throw new InvitationNoLongerPendingError();
+        }
+
+        const updated = await tx.staffInvitation.findUniqueOrThrow({ where: { id } });
+        await this.auditLog.appendWithin(tx, audit(updated));
+        return { kind: 'resent', invitation: updated } as const;
+      });
+    } catch (error) {
+      if (error instanceof InvitationNoLongerPendingError) {
+        this.logger.info({ invitationId: id }, 'Invitation was already settled by someone else');
+        return { kind: 'not-pending' };
+      }
+
+      // The new token hash is deliberately not logged.
+      this.logger.error(
+        { err: error, invitationId: id },
+        'Exception occurred in StaffInvitationRepository.resendAudited',
       );
       return null;
     }
@@ -137,6 +191,10 @@ export class StaffInvitationRepository {
    * re-evaluates the predicate under READ COMMITTED, matches no row and gets `not-pending`. The
    * status, `acceptedAt` and `acceptedBy` are then written together in one update, after the
    * user is created, so the CHECK holds at every statement.
+   *
+   * The claim also matches the token hash the caller read the invitation by. A resend rotates
+   * that hash, so it kills the old link even mid-accept: an accept that read the row before the
+   * resend committed claims nothing and gets `not-pending`.
    */
   async acceptCreatingAccount(
     invitation: StaffInvitation,
@@ -148,7 +206,11 @@ export class StaffInvitationRepository {
         const now = new Date();
         // Claim: lock the row and check it is pending; the status waits until acceptedBy exists.
         const claimed = await tx.staffInvitation.updateMany({
-          where: { id: invitation.id, status: StaffInvitationStatus.PENDING },
+          where: {
+            id: invitation.id,
+            status: StaffInvitationStatus.PENDING,
+            tokenHash: invitation.tokenHash,
+          },
           data: { updatedAt: now },
         });
 

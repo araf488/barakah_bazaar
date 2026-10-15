@@ -819,10 +819,11 @@ export class SessionService {
    * the skew, forgiving every replay of that token until the clock catches up. A stamp that
    * has not happened yet cannot vouch for anything.
    *
-   * The configured window is clamped here rather than trusted, because this is the only place
-   * that acts on it: `refreshReuseGraceSeconds` is validated as a non-negative integer but has
-   * no upper bound, so one mistyped value would otherwise switch replay detection off for as
-   * long as it said, silently.
+   * The configured window is also clamped here. The read path already enforces
+   * `RefreshReuseGraceMaxSeconds` (the shared `auth-settings.rules`, where a stored value above
+   * it falls back to the default), so the `Math.min` is defence in depth: this is the only
+   * place that acts on the window, and an unbounded one would switch replay detection off for
+   * as long as it said, silently, should that read-side check ever regress.
    */
   private static withinReuseGrace(
     session: SessionWithUser,

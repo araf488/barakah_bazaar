@@ -164,14 +164,83 @@ export class StaffInvitationService {
       );
 
       if (!revoked) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, AdminMessages.AuditTrailUnavailable);
+      }
+
+      if (revoked.kind === 'not-pending') {
         return serviceFail(HttpStatus.CONFLICT, AdminMessages.InvitationNotPending);
       }
 
-      return serviceOk(StaffInvitationMapper.toDto(revoked));
+      return serviceOk(StaffInvitationMapper.toDto(revoked.invitation));
     } catch (error) {
       this.logger.error(
         { err: error, invitationId },
         'Exception occurred in StaffInvitationService.revoke',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * Issues a fresh link for an open invitation: the token is rotated, so the old link dies, and
+   * the deadline restarts. An expired but still PENDING invitation can be resent.
+   */
+  async resend(
+    actor: AuthenticatedUser,
+    invitationId: string,
+  ): Promise<ServiceResponse<InvitationCreatedDto>> {
+    try {
+      const sender = await this.resolveActor(actor);
+      if (!sender.ok) {
+        return sender;
+      }
+
+      const invitation = await this.repository.findById(invitationId);
+
+      if (invitation === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      if (invitation === undefined) {
+        return serviceFail(
+          HttpStatus.NOT_FOUND,
+          formatMessage(ErrorMessageTemplates.NotFound, AdminConstants.InvitationResourceName),
+        );
+      }
+
+      if (invitation.status !== StaffInvitationStatus.PENDING) {
+        return serviceFail(HttpStatus.CONFLICT, AdminMessages.InvitationNotPending);
+      }
+
+      const token = randomBytes(AdminConstants.InvitationTokenBytes).toString('base64url');
+
+      const updated = await this.repository.resendAudited(
+        invitation.id,
+        { tokenHash: hashInvitationToken(token), expiresAt: StaffInvitationService.deadline() },
+        (row) =>
+          StaffInvitationService.audit(
+            sender.data,
+            AdminAuditActions.StaffInvitationResent,
+            row,
+            invitation,
+            row,
+          ),
+      );
+
+      if (!updated) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, AdminMessages.AuditTrailUnavailable);
+      }
+
+      if (updated.kind === 'not-pending') {
+        return serviceFail(HttpStatus.CONFLICT, AdminMessages.InvitationNotPending);
+      }
+
+      return serviceOk(await this.deliver(updated.invitation, token));
+    } catch (error) {
+      // The token is never included: it is a live credential even in an error path.
+      this.logger.error(
+        { err: error, invitationId },
+        'Exception occurred in StaffInvitationService.resend',
       );
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }

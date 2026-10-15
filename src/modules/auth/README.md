@@ -149,6 +149,14 @@ session.
 and the grace window, come from `auth_settings` and differ by role, so staff sessions can be
 made short-lived without touching a customer's.
 
+A settings change reaches **new** decisions within `AUTH_SETTINGS_CACHE_SECONDS` (default 60): new
+sign-ins and refreshes. A session already issued keeps its `absoluteExpiresAt`, so shortening an
+absolute window does not shorten it; the idle deadline is re-derived on the next touch but stays
+capped by that stored absolute deadline. `staffMfaRequired` is read at sign-in and at MFA disable,
+never on refresh or in the guard, so the one thing that ends existing staff sessions is turning it
+back on: `PATCH /admin/auth-settings` then revokes every active non-CUSTOMER session in the same
+transaction, the caller's included (see the admin module README).
+
 ## Password reset and change
 
 `POST /auth/forgot-password` → `POST /auth/reset-password` recovers a forgotten password;

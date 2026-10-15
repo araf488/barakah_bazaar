@@ -6,7 +6,7 @@ import { UserRole } from '../../infra/prisma/prisma-client';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AdminUserController } from './admin-user.controller';
 import { AdminUserService } from './admin-user.service';
-import { AdminUserQueryDto, ChangeRoleDto } from './dto/admin-user.dto';
+import { AdminUserQueryDto, ChangeRoleDto, CreateCustomerDto } from './dto/admin-user.dto';
 
 const staff: AuthenticatedUser = {
   userId: '11111111-1111-1111-1111-111111111111',
@@ -21,7 +21,12 @@ const emptyPage = {
 };
 
 describe('AdminUserController', () => {
-  let userService: { listUsers: jest.Mock; setAccountEnabled: jest.Mock; changeRole: jest.Mock };
+  let userService: {
+    listUsers: jest.Mock;
+    setAccountEnabled: jest.Mock;
+    changeRole: jest.Mock;
+    createCustomer: jest.Mock;
+  };
   let controller: AdminUserController;
 
   beforeEach(() => {
@@ -29,6 +34,10 @@ describe('AdminUserController', () => {
       listUsers: jest.fn().mockResolvedValue({ ok: true, data: emptyPage }),
       setAccountEnabled: jest.fn().mockResolvedValue({ ok: true, data: { id: 'user-2' } }),
       changeRole: jest.fn().mockResolvedValue({ ok: true, data: { id: 'user-2' } }),
+      createCustomer: jest.fn().mockResolvedValue({
+        ok: true,
+        data: { user: { id: 'user-9' }, passwordSetupEmailQueued: true },
+      }),
     };
     controller = new AdminUserController(
       userService as unknown as AdminUserService,
@@ -52,6 +61,43 @@ describe('AdminUserController', () => {
       });
 
       await expect(controller.list(new AdminUserQueryDto())).rejects.toThrow(HttpException);
+    });
+  });
+
+  describe('create', () => {
+    const body = Object.assign(new CreateCustomerDto(), {
+      email: 'aisha@example.com',
+      fullName: 'Aisha Rahman',
+    });
+
+    it('is open to SUPER_ADMIN and SUPPORT only, and answers 201', () => {
+      const handler = AdminUserController.prototype.create;
+
+      expect(Reflect.getMetadata('barakah:roles', handler)).toEqual(['SUPER_ADMIN', 'SUPPORT']);
+      expect(Reflect.getMetadata('__httpCode__', handler)).toBe(201);
+    });
+
+    it('returns the created customer and passes the caller and body through', async () => {
+      await expect(controller.create(staff, body)).resolves.toEqual({
+        user: { id: 'user-9' },
+        passwordSetupEmailQueued: true,
+      });
+      expect(userService.createCustomer).toHaveBeenCalledWith(staff, body);
+    });
+
+    it('surfaces the 409 for an existing account', async () => {
+      userService.createCustomer.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'An account already exists for that email address.',
+      });
+
+      await expect(controller.create(staff, body)).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('refuses with no verified caller', async () => {
+      await expect(controller.create(undefined, body)).rejects.toThrow(UnauthorizedException);
+      expect(userService.createCustomer).not.toHaveBeenCalled();
     });
   });
 
@@ -152,6 +198,52 @@ describe('AdminUserController', () => {
 
     it.each(Object.values(UserRole))('accepts %s as a target role', async (role) => {
       await expect(validate(plainToInstance(ChangeRoleDto, { role }))).resolves.toEqual([]);
+    });
+  });
+
+  describe('CreateCustomerDto validation', () => {
+    const valid = { email: 'aisha@example.com', fullName: 'Aisha Rahman' };
+    const check = (payload: object) =>
+      validate(plainToInstance(CreateCustomerDto, payload), {
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      });
+
+    it('accepts a valid payload, with and without a language', async () => {
+      await expect(check(valid)).resolves.toEqual([]);
+      await expect(check({ ...valid, preferredLanguage: 'EN' })).resolves.toEqual([]);
+    });
+
+    it('rejects a role field', async () => {
+      const errors = await check({ ...valid, role: 'SUPER_ADMIN' });
+
+      expect(errors.map((error) => error.property)).toContain('role');
+    });
+
+    it('rejects a whitespace-only fullName', async () => {
+      const errors = await check({ ...valid, fullName: '   ' });
+
+      expect(errors.map((error) => error.property)).toContain('fullName');
+    });
+
+    it('rejects a fullName over 120 characters and accepts exactly 120', async () => {
+      const tooLong = await check({ ...valid, fullName: 'a'.repeat(121) });
+      const atLimit = await check({ ...valid, fullName: 'a'.repeat(120) });
+
+      expect(tooLong.map((error) => error.property)).toContain('fullName');
+      expect(atLimit).toEqual([]);
+    });
+
+    it('rejects a bad email', async () => {
+      const errors = await check({ ...valid, email: 'not-an-email' });
+
+      expect(errors.map((error) => error.property)).toContain('email');
+    });
+
+    it('rejects a language outside the enum', async () => {
+      const errors = await check({ ...valid, preferredLanguage: 'FR' });
+
+      expect(errors.map((error) => error.property)).toContain('preferredLanguage');
     });
   });
 });

@@ -26,6 +26,7 @@ describe('StaffInvitationController', () => {
   let service: {
     invite: jest.Mock;
     revoke: jest.Mock;
+    resend: jest.Mock;
     list: jest.Mock;
   };
   let acceptService: { accept: jest.Mock };
@@ -34,7 +35,7 @@ describe('StaffInvitationController', () => {
   let acceptController: StaffInvitationAcceptController;
 
   beforeEach(() => {
-    service = { invite: jest.fn(), revoke: jest.fn(), list: jest.fn() };
+    service = { invite: jest.fn(), revoke: jest.fn(), resend: jest.fn(), list: jest.fn() };
     acceptService = { accept: jest.fn() };
     logger = createMockLogger();
     controller = new StaffInvitationController(
@@ -145,6 +146,30 @@ describe('StaffInvitationController', () => {
     const logged = JSON.stringify(logger.error.mock.calls);
     expect(logged).not.toContain('super-secret-token');
     expect(logged).not.toContain('Marbled Kingfisher 41!');
+  });
+
+  it('resends by id', async () => {
+    service.resend.mockResolvedValue({ ok: true, data: { invitation: {}, emailSent: true } });
+
+    await controller.resend(superAdmin, 'inv-1');
+
+    expect(service.resend).toHaveBeenCalledWith(superAdmin, 'inv-1');
+  });
+
+  it('passes a service failure through as an HTTP error when resending', async () => {
+    service.resend.mockResolvedValue({
+      ok: false,
+      status: HttpStatus.CONFLICT,
+      message: 'This invitation is no longer open.',
+    });
+
+    await expect(controller.resend(superAdmin, 'inv-1')).rejects.toBeInstanceOf(HttpException);
+  });
+
+  it('leaves resend to the class-level roles', () => {
+    expect(
+      new Reflector().get(MetadataKeys.Roles, StaffInvitationController.prototype.resend),
+    ).toBeUndefined();
   });
 
   it('revokes by id', async () => {

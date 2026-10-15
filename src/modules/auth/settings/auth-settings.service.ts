@@ -1,39 +1,48 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { AuthConstants } from '../auth.constants';
 import { AuthSettingsRepository } from './auth-settings.repository';
+import {
+  AUTH_SETTINGS_DEFAULTS,
+  AuthSettingsField,
+  ResolvedAuthSettings,
+  isFieldValid,
+} from './auth-settings.rules';
 import { AuthSettings } from '../../../infra/prisma/prisma-client';
 
-/** Token lifetimes and identity policy, resolved from the database with validated fallbacks. */
-export interface ResolvedAuthSettings {
-  readonly accessTokenMinutes: number;
-  readonly customerRefreshIdleMinutes: number;
-  readonly customerRefreshAbsoluteMinutes: number;
-  readonly staffRefreshIdleMinutes: number;
-  readonly staffRefreshAbsoluteMinutes: number;
-  readonly staffMfaRequired: boolean;
-  readonly emailVerificationGraceHours: number;
-  readonly refreshReuseGraceSeconds: number;
+export { AUTH_SETTINGS_DEFAULTS } from './auth-settings.rules';
+export type { ResolvedAuthSettings } from './auth-settings.rules';
+
+/** What one validation pass produced: the settings, and every field that fell back to its default. */
+interface ValidatedAuthSettings {
+  readonly settings: ResolvedAuthSettings;
+  readonly fallbacks: AuthSettingsField[];
 }
 
-/** Mirrors the Prisma `AuthSettings` model's `@default`s exactly. */
-export const AUTH_SETTINGS_DEFAULTS: ResolvedAuthSettings = Object.freeze({
-  accessTokenMinutes: 30,
-  customerRefreshIdleMinutes: 43200,
-  customerRefreshAbsoluteMinutes: 129600,
-  staffRefreshIdleMinutes: 720,
-  staffRefreshAbsoluteMinutes: 10080,
-  staffMfaRequired: true,
-  emailVerificationGraceHours: 168,
-  refreshReuseGraceSeconds: 30,
-});
+/** An uncached read's result, with which fields fell back and when the row was last written. */
+export interface AuthSettingsWithFallbacks extends ValidatedAuthSettings {
+  readonly updatedAt: Date | null;
+  /**
+   * The raw stored value of each field in `fallbacks`, exactly as the row held it, taken from
+   * the same read. A write that heals those fields overwrites them, so this is the only place
+   * the invalid values survive long enough to be audited. Empty when nothing fell back.
+   */
+  readonly storedFallbackValues: Partial<ResolvedAuthSettings>;
+}
 
 /**
  * Resolves the current auth settings, validated field by field with a short-lived cache.
  *
- * The row is edited directly in the database (there is no admin endpoint for it yet), so a
- * bad value must never be able to make the service unable to issue a token — every field
- * that fails its own check falls back to its own default rather than failing the whole read.
+ * The row is written through `PATCH /admin/auth-settings` (which validates first) but can still
+ * be edited directly in the database, so a bad value must never be able to make the service
+ * unable to issue a token — every field that fails its own check falls back to its own default
+ * rather than failing the whole read.
+ *
+ * The per-field rules live in `auth-settings.rules.ts`, shared with the write path, so what
+ * a write refuses and what a read falls back from are one definition. Sharing them brought
+ * two upper bounds to the read path that it did not previously enforce: a stored
+ * `refreshReuseGraceSeconds` above `AuthConstants.RefreshReuseGraceMaxSeconds` (120) and a
+ * stored `emailVerificationGraceHours` above `AuthConstants.EmailVerificationGraceMaxHours`
+ * (720) now fall back to their defaults (30 and 168) and are logged, like any other bad field.
  */
 @Injectable()
 export class AuthSettingsService {
@@ -65,6 +74,67 @@ export class AuthSettingsService {
   }
 
   /**
+   * Drops the cached settings, so the next `current()` reads the database.
+   *
+   * This can race an in-flight `current()` on the same instance: a read that loaded the row just
+   * before a write lands its (old) result into the cache after this runs. That staleness is still
+   * bounded by `cacheSeconds` (`AUTH_SETTINGS_CACHE_SECONDS`), which is exactly what the admin
+   * write's `propagatesWithinSeconds` promises, so no generation counter is kept to close it.
+   */
+  invalidate(): void {
+    try {
+      this.cached = null;
+      this.cachedAt = 0;
+    } catch (error) {
+      // Two field resets cannot throw today; the block is the standing rule for every public
+      // service method, so a future change here cannot fail an admin write that already committed.
+      this.logger.error({ err: error }, 'Exception occurred in AuthSettingsService.invalidate');
+    }
+  }
+
+  /**
+   * An uncached read, validated exactly as `current()` validates, that also reports which
+   * fields fell back to their defaults. Neither reads nor populates the cache.
+   *
+   * `null` when the read failed — a fault is not reported as defaults here, because a caller
+   * showing the settings must not present an outage as the stored values. An absent row is
+   * the defaults, with no fallbacks and no `updatedAt`.
+   */
+  async resolveWithFallbacks(): Promise<AuthSettingsWithFallbacks | null> {
+    try {
+      const row = await this.repository.load();
+
+      if (row === null) {
+        // The repository already logged the underlying failure with the error object.
+        return null;
+      }
+
+      if (row === undefined) {
+        return {
+          settings: AUTH_SETTINGS_DEFAULTS,
+          fallbacks: [],
+          updatedAt: null,
+          storedFallbackValues: {},
+        };
+      }
+
+      const validated = this.validate(row);
+
+      return {
+        ...validated,
+        updatedAt: row.updatedAt,
+        storedFallbackValues: AuthSettingsService.storedValuesOf(row, validated.fallbacks),
+      };
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'Exception occurred in AuthSettingsService.resolveWithFallbacks',
+      );
+      return null;
+    }
+  }
+
+  /**
    * Wraps the whole read-and-validate path, `validate()` included, so `current()`'s "never
    * throws" guarantee is structural rather than resting on `validate()` happening to be
    * throw-free.
@@ -89,7 +159,7 @@ export class AuthSettingsService {
         return AUTH_SETTINGS_DEFAULTS;
       }
 
-      return this.validate(row);
+      return this.validate(row).settings;
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in AuthSettingsService.current');
       return AUTH_SETTINGS_DEFAULTS;
@@ -100,17 +170,20 @@ export class AuthSettingsService {
    * Validated in a fixed order: `accessTokenMinutes` first, because every idle window is then
    * checked against its *already-validated* value — a bad access-token setting must not
    * cascade into rejecting otherwise-good idle windows.
+   *
+   * The one validation both `current()` (which keeps only `settings`) and
+   * `resolveWithFallbacks()` use, so the two can never disagree about which fields fell back.
    */
-  private validate(row: AuthSettings): ResolvedAuthSettings {
+  private validate(row: AuthSettings): ValidatedAuthSettings {
+    const fallbacks: AuthSettingsField[] = [];
+    const logger = this.logger;
+
     const accessTokenMinutes = AuthSettingsService.pick(
-      row.accessTokenMinutes,
-      (value) =>
-        Number.isInteger(value) &&
-        value >= AuthConstants.AccessTokenMinMinutes &&
-        value <= AuthConstants.AccessTokenMaxMinutes,
-      AUTH_SETTINGS_DEFAULTS.accessTokenMinutes,
       'accessTokenMinutes',
-      this.logger,
+      row.accessTokenMinutes,
+      {},
+      fallbacks,
+      logger,
     );
 
     // Rule 2's own default can only violate "idle > access token" if a future ceiling raise
@@ -118,22 +191,22 @@ export class AuthSettingsService {
     // today, but `atLeast` closes it structurally rather than leaving it to arithmetic luck.
     const customerRefreshIdleMinutes = AuthSettingsService.atLeast(
       AuthSettingsService.pick(
-        row.customerRefreshIdleMinutes,
-        (value) => value > accessTokenMinutes,
-        AUTH_SETTINGS_DEFAULTS.customerRefreshIdleMinutes,
         'customerRefreshIdleMinutes',
-        this.logger,
+        row.customerRefreshIdleMinutes,
+        { accessTokenMinutes },
+        fallbacks,
+        logger,
       ),
       accessTokenMinutes + 1,
     );
 
     const staffRefreshIdleMinutes = AuthSettingsService.atLeast(
       AuthSettingsService.pick(
-        row.staffRefreshIdleMinutes,
-        (value) => value > accessTokenMinutes,
-        AUTH_SETTINGS_DEFAULTS.staffRefreshIdleMinutes,
         'staffRefreshIdleMinutes',
-        this.logger,
+        row.staffRefreshIdleMinutes,
+        { accessTokenMinutes },
+        fallbacks,
+        logger,
       ),
       accessTokenMinutes + 1,
     );
@@ -145,79 +218,91 @@ export class AuthSettingsService {
     // value that was validated.
     const customerRefreshAbsoluteMinutes = AuthSettingsService.atLeast(
       AuthSettingsService.pick(
-        row.customerRefreshAbsoluteMinutes,
-        (value) => value >= customerRefreshIdleMinutes,
-        AUTH_SETTINGS_DEFAULTS.customerRefreshAbsoluteMinutes,
         'customerRefreshAbsoluteMinutes',
-        this.logger,
+        row.customerRefreshAbsoluteMinutes,
+        { customerRefreshIdleMinutes },
+        fallbacks,
+        logger,
       ),
       customerRefreshIdleMinutes,
     );
 
     const staffRefreshAbsoluteMinutes = AuthSettingsService.atLeast(
       AuthSettingsService.pick(
-        row.staffRefreshAbsoluteMinutes,
-        (value) => value >= staffRefreshIdleMinutes,
-        AUTH_SETTINGS_DEFAULTS.staffRefreshAbsoluteMinutes,
         'staffRefreshAbsoluteMinutes',
-        this.logger,
+        row.staffRefreshAbsoluteMinutes,
+        { staffRefreshIdleMinutes },
+        fallbacks,
+        logger,
       ),
       staffRefreshIdleMinutes,
     );
 
     const emailVerificationGraceHours = AuthSettingsService.pick(
-      row.emailVerificationGraceHours,
-      (value) => Number.isInteger(value) && value >= 0,
-      AUTH_SETTINGS_DEFAULTS.emailVerificationGraceHours,
       'emailVerificationGraceHours',
-      this.logger,
+      row.emailVerificationGraceHours,
+      {},
+      fallbacks,
+      logger,
     );
 
     const refreshReuseGraceSeconds = AuthSettingsService.pick(
-      row.refreshReuseGraceSeconds,
-      (value) => Number.isInteger(value) && value >= 0,
-      AUTH_SETTINGS_DEFAULTS.refreshReuseGraceSeconds,
       'refreshReuseGraceSeconds',
-      this.logger,
+      row.refreshReuseGraceSeconds,
+      {},
+      fallbacks,
+      logger,
     );
 
     const staffMfaRequired = AuthSettingsService.pick(
-      row.staffMfaRequired,
-      (value) => typeof value === 'boolean',
-      AUTH_SETTINGS_DEFAULTS.staffMfaRequired,
       'staffMfaRequired',
-      this.logger,
+      row.staffMfaRequired,
+      {},
+      fallbacks,
+      logger,
     );
 
     return {
-      accessTokenMinutes,
-      customerRefreshIdleMinutes,
-      customerRefreshAbsoluteMinutes,
-      staffRefreshIdleMinutes,
-      staffRefreshAbsoluteMinutes,
-      staffMfaRequired,
-      emailVerificationGraceHours,
-      refreshReuseGraceSeconds,
+      settings: {
+        accessTokenMinutes,
+        customerRefreshIdleMinutes,
+        customerRefreshAbsoluteMinutes,
+        staffRefreshIdleMinutes,
+        staffRefreshAbsoluteMinutes,
+        staffMfaRequired,
+        emailVerificationGraceHours,
+        refreshReuseGraceSeconds,
+      },
+      fallbacks,
     };
   }
 
   /**
-   * One field's value when it passes `isValid`, otherwise its own default — logged with the
-   * field name in structured context (never interpolated into the message, S2629).
+   * One field's value when it passes its rule in `auth-settings.rules.ts`, otherwise its own
+   * default — recorded in `fallbacks` and logged with the field name in structured context
+   * (never interpolated into the message, S2629).
    */
-  private static pick<T>(
-    value: T,
-    isValid: (value: T) => boolean,
-    fallback: T,
-    field: string,
+  private static pick<K extends AuthSettingsField>(
+    field: K,
+    value: ResolvedAuthSettings[K],
+    resolved: Partial<ResolvedAuthSettings>,
+    fallbacks: AuthSettingsField[],
     logger: PinoLogger,
-  ): T {
-    if (isValid(value)) {
+  ): ResolvedAuthSettings[K] {
+    if (isFieldValid(field, value, resolved)) {
       return value;
     }
 
     logger.error({ field, value }, 'Invalid auth setting, using default');
-    return fallback;
+    fallbacks.push(field);
+    return AUTH_SETTINGS_DEFAULTS[field];
+  }
+  /** The raw stored values of `fields`, read off the row the validation ran over. */
+  private static storedValuesOf(
+    row: AuthSettings,
+    fields: readonly AuthSettingsField[],
+  ): Partial<ResolvedAuthSettings> {
+    return Object.fromEntries(fields.map((field) => [field, row[field]]));
   }
 
   /**

@@ -169,6 +169,13 @@ import { EmailVerificationService } from './verification/email-verification.serv
     // that registration uses.
     PasswordHasher,
     PasswordPolicy,
+    // The admin module's auth-settings endpoints read with `resolveWithFallbacks()` and drop
+    // the cache with `invalidate()` after a write. This exports the one factory-built instance
+    // above — re-providing it elsewhere would be a second cache that a write never invalidates.
+    AuthSettingsService,
+    // An admin-created customer account is sent its set-a-password email through the same
+    // reset flow (cooldown, token, mail) a user's own forgot-password request uses.
+    PasswordResetService,
   ],
 })
 export class AuthModule {

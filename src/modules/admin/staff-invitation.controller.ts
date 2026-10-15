@@ -83,10 +83,47 @@ export class StaffInvitationController {
     }
   }
 
+  @Post(':id/resend')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Issue a fresh link for an open invitation; the old link stops working',
+  })
+  @ApiResponse({ status: HttpStatus.OK, type: InvitationCreatedDto })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'No such invitation' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'The id is not a UUID' })
+  @ApiResponse({ status: HttpStatus.FORBIDDEN, description: 'Not a super admin' })
+  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'The invitation is no longer open' })
+  @ApiResponse({
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    description: 'Database fault, or the audit row could not be recorded',
+  })
+  async resend(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<InvitationCreatedDto> {
+    try {
+      return unwrapOrThrow(await this.invitations.resend(actor, id));
+    } catch (error) {
+      this.logger.error(
+        { err: error, invitationId: id },
+        'Exception occurred in StaffInvitationController.resend',
+      );
+      throw error;
+    }
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Withdraw an invitation that has not been accepted' })
   @ApiResponse({ status: HttpStatus.OK, type: StaffInvitationDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'The id is not a UUID' })
+  @ApiResponse({ status: HttpStatus.FORBIDDEN, description: 'Not a super admin' })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'No such invitation' })
+  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'The invitation is no longer open' })
+  @ApiResponse({
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    description: 'Database fault, or the audit row could not be recorded',
+  })
   async revoke(
     @CurrentUser() actor: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

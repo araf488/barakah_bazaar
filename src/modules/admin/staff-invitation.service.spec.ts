@@ -46,6 +46,7 @@ describe('StaffInvitationService', () => {
   let repository: {
     createAudited: jest.Mock;
     settleAudited: jest.Mock;
+    resendAudited: jest.Mock;
     findById: jest.Mock;
     findOpenForEmail: jest.Mock;
     findPage: jest.Mock;
@@ -70,7 +71,13 @@ describe('StaffInvitationService', () => {
   beforeEach(() => {
     repository = {
       createAudited: jest.fn().mockResolvedValue(invitation()),
-      settleAudited: jest.fn().mockResolvedValue(invitation()),
+      settleAudited: jest.fn().mockResolvedValue({ kind: 'settled', invitation: invitation() }),
+      resendAudited: jest.fn().mockImplementation((_id, data) =>
+        Promise.resolve({
+          kind: 'resent',
+          invitation: invitation({ tokenHash: data.tokenHash, expiresAt: data.expiresAt }),
+        }),
+      ),
       findById: jest.fn(),
       findOpenForEmail: jest.fn().mockResolvedValue(undefined),
       findPage: jest.fn(),
@@ -250,9 +257,10 @@ describe('StaffInvitationService', () => {
   describe('revoke', () => {
     it('closes an open invitation', async () => {
       repository.findById.mockResolvedValue(invitation());
-      repository.settleAudited.mockResolvedValue(
-        invitation({ status: StaffInvitationStatus.REVOKED }),
-      );
+      repository.settleAudited.mockResolvedValue({
+        kind: 'settled',
+        invitation: invitation({ status: StaffInvitationStatus.REVOKED }),
+      });
 
       const result = await service.revoke(superAdmin, 'inv-1');
 
@@ -278,11 +286,29 @@ describe('StaffInvitationService', () => {
 
     it('reports the race as a conflict when someone else settled it first', async () => {
       repository.findById.mockResolvedValue(invitation());
+      repository.settleAudited.mockResolvedValue({ kind: 'not-pending' });
+
+      const result = await service.revoke(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
+      });
+    });
+
+    it('reports 503, not a conflict, when the write faults', async () => {
+      repository.findById.mockResolvedValue(invitation());
       repository.settleAudited.mockResolvedValue(null);
 
       const result = await service.revoke(superAdmin, 'inv-1');
 
-      expect(result.ok === false && result.status).toBe(HttpStatus.CONFLICT);
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message:
+          'The change could not be recorded in the audit trail and was not applied. Please try again.',
+      });
     });
 
     it('reports 404 for an invitation that does not exist', async () => {
@@ -291,6 +317,145 @@ describe('StaffInvitationService', () => {
       const result = await service.revoke(superAdmin, 'inv-1');
 
       expect(result.ok === false && result.status).toBe(HttpStatus.NOT_FOUND);
+    });
+  });
+
+  describe('resend', () => {
+    beforeEach(() => {
+      repository.findById.mockResolvedValue(invitation());
+    });
+
+    it('stores the hash of the emailed token, and it is not the old hash', async () => {
+      await service.resend(superAdmin, 'inv-1');
+
+      const stored = repository.resendAudited.mock.calls[0][1] as { tokenHash: string };
+      const emailed = (email.send.mock.calls[0][0] as { body: string }).body;
+
+      expect(repository.resendAudited.mock.calls[0][0]).toBe('inv-1');
+      expect(stored.tokenHash).toBe(
+        createHash('sha256').update(extractToken(emailed)).digest('hex'),
+      );
+      expect(stored.tokenHash).not.toBe('hash');
+    });
+
+    it('extends the deadline exactly a week out', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-10-01T00:00:00.000Z'));
+      try {
+        await service.resend(superAdmin, 'inv-1');
+      } finally {
+        jest.useRealTimers();
+      }
+
+      const { expiresAt } = repository.resendAudited.mock.calls[0][1] as { expiresAt: Date };
+
+      expect(expiresAt.toISOString()).toBe('2026-10-08T00:00:00.000Z');
+    });
+
+    it('audits the resend with the old and new deadline, without the token hash', async () => {
+      const oldDeadline = new Date('2026-10-02T00:00:00.000Z');
+      const newDeadline = new Date('2026-10-09T00:00:00.000Z');
+      repository.findById.mockResolvedValue(invitation({ expiresAt: oldDeadline }));
+      await service.resend(superAdmin, 'inv-1');
+
+      const audit = repository.resendAudited.mock.calls[0][2] as (row: unknown) => {
+        action: string;
+        actorId: string;
+        entityId: string;
+        before: { expiresAt: string };
+        after: { expiresAt: string };
+      };
+      const written = audit(invitation({ tokenHash: 'newhash', expiresAt: newDeadline }));
+
+      expect(written.action).toBe('staff.invitation_resent');
+      expect(written.actorId).toBe('user-1');
+      expect(written.entityId).toBe('inv-1');
+      expect(written.before.expiresAt).toBe('2026-10-02T00:00:00.000Z');
+      expect(written.after.expiresAt).toBe('2026-10-09T00:00:00.000Z');
+      expect(JSON.stringify(written)).not.toContain('hash');
+    });
+
+    it('can resend an invitation whose deadline has passed', async () => {
+      repository.findById.mockResolvedValue(invitation({ expiresAt: hourAgo() }));
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok).toBe(true);
+      expect(email.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses one that was already accepted, without rotating anything', async () => {
+      repository.findById.mockResolvedValue(invitation({ status: StaffInvitationStatus.ACCEPTED }));
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
+      });
+      expect(repository.resendAudited).not.toHaveBeenCalled();
+      expect(email.send).not.toHaveBeenCalled();
+    });
+
+    it('reports 404 for an unknown id', async () => {
+      repository.findById.mockResolvedValue(undefined);
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.NOT_FOUND);
+    });
+
+    it('reports 503 when the lookup fails', async () => {
+      repository.findById.mockResolvedValue(null);
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('reports a conflict, and sends no email, when someone settled it first', async () => {
+      repository.resendAudited.mockResolvedValue({ kind: 'not-pending' });
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
+      });
+      expect(email.send).not.toHaveBeenCalled();
+    });
+
+    it('reports 503, not a conflict, and sends no email, when the write faults', async () => {
+      repository.resendAudited.mockResolvedValue(null);
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message:
+          'The change could not be recorded in the audit trail and was not applied. Please try again.',
+      });
+      expect(email.send).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 when the repository throws', async () => {
+      repository.resendAudited.mockRejectedValue(new Error('boom'));
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('returns the token only while email is disabled', async () => {
+      const real = await service.resend(superAdmin, 'inv-1');
+      const noop = await build(email, 'noop').resend(superAdmin, 'inv-1');
+
+      expect(real.ok && real.data.token).toBeNull();
+      expect(noop.ok && noop.data.token).toEqual(expect.any(String));
+      expect(noop.ok && noop.data.token).not.toBe('');
     });
   });
 

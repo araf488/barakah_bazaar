@@ -1,4 +1,5 @@
 import { PinoLogger } from 'nestjs-pino';
+import { Prisma } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { userFixture } from '../../../test/support/user-fixtures';
@@ -12,7 +13,13 @@ const query = (overrides: Partial<AdminUserQueryDto> = {}): AdminUserQueryDto =>
   Object.assign(new AdminUserQueryDto(), overrides);
 
 describe('AdminUserRepository', () => {
-  let user: { findUnique: jest.Mock; findMany: jest.Mock; count: jest.Mock; update: jest.Mock };
+  let user: {
+    findUnique: jest.Mock;
+    findMany: jest.Mock;
+    count: jest.Mock;
+    update: jest.Mock;
+    create: jest.Mock;
+  };
   let prisma: { user: typeof user; $transaction: jest.Mock };
   let auditLog: { appendWithin: jest.Mock };
   let sessionCache: { invalidateUser: jest.Mock };
@@ -20,7 +27,13 @@ describe('AdminUserRepository', () => {
   let repository: AdminUserRepository;
 
   beforeEach(() => {
-    user = { findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn(), update: jest.fn() };
+    user = {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      update: jest.fn(),
+      create: jest.fn(),
+    };
     prisma = {
       user,
       $transaction: jest.fn((arg: unknown) =>
@@ -163,6 +176,80 @@ describe('AdminUserRepository', () => {
       user.count.mockRejectedValue(new Error('connection refused'));
 
       await expect(repository.countActiveSuperAdmins()).resolves.toBeNull();
+    });
+  });
+
+  describe('createCustomerAudited', () => {
+    const data = {
+      email: 'aisha@example.com',
+      fullName: 'Aisha Rahman',
+      preferredLanguage: 'BN' as const,
+      passwordHash: 'scrypt$x',
+    };
+
+    it('creates a CUSTOMER even when the data somehow carries a role', async () => {
+      user.create.mockResolvedValue(userFixture({ id: 'user-9' }));
+
+      const result = await repository.createCustomerAudited(
+        { ...data, role: 'SUPER_ADMIN' } as never,
+        () => ({}) as never,
+      );
+
+      expect(result).toEqual({ kind: 'created', user: userFixture({ id: 'user-9' }) });
+      expect(user.create).toHaveBeenCalledWith({
+        data: {
+          ...data,
+          role: 'CUSTOMER',
+          isActive: true,
+          emailVerifiedAt: null,
+        },
+      });
+    });
+
+    it('writes the audit row in the same transaction, built from the created row', async () => {
+      const created = userFixture({ id: 'user-9' });
+      user.create.mockResolvedValue(created);
+      const audit = jest.fn().mockReturnValue({ action: 'x' });
+
+      await repository.createCustomerAudited(data, audit);
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(audit).toHaveBeenCalledWith(created);
+      expect(auditLog.appendWithin).toHaveBeenCalledWith(expect.anything(), { action: 'x' });
+    });
+
+    it('answers exists on a unique-email rejection, logged at info and not as an error', async () => {
+      user.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(repository.createCustomerAudited(data, () => ({}) as never)).resolves.toEqual({
+        kind: 'exists',
+      });
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('answers null when the audit half throws', async () => {
+      user.create.mockResolvedValue(userFixture());
+      auditLog.appendWithin.mockRejectedValue(new Error('audit insert failed'));
+
+      await expect(repository.createCustomerAudited(data, () => ({}) as never)).resolves.toBeNull();
+    });
+
+    it('answers null on any other fault and never logs the hash', async () => {
+      user.create.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.createCustomerAudited(data, () => ({}) as never)).resolves.toBeNull();
+      const logged = JSON.stringify([
+        ...logger.error.mock.calls,
+        ...logger.info.mock.calls,
+        ...logger.warn.mock.calls,
+      ]);
+      expect(logged).not.toContain('scrypt$x');
     });
   });
 });

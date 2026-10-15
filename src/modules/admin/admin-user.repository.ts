@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { Prisma, User, UserRole } from '../../infra/prisma/prisma-client';
+import { Language, Prisma, User, UserRole } from '../../infra/prisma/prisma-client';
+import { PrismaErrorCodes } from '../../common/constants/app.constants';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { AuthTokens } from '../auth/auth.constants';
 import { SessionCachePort } from '../auth/sessions/session-cache.port';
@@ -9,6 +10,16 @@ import { AdminUserQueryDto } from './dto/admin-user.dto';
 
 /** `undefined` = no such user; `null` = the query failed. */
 export type AdminUserResult = User | null | undefined;
+
+/** What staff supply to open a customer account. The role is not among them. */
+export interface NewCustomerData {
+  email: string;
+  fullName: string;
+  preferredLanguage: Language;
+  passwordHash: string;
+}
+
+export type CreateCustomerResult = { kind: 'created'; user: User } | { kind: 'exists' } | null;
 
 export interface AdminUserPage {
   items: User[];
@@ -116,6 +127,43 @@ export class AdminUserRepository {
       this.logger.error(
         { err: error, userId: id },
         'Exception occurred in AdminUserRepository.updateAudited',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Creates a customer and writes its audit row in ONE transaction.
+   *
+   * The role is fixed to CUSTOMER here, after the spread, so no caller can mint staff through
+   * this path. A unique-email rejection is an expected outcome and comes back as data; any other
+   * fault is `null`. The password hash is never logged.
+   */
+  async createCustomerAudited(
+    data: NewCustomerData,
+    audit: (created: User) => AuditLogWriteData,
+  ): Promise<CreateCustomerResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: { ...data, role: UserRole.CUSTOMER, isActive: true, emailVerifiedAt: null },
+        });
+        await this.auditLog.appendWithin(tx, audit(created));
+        return { kind: 'created', user: created } as const;
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PrismaErrorCodes.UniqueConstraint
+      ) {
+        // `users.email` is the only unique column this transaction can hit.
+        this.logger.info('Customer creation found an existing account; nothing created');
+        return { kind: 'exists' };
+      }
+
+      this.logger.error(
+        { err: error },
+        'Exception occurred in AdminUserRepository.createCustomerAudited',
       );
       return null;
     }

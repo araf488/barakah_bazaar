@@ -20,7 +20,7 @@ export class InviteStaffDto {
   @ApiProperty({ description: 'Where the invitation is sent. Lowercased before storage.' })
   @TrimString()
   @IsEmail()
-  @MaxLength(320)
+  @MaxLength(AdminConstants.EmailMaxLength)
   email!: string;
 
   @ApiProperty({ enum: UserRole, description: 'The role this invitation grants on acceptance.' })

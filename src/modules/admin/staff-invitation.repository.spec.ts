@@ -122,16 +122,28 @@ describe('StaffInvitationRepository', () => {
         id: 'inv-1',
         status: StaffInvitationStatus.PENDING,
       });
+      expect(tx.staffInvitation.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'inv-1' },
+      });
     });
 
-    it('returns null when another caller settled it first, without writing an audit row', async () => {
+    it('returns the settled row', async () => {
+      tx.staffInvitation.findUniqueOrThrow.mockResolvedValue({ id: 'inv-1', status: 'REVOKED' });
+
+      await expect(repository.settleAudited('inv-1', {}, () => auditRow())).resolves.toEqual({
+        kind: 'settled',
+        invitation: { id: 'inv-1', status: 'REVOKED' },
+      });
+    });
+
+    it('answers not-pending when another caller settled it first, without writing an audit row', async () => {
       tx.staffInvitation.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(
         repository.settleAudited('inv-1', { status: StaffInvitationStatus.ACCEPTED }, () =>
           auditRow(),
         ),
-      ).resolves.toBeNull();
+      ).resolves.toEqual({ kind: 'not-pending' });
 
       expect(auditLog.appendWithin).not.toHaveBeenCalled();
     });
@@ -141,16 +153,79 @@ describe('StaffInvitationRepository', () => {
 
       await repository.settleAudited('inv-1', {}, () => auditRow());
 
-      expect(logger.info).toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        { invitationId: 'inv-1' },
+        'Invitation was already settled by someone else',
+      );
       expect(logger.error).not.toHaveBeenCalled();
     });
 
-    it('logs a genuine fault as an error', async () => {
+    it('answers null and logs a genuine fault as an error', async () => {
       tx.staffInvitation.updateMany.mockRejectedValue(new Error('connection reset'));
 
-      await repository.settleAudited('inv-1', {}, () => auditRow());
+      await expect(repository.settleAudited('inv-1', {}, () => auditRow())).resolves.toBeNull();
 
-      expect(logger.error).toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error), invitationId: 'inv-1' },
+        'Exception occurred in StaffInvitationRepository.settleAudited',
+      );
+    });
+  });
+
+  describe('resendAudited', () => {
+    const resendData = {
+      tokenHash: 'b'.repeat(64),
+      expiresAt: new Date('2026-09-14T00:00:00.000Z'),
+    };
+
+    it('only rotates a row that is still pending, writing the new hash and expiry', async () => {
+      await repository.resendAudited('inv-1', resendData, () => auditRow());
+
+      expect(tx.staffInvitation.updateMany).toHaveBeenCalledWith({
+        where: { id: 'inv-1', status: StaffInvitationStatus.PENDING },
+        data: resendData,
+      });
+      expect(tx.staffInvitation.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'inv-1' },
+      });
+      expect(auditLog.appendWithin).toHaveBeenCalledWith(tx, auditRow());
+    });
+
+    it('returns the updated row', async () => {
+      tx.staffInvitation.findUniqueOrThrow.mockResolvedValue({ id: 'inv-1', expiresAt: 'x' });
+
+      await expect(
+        repository.resendAudited('inv-1', resendData, () => auditRow()),
+      ).resolves.toEqual({ kind: 'resent', invitation: { id: 'inv-1', expiresAt: 'x' } });
+    });
+
+    it('answers not-pending without an audit row when another caller settled it first', async () => {
+      tx.staffInvitation.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        repository.resendAudited('inv-1', resendData, () => auditRow()),
+      ).resolves.toEqual({ kind: 'not-pending' });
+
+      expect(auditLog.appendWithin).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        { invitationId: 'inv-1' },
+        'Invitation was already settled by someone else',
+      );
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('answers null and logs the error on a genuine fault, never the hash', async () => {
+      tx.staffInvitation.updateMany.mockRejectedValue(new Error('connection reset'));
+
+      await expect(
+        repository.resendAudited('inv-1', resendData, () => auditRow()),
+      ).resolves.toBeNull();
+
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error), invitationId: 'inv-1' },
+        'Exception occurred in StaffInvitationRepository.resendAudited',
+      );
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain(resendData.tokenHash);
     });
   });
 
@@ -159,6 +234,7 @@ describe('StaffInvitationRepository', () => {
       id: 'inv-1',
       email: 'ops@barakahbazaar.com.bd',
       role: UserRole.OPS,
+      tokenHash: 'a'.repeat(64),
     } as StaffInvitation;
     const account = { passwordHash: 'scrypt$x', fullName: 'Rafiq Ahmed' };
     const audit = () => auditRow();
@@ -174,6 +250,7 @@ describe('StaffInvitationRepository', () => {
       expect(claim.where).toEqual({
         id: 'inv-1',
         status: StaffInvitationStatus.PENDING,
+        tokenHash: 'a'.repeat(64),
       });
       // The claim only locks and checks the row: the CHECK constraint forbids ACCEPTED without
       // acceptedBy, so the status must not move before the user exists.
@@ -210,6 +287,21 @@ describe('StaffInvitationRepository', () => {
       } as User);
       expect(auditLog.appendWithin).toHaveBeenCalledWith(tx, auditRow());
       expect(result).toEqual({ kind: 'accepted', userId: 'user-9' });
+    });
+
+    it('answers not-pending, creating nothing, when a resend rotated the token mid-accept', async () => {
+      // The claim matches on the hash read before the slow password hash; a resend that committed
+      // in between changed it, so the stale claim updates no row.
+      tx.staffInvitation.updateMany.mockImplementation(({ where }) =>
+        Promise.resolve({ count: where.tokenHash === 'a'.repeat(64) ? 0 : 1 }),
+      );
+
+      await expect(repository.acceptCreatingAccount(invitation, account, audit)).resolves.toEqual({
+        kind: 'not-pending',
+      });
+
+      expect(tx.user.create).not.toHaveBeenCalled();
+      expect(tx.staffInvitation.update).not.toHaveBeenCalled();
     });
 
     it('creates nothing when another caller accepted it first', async () => {

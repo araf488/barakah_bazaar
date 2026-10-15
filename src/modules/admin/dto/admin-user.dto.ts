@@ -1,9 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { TrimString } from '../../../common/dto/trim.decorator';
 import { PaginationQueryDto } from '../../../common/dto/pagination.dto';
-import { UserRole } from '../../../infra/prisma/prisma-client';
+import { Language, UserRole } from '../../../infra/prisma/prisma-client';
+import { AuthConstants } from '../../auth/auth.constants';
 import { AdminConstants } from '../admin.constants';
 
 /** A user as staff see them — more than the customer's own profile exposes. */
@@ -43,4 +52,31 @@ export class ChangeRoleDto {
   @ApiProperty({ enum: UserRole })
   @IsEnum(UserRole)
   role!: UserRole;
+}
+
+/** Support opening a customer account on someone's behalf. No password: the customer sets it. */
+export class CreateCustomerDto {
+  @ApiProperty({ example: 'aisha@example.com' })
+  @TrimString()
+  @IsEmail()
+  @MaxLength(AdminConstants.EmailMaxLength)
+  email!: string;
+
+  @ApiProperty({ example: 'Aisha Rahman' })
+  @TrimString()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(AuthConstants.FullNameMaxLength)
+  fullName!: string;
+
+  @ApiPropertyOptional({ enum: Language, description: 'Defaults to BN' })
+  @IsOptional()
+  @IsEnum(Language)
+  preferredLanguage?: Language;
+}
+
+/** The created account, and whether the set-your-password email was handed off. */
+export class CustomerCreatedDto {
+  @ApiProperty({ type: AdminUserDto }) user!: AdminUserDto;
+  @ApiProperty() passwordSetupEmailQueued!: boolean;
 }

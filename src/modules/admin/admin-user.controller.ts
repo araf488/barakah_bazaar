@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Post,
   ParseUUIDPipe,
   Patch,
   Query,
@@ -21,7 +22,13 @@ import { unwrapOrThrow } from '../../common/types/service-response';
 import { UserRole } from '../../infra/prisma/prisma-client';
 import { AdminConstants } from './admin.constants';
 import { AdminUserService } from './admin-user.service';
-import { AdminUserDto, AdminUserQueryDto, ChangeRoleDto } from './dto/admin-user.dto';
+import {
+  AdminUserDto,
+  AdminUserQueryDto,
+  ChangeRoleDto,
+  CreateCustomerDto,
+  CustomerCreatedDto,
+} from './dto/admin-user.dto';
 
 /**
  * Staff and customer accounts.
@@ -50,6 +57,34 @@ export class AdminUserController {
       return unwrapOrThrow(await this.userService.listUsers(query));
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in AdminUserController.list');
+      throw error;
+    }
+  }
+
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.SUPPORT)
+  @ApiOperation({
+    summary: 'Create a customer account; the customer is emailed a link to set a password',
+  })
+  @ApiResponse({ status: HttpStatus.CREATED, type: CustomerCreatedDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid payload' })
+  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'An account already exists' })
+  @ApiResponse({ status: HttpStatus.FORBIDDEN })
+  @ApiResponse({
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    description: 'Database fault, or the audit row could not be recorded',
+  })
+  async create(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Body() dto: CreateCustomerDto,
+  ): Promise<CustomerCreatedDto> {
+    try {
+      return unwrapOrThrow(
+        await this.userService.createCustomer(AdminUserController.require(user), dto),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AdminUserController.create');
       throw error;
     }
   }

@@ -25,6 +25,10 @@ export const AdminConstants = {
   /** Bytes of entropy in the emailed token, before base64url encoding. */
   InvitationTokenBytes: 32,
   MaxInvitationPageSize: 50,
+  /** Bytes of entropy in the never-disclosed placeholder password of a staff-created customer. */
+  PlaceholderPasswordBytes: 32,
+  /** Longest email address accepted when staff create a customer (RFC 5321 limit). */
+  EmailMaxLength: 320,
   /** Longest invitation token accepted on the accept endpoint. */
   InvitationTokenMaxLength: 128,
   /** Frontend path the emailed invitation link points at; the token is appended as a query. */
@@ -87,6 +91,8 @@ export const AdminAuditActions = {
   ImageRemoved: 'product_image.removed',
   CustomerDisabled: 'customer.disabled',
   CustomerEnabled: 'customer.enabled',
+  /** Support opened a customer account on the customer's behalf. */
+  CustomerCreatedByStaff: 'customer.created_by_staff',
   StaffRoleChanged: 'staff.role_changed',
   StaffInvited: 'staff.invited',
   StaffInvitationResent: 'staff.invitation_resent',
@@ -111,6 +117,19 @@ export const AdminAuditActions = {
   // eslint-disable-next-line sonarjs/no-hardcoded-passwords
   AuthPasswordChanged: 'auth.password_changed',
   AuthNewDevice: 'auth.new_device',
+  /** The auth settings row was changed through `PATCH /admin/auth-settings`. */
+  AuthSettingsUpdated: 'auth.settings_updated',
+  /**
+   * The same write when it turned `staffMfaRequired` from true to false. Its own action, so the
+   * one settings change that weakens staff sign-in can be found without reading every diff.
+   */
+  AuthStaffMfaDisabled: 'auth.staff_mfa_disabled',
+  /**
+   * The same write when it turned `staffMfaRequired` from false to true. It also revokes every
+   * live staff session in the same transaction, and `after.revokedStaffSessions` records how
+   * many — a mass sign-out that must be findable without reading every diff.
+   */
+  AuthStaffMfaEnabled: 'auth.staff_mfa_enabled',
 } as const;
 
 export type AdminAuditAction = (typeof AdminAuditActions)[keyof typeof AdminAuditActions];
@@ -127,9 +146,15 @@ export const AdminAuditEntities = {
   Promotion: 'Promotion',
   DeliverySlot: 'DeliverySlot',
   Session: 'Session',
+  AuthSettings: 'AuthSettings',
 } as const;
 
 export const AdminMessages = {
+  /** A PATCH whose body carried no field that the endpoint can change. */
+  NothingToChange: 'Nothing to change.',
+  /** An auth settings write lost an optimistic-concurrency race to another write. */
+  SettingsChangedConcurrently:
+    'The auth settings changed while you were editing. Reload them and try again.',
   /** An invitation was sent to an address that already has an account. */
   InviteeAlreadyExists:
     'That email already has an account. Change its role instead of inviting it.',
@@ -145,6 +170,8 @@ export const AdminMessages = {
   InvitationExpired: 'This invitation has expired. Ask for a new one.',
   /** Acting on an invitation that is already accepted or revoked. */
   InvitationNotPending: 'This invitation is no longer open.',
+  /** Support tried to create a customer for an address that already has an account. */
+  CustomerAlreadyExists: 'An account already exists for that email address.',
   /** Refusing an action a staff member aimed at their own account. */
   CannotActOnSelf:
     'You cannot change your own account here. Ask another super admin to make this change.',
