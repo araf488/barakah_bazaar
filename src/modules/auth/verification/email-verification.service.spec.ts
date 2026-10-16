@@ -3,6 +3,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { createMockConfig, createMockLogger } from '../../../../test/support/mocks';
 import { Language, User, UserRole } from '../../../infra/prisma/prisma-client';
 import { AuthRepository } from '../auth.repository';
+import * as codeCompare from '../credentials/emailed-credential';
 import {
   EmailVerificationRepository,
   EmailVerificationWithUser,
@@ -66,7 +67,8 @@ describe('EmailVerificationService', () => {
     create: jest.Mock;
     findByTokenHash: jest.Mock;
     findNewestLiveForEmail: jest.Mock;
-    incrementAttempts: jest.Mock;
+    claimAttempt: jest.Mock;
+    refundAttempt: jest.Mock;
     consumeAllForUser: jest.Mock;
   };
   let users: { findByEmail: jest.Mock; updateEmailVerifiedAt: jest.Mock };
@@ -86,7 +88,8 @@ describe('EmailVerificationService', () => {
       create: jest.fn(),
       findByTokenHash: jest.fn(),
       findNewestLiveForEmail: jest.fn(),
-      incrementAttempts: jest.fn().mockResolvedValue(1),
+      claimAttempt: jest.fn().mockResolvedValue(1),
+      refundAttempt: jest.fn().mockResolvedValue(1),
       consumeAllForUser: jest.fn().mockResolvedValue(1),
     };
     users = {
@@ -248,9 +251,9 @@ describe('EmailVerificationService', () => {
       expect(repository.consumeAllForUser).toHaveBeenCalledWith('user-1');
     });
 
-    it('increments attempts atomically on a wrong code', async () => {
+    it('claims a guess on a wrong code and answers 400 while the count is under the cap', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 1 }));
-      repository.incrementAttempts.mockResolvedValue(2);
+      repository.claimAttempt.mockResolvedValue(2);
 
       const result = await service.verify({ email: 'shopper@example.com', code: '000000' });
 
@@ -259,17 +262,42 @@ describe('EmailVerificationService', () => {
         status: HttpStatus.BAD_REQUEST,
         message: 'That verification link or code is not valid. Please request a new one.',
       });
-      // Atomic increment, not a service-computed literal: the repository is trusted to add 1
-      // to whatever the column currently holds, not told what to write.
-      expect(repository.incrementAttempts).toHaveBeenCalledWith('ev-1');
+      expect(repository.claimAttempt).toHaveBeenCalledWith('ev-1');
     });
 
-    it('reaches the cap based on the count the database returns, not service arithmetic', async () => {
-      // AuthConstants.EmailVerificationMaxAttempts is 5. The pre-read count (4) is still under
-      // the cap, so the code is compared and found wrong; the atomic increment's returned count
-      // (5) is what pushes this very response to 429, not a value computed from the stale read.
+    it('claims the guess BEFORE comparing the code, so a concurrent burst cannot out-guess the cap', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(verificationRow());
+      const compare = jest.spyOn(codeCompare, 'codeMatches');
+
+      await service.verify({ email: 'shopper@example.com', code: '654321' });
+
+      expect(compare).toHaveBeenCalled();
+      expect(repository.claimAttempt.mock.invocationCallOrder[0]).toBeLessThan(
+        compare.mock.invocationCallOrder[0],
+      );
+      compare.mockRestore();
+    });
+
+    it('never compares the code when no guess slot is left, even for the right code', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 4 }));
-      repository.incrementAttempts.mockResolvedValue(5);
+      repository.claimAttempt.mockResolvedValue(false);
+      const compare = jest.spyOn(codeCompare, 'codeMatches');
+
+      const result = await service.verify({ email: 'shopper@example.com', code: '654321' });
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.TOO_MANY_REQUESTS,
+        message: 'Too many incorrect codes. Please request a new verification email.',
+      });
+      expect(compare).not.toHaveBeenCalled();
+      expect(users.updateEmailVerifiedAt).not.toHaveBeenCalled();
+      compare.mockRestore();
+    });
+
+    it('answers 429 on the wrong guess that takes the count to the cap, using the count the database returned', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 4 }));
+      repository.claimAttempt.mockResolvedValue(5);
 
       const result = await service.verify({ email: 'shopper@example.com', code: '000000' });
 
@@ -278,26 +306,65 @@ describe('EmailVerificationService', () => {
         status: HttpStatus.TOO_MANY_REQUESTS,
         message: 'Too many incorrect codes. Please request a new verification email.',
       });
-      expect(repository.incrementAttempts).toHaveBeenCalledWith('ev-1');
     });
 
-    it('answers 429 at the attempt cap without even comparing the code', async () => {
-      // AuthConstants.EmailVerificationMaxAttempts is 5.
-      repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 5 }));
+    it('still accepts the right code on the fifth guess', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 4 }));
+      repository.claimAttempt.mockResolvedValue(5);
 
-      const result = await service.verify({ email: 'shopper@example.com', code: '000000' });
+      const result = await service.verify({ email: 'shopper@example.com', code: '654321' });
+
+      expect(result).toEqual({ ok: true, data: undefined });
+    });
+
+    it('answers 400 for the first four sequential wrong guesses and 429 for the fifth', async () => {
+      let attempts = 0;
+      repository.findNewestLiveForEmail.mockImplementation(() =>
+        Promise.resolve(verificationRow({ attempts })),
+      );
+      repository.claimAttempt.mockImplementation(() => {
+        if (attempts >= 5) return Promise.resolve(false);
+        attempts += 1;
+        return Promise.resolve(attempts);
+      });
+
+      const statuses: number[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const result = await service.verify({ email: 'shopper@example.com', code: '000000' });
+        statuses.push(result.ok ? 200 : result.status);
+      }
+
+      expect(statuses).toEqual([400, 400, 400, 400, 429, 429]);
+    });
+
+    it('refunds the claimed slot when a correct code then fails on the emailVerifiedAt write', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 4 }));
+      repository.claimAttempt.mockResolvedValue(5);
+      users.updateEmailVerifiedAt.mockResolvedValue(null);
+
+      const result = await service.verify({ email: 'shopper@example.com', code: '654321' });
 
       expect(result).toEqual({
         ok: false,
-        status: HttpStatus.TOO_MANY_REQUESTS,
-        message: 'Too many incorrect codes. Please request a new verification email.',
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
       });
-      expect(repository.incrementAttempts).not.toHaveBeenCalled();
+      expect(repository.refundAttempt).toHaveBeenCalledWith('ev-1');
     });
 
-    it('answers 503, not 400, when the attempt-count write itself fails, and reports no cap breach', async () => {
+    it('never refunds a wrong guess', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 1 }));
-      repository.incrementAttempts.mockResolvedValue(null);
+      repository.claimAttempt.mockResolvedValue(2);
+
+      await service.verify({ email: 'shopper@example.com', code: '000000' });
+
+      expect(repository.refundAttempt).not.toHaveBeenCalled();
+    });
+
+    it('answers 503, not 400, when the claim write itself fails, and never compares the code', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(verificationRow({ attempts: 1 }));
+      repository.claimAttempt.mockResolvedValue(null);
+      const compare = jest.spyOn(codeCompare, 'codeMatches');
 
       const result = await service.verify({ email: 'shopper@example.com', code: '000000' });
 
@@ -306,6 +373,8 @@ describe('EmailVerificationService', () => {
         status: HttpStatus.SERVICE_UNAVAILABLE,
         message: 'The service is temporarily unavailable. Please try again shortly.',
       });
+      expect(compare).not.toHaveBeenCalled();
+      compare.mockRestore();
     });
 
     it('answers 503 on a database fault, never 400', async () => {

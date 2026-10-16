@@ -1,5 +1,6 @@
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../../test/support/mocks';
+import { Prisma } from '../../../infra/prisma/prisma-client';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
 import { EmailVerificationRepository } from './email-verification.repository';
 
@@ -156,21 +157,53 @@ describe('EmailVerificationRepository', () => {
     });
   });
 
-  describe('incrementAttempts', () => {
-    it('issues an atomic increment rather than a computed literal, and returns the new count', async () => {
-      prisma.emailVerification.update.mockResolvedValue(row({ attempts: 4 }));
+  describe('claimAttempt', () => {
+    it('claims one guess atomically on an unspent code under the cap, and returns the new count', async () => {
+      prisma.emailVerification.update.mockResolvedValue(row({ attempts: 3 }));
 
-      await expect(repository.incrementAttempts('ev-1')).resolves.toBe(4);
+      await expect(repository.claimAttempt('ev-1')).resolves.toBe(3);
       expect(prisma.emailVerification.update).toHaveBeenCalledWith({
-        where: { id: 'ev-1' },
+        where: { id: 'ev-1', consumedAt: null, attempts: { lt: 5 } },
         data: { attempts: { increment: 1 } },
       });
     });
 
-    it('reports null rather than throwing when the write fails, so the caller can fail closed', async () => {
+    it('is false when no row matched: spent, or already at the cap', async () => {
+      prisma.emailVerification.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('No record was found for an update.', {
+          code: 'P2025',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(repository.claimAttempt('ev-1')).resolves.toBe(false);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('returns null, and logs, on any other fault', async () => {
       prisma.emailVerification.update.mockRejectedValue(new Error('boom'));
 
-      await expect(repository.incrementAttempts('ev-1')).resolves.toBeNull();
+      await expect(repository.claimAttempt('ev-1')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('refundAttempt', () => {
+    it('gives one slot back only on an unconsumed record that has one to give', async () => {
+      prisma.emailVerification.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(repository.refundAttempt('ev-1')).resolves.toBe(1);
+      expect(prisma.emailVerification.updateMany).toHaveBeenCalledWith({
+        where: { id: 'ev-1', consumedAt: null, attempts: { gt: 0 } },
+        data: { attempts: { decrement: 1 } },
+      });
+    });
+
+    it('reports null, logged, when the write failed', async () => {
+      prisma.emailVerification.updateMany.mockRejectedValue(new Error('boom'));
+
+      await expect(repository.refundAttempt('ev-1')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalled();
     });
   });
 

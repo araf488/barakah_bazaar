@@ -23,11 +23,21 @@ services:
   # the e2e config. `test/support/auth-fixtures.ts` refuses to migrate anything whose host is
   # not localhost for the same reason.
   #
-  # No volume: every `docker compose down` discards it, which is the point. A test database
+  # No named volume: every `docker compose down` discards it, which is the point. A test database
   # that survives between runs accumulates state the tests did not create and cannot explain.
+  # The postgres image still declares an anonymous volume, and `up --force-recreate` keeps it, so
+  # a migration edited after it was applied is never re-run. For a truly fresh database use
+  # `docker compose up -d --force-recreate -V postgres-test` (or `down` then `up`).
+  #
+  # Durability is switched off because nothing here is worth keeping. Every e2e test starts with a
+  # TRUNCATE … CASCADE, which fsyncs a fresh file for each table; under Docker on macOS that sync
+  # sometimes takes seconds (wait event DataFileImmediateSync) and blew the 5 s hook timeout.
+  # Never copy these flags to a database whose contents matter.
   postgres-test:
     image: postgres:16-alpine
     container_name: barakah-postgres-test
+    command:
+      ['postgres', '-c', 'fsync=off', '-c', 'synchronous_commit=off', '-c', 'full_page_writes=off']
     environment:
       POSTGRES_USER: barakah
       POSTGRES_PASSWORD: barakah

@@ -20,6 +20,15 @@ import { buildPasswordResetEmail } from '../emails/password-emails';
 import { PasswordUpdater } from '../passwords/password-updater';
 import { PasswordResetRepository, PasswordResetWithUser } from './password-reset.repository';
 
+/**
+ * A live record resolved for redemption. `slotClaimed` is true when a typed-in code claimed one
+ * of the record's guess slots on the way; a link token claims none.
+ */
+interface ResolvedReset {
+  readonly record: PasswordResetWithUser;
+  readonly slotClaimed: boolean;
+}
+
 /** What `reset` accepts: a link token alone, or an email paired with a typed-in code. */
 export interface ResetPasswordInput {
   readonly token?: string;
@@ -144,11 +153,13 @@ export class PasswordResetService {
       // Rechecked at redemption, not only at issue: a record issued before an admin disabled the
       // account, or before it lost its password, must not be redeemable. The identical 400, so
       // this adds no oracle for the account's state.
-      if (!PasswordResetService.mayReset(found.data.user)) {
+      const { record, slotClaimed } = found.data;
+      if (!PasswordResetService.mayReset(record.user)) {
+        await this.refundSlot(record.id, slotClaimed);
         return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.ResetInvalid);
       }
 
-      return await this.complete(found.data, input.newPassword);
+      return await this.complete(record, slotClaimed, input.newPassword);
     } catch (error) {
       this.logger.error({ err: error }, 'Exception occurred in PasswordResetService.reset');
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
@@ -202,9 +213,7 @@ export class PasswordResetService {
    * A code alone is refused. Resolving it needs the email to know which record to check, and
    * accepting the code without it would mean guessing against every live record in the table.
    */
-  private resolveRecord(
-    input: ResetPasswordInput,
-  ): Promise<ServiceResponse<PasswordResetWithUser>> {
+  private resolveRecord(input: ResetPasswordInput): Promise<ServiceResponse<ResolvedReset>> {
     if (input.token) {
       return this.resolveByToken(input.token);
     }
@@ -216,7 +225,7 @@ export class PasswordResetService {
     return Promise.resolve(serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.ResetInvalid));
   }
 
-  private async resolveByToken(token: string): Promise<ServiceResponse<PasswordResetWithUser>> {
+  private async resolveByToken(token: string): Promise<ServiceResponse<ResolvedReset>> {
     const found = await this.repository.findByTokenHash(hashCredential(token));
 
     if (found === null) {
@@ -227,13 +236,13 @@ export class PasswordResetService {
       return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.ResetInvalid);
     }
 
-    return serviceOk(found);
+    return serviceOk({ record: found, slotClaimed: false });
   }
 
   private async resolveByCode(
     email: string,
     code: string,
-  ): Promise<ServiceResponse<PasswordResetWithUser>> {
+  ): Promise<ServiceResponse<ResolvedReset>> {
     const found = await this.repository.findNewestLiveForEmail(email);
 
     if (found === null) {
@@ -244,30 +253,58 @@ export class PasswordResetService {
       return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.ResetInvalid);
     }
 
-    // Before the comparison: a caller at the cap must learn nothing about their guess.
-    if (found.attempts >= AuthConstants.PasswordResetMaxAttempts) {
-      return serviceFail(HttpStatus.TOO_MANY_REQUESTS, AuthMessages.ResetTooManyAttempts);
+    const claimed = await this.claimGuess(found.id);
+    if (!claimed.ok) {
+      return claimed;
     }
 
     if (!codeMatches(code, found.codeHash)) {
-      return this.registerWrongCode(found.id);
+      return PasswordResetService.wrongCode(claimed.data);
     }
 
-    return serviceOk(found);
+    return serviceOk({ record: found, slotClaimed: true });
   }
 
   /**
-   * Atomically counts a wrong code. Fails closed: an unconfirmed increment answers 503, never
-   * the 400 that would let the caller keep guessing against a counter that may not have moved.
-   * The cap decision uses the count the database returned.
+   * Gives back the guess slot a CORRECT code claimed, when redemption is then refused for a
+   * reason that is not a guess (the account may not reset). A wrong guess never reaches here, so
+   * it is never refunded. A fault is logged and swallowed: the caller still gets its refusal.
    */
-  private async registerWrongCode(id: string): Promise<ServiceResponse<PasswordResetWithUser>> {
-    const attempts = await this.repository.incrementAttempts(id);
+  private async refundSlot(id: string, slotClaimed: boolean): Promise<void> {
+    if (!slotClaimed) {
+      return;
+    }
+
+    const refunded = await this.repository.refundAttempt(id);
+    if (refunded === null) {
+      this.logger.error(
+        { passwordResetId: id },
+        'Could not refund the guess slot of a correct code that was refused',
+      );
+    }
+  }
+
+  /**
+   * Claims one guess before the code is compared, atomically, so a concurrent burst cannot
+   * out-guess the cap. Fails closed: an unconfirmed claim answers 503, never the 400 that would
+   * let the caller keep guessing against a counter that may not have moved. No slot left: 429.
+   */
+  private async claimGuess(id: string): Promise<ServiceResponse<number>> {
+    const attempts = await this.repository.claimAttempt(id);
 
     if (attempts === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
 
+    if (attempts === false) {
+      return serviceFail(HttpStatus.TOO_MANY_REQUESTS, AuthMessages.ResetTooManyAttempts);
+    }
+
+    return serviceOk(attempts);
+  }
+
+  /** A wrong code: 429 once the claimed count reaches the cap, otherwise the usual 400. */
+  private static wrongCode(attempts: number): ServiceResponse<ResolvedReset> {
     if (attempts >= AuthConstants.PasswordResetMaxAttempts) {
       return serviceFail(HttpStatus.TOO_MANY_REQUESTS, AuthMessages.ResetTooManyAttempts);
     }
@@ -282,6 +319,7 @@ export class PasswordResetService {
    */
   private async complete(
     record: PasswordResetWithUser,
+    slotClaimed: boolean,
     newPassword: string,
   ): Promise<ServiceResponse<void>> {
     const claimed = await this.claimRecord(record.id);
@@ -289,7 +327,7 @@ export class PasswordResetService {
       return claimed;
     }
 
-    const replaced = await this.replaceUnderClaim(record, claimed.data, newPassword);
+    const replaced = await this.replaceUnderClaim(record, claimed.data, slotClaimed, newPassword);
     if (!replaced.ok) {
       return replaced;
     }
@@ -316,11 +354,13 @@ export class PasswordResetService {
 
   /**
    * Replaces the password while holding the claim. A failed `replace` hands the claim back, so a
-   * weak-password refusal leaves the credential usable for the retry.
+   * weak-password refusal leaves the credential usable for the retry. The guess slot the correct
+   * code claimed goes back in the same write, so refusals that are not guesses cost no attempts.
    */
   private async replaceUnderClaim(
     record: PasswordResetWithUser,
     claimedAt: Date,
+    slotClaimed: boolean,
     newPassword: string,
   ): Promise<ServiceResponse<void>> {
     const replaced = await this.updater.replace(record.user, newPassword);
@@ -328,7 +368,7 @@ export class PasswordResetService {
       return replaced;
     }
 
-    const released = await this.repository.release(record.id, claimedAt);
+    const released = await this.repository.release(record.id, claimedAt, slotClaimed);
     if (released === null) {
       // The caller still gets replace's own answer. The credential is now dead until it
       // expires, and the owner has to request another.

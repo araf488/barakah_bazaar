@@ -4,6 +4,7 @@ import { PinoLogger } from 'nestjs-pino';
 import { createMockConfig, createMockLogger } from '../../../../test/support/mocks';
 import { User, UserRole } from '../../../infra/prisma/prisma-client';
 import { AuthRepository } from '../auth.repository';
+import * as codeCompare from '../credentials/emailed-credential';
 import { PasswordUpdater } from '../passwords/password-updater';
 import { PasswordResetRepository, PasswordResetWithUser } from './password-reset.repository';
 import { PasswordResetService } from './password-reset.service';
@@ -73,7 +74,8 @@ describe('PasswordResetService', () => {
     | 'create'
     | 'findByTokenHash'
     | 'findNewestLiveForEmail'
-    | 'incrementAttempts'
+    | 'claimAttempt'
+    | 'refundAttempt'
     | 'claim'
     | 'release'
     | 'consumeAllForUser',
@@ -97,7 +99,8 @@ describe('PasswordResetService', () => {
       create: jest.fn().mockResolvedValue(resetRow()),
       findByTokenHash: jest.fn(),
       findNewestLiveForEmail: jest.fn().mockResolvedValue(undefined),
-      incrementAttempts: jest.fn().mockResolvedValue(1),
+      claimAttempt: jest.fn().mockResolvedValue(1),
+      refundAttempt: jest.fn().mockResolvedValue(1),
       claim: jest.fn().mockResolvedValue(CLAIMED_AT),
       release: jest.fn().mockResolvedValue(1),
       consumeAllForUser: jest.fn().mockResolvedValue(1),
@@ -425,8 +428,10 @@ describe('PasswordResetService', () => {
       expect(repository.findNewestLiveForEmail).toHaveBeenCalledWith('Shopper@Example.COM');
     });
 
-    it('checks the attempt cap before comparing — even the right code is refused at the cap', async () => {
+    it('refuses even the right code with 429 when no guess slot is left, without comparing it', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(resetRow({ attempts: 5 }));
+      repository.claimAttempt.mockResolvedValue(false);
+      const compare = jest.spyOn(codeCompare, 'codeMatches');
 
       const result = await service.reset({
         email: 'shopper@example.com',
@@ -439,12 +444,31 @@ describe('PasswordResetService', () => {
         status: HttpStatus.TOO_MANY_REQUESTS,
         message: TOO_MANY,
       });
+      expect(compare).not.toHaveBeenCalled();
       expect(updater.replace).not.toHaveBeenCalled();
-      expect(repository.incrementAttempts).not.toHaveBeenCalled();
+      compare.mockRestore();
     });
 
-    it('still accepts the right code at 4 wrong attempts — the cap is exactly 5', async () => {
+    it('claims the guess BEFORE comparing the code, so a concurrent burst cannot out-guess the cap', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(resetRow());
+      const compare = jest.spyOn(codeCompare, 'codeMatches');
+
+      await service.reset({
+        email: 'shopper@example.com',
+        code: '481920',
+        newPassword: NEW_PASSWORD,
+      });
+
+      expect(compare).toHaveBeenCalled();
+      expect(repository.claimAttempt.mock.invocationCallOrder[0]).toBeLessThan(
+        compare.mock.invocationCallOrder[0],
+      );
+      compare.mockRestore();
+    });
+
+    it('still accepts the right code on the fifth guess — the cap is exactly 5', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(resetRow({ attempts: 4 }));
+      repository.claimAttempt.mockResolvedValue(5);
 
       const result = await service.reset({
         email: 'shopper@example.com',
@@ -457,19 +481,7 @@ describe('PasswordResetService', () => {
 
     it('answers 400, not 429, on the wrong code that brings the count to 4', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(resetRow({ attempts: 3 }));
-      repository.incrementAttempts.mockResolvedValue(4);
-
-      const result = await service.reset({
-        email: 'shopper@example.com',
-        code: '000000',
-        newPassword: NEW_PASSWORD,
-      });
-
-      expect(result).toEqual({ ok: false, status: HttpStatus.BAD_REQUEST, message: RESET_INVALID });
-    });
-
-    it('refuses a wrong code at the cap with 429 without counting it — the counter stops at 5', async () => {
-      repository.findNewestLiveForEmail.mockResolvedValue(resetRow({ attempts: 5 }));
+      repository.claimAttempt.mockResolvedValue(4);
 
       const result = await service.reset({
         email: 'shopper@example.com',
@@ -479,15 +491,14 @@ describe('PasswordResetService', () => {
 
       expect(result).toEqual({
         ok: false,
-        status: HttpStatus.TOO_MANY_REQUESTS,
-        message: TOO_MANY,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'That password reset link or code is not valid. Please request a new one.',
       });
-      expect(repository.incrementAttempts).not.toHaveBeenCalled();
     });
 
-    it('counts a wrong code and answers the same 400 as an unknown credential', async () => {
+    it('claims a guess on a wrong code and answers the same 400 as an unknown credential', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(resetRow());
-      repository.incrementAttempts.mockResolvedValue(1);
+      repository.claimAttempt.mockResolvedValue(1);
 
       const result = await service.reset({
         email: 'shopper@example.com',
@@ -495,13 +506,17 @@ describe('PasswordResetService', () => {
         newPassword: NEW_PASSWORD,
       });
 
-      expect(result).toEqual({ ok: false, status: HttpStatus.BAD_REQUEST, message: RESET_INVALID });
-      expect(repository.incrementAttempts).toHaveBeenCalledWith('pr-1');
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'That password reset link or code is not valid. Please request a new one.',
+      });
+      expect(repository.claimAttempt).toHaveBeenCalledWith('pr-1');
     });
 
-    it('answers 429 on the guess that reaches the cap, using the count the database returned', async () => {
+    it('answers 429 on the wrong guess that reaches the cap, using the count the database returned', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(resetRow({ attempts: 4 }));
-      repository.incrementAttempts.mockResolvedValue(5);
+      repository.claimAttempt.mockResolvedValue(5);
 
       const result = await service.reset({
         email: 'shopper@example.com',
@@ -516,9 +531,127 @@ describe('PasswordResetService', () => {
       });
     });
 
-    it('fails closed with 503 when the wrong-code increment cannot be confirmed', async () => {
+    it('answers 400 for the first four sequential wrong guesses and 429 for the fifth', async () => {
+      let attempts = 0;
+      repository.findNewestLiveForEmail.mockImplementation(() =>
+        Promise.resolve(resetRow({ attempts })),
+      );
+      repository.claimAttempt.mockImplementation(() => {
+        if (attempts >= 5) return Promise.resolve(false);
+        attempts += 1;
+        return Promise.resolve(attempts);
+      });
+
+      const statuses: number[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const result = await service.reset({
+          email: 'shopper@example.com',
+          code: '000000',
+          newPassword: NEW_PASSWORD,
+        });
+        statuses.push(result.ok ? 200 : result.status);
+      }
+
+      expect(statuses).toEqual([400, 400, 400, 400, 429, 429]);
+    });
+
+    it('does not spend attempts on a correct code refused for a weak password: five weak tries, then a strong one succeeds', async () => {
+      let attempts = 0;
+      repository.findNewestLiveForEmail.mockImplementation(() =>
+        Promise.resolve(resetRow({ attempts })),
+      );
+      repository.claimAttempt.mockImplementation(() => {
+        if (attempts >= 5) return Promise.resolve(false);
+        attempts += 1;
+        return Promise.resolve(attempts);
+      });
+      repository.release.mockImplementation((_id: string, _at: Date, refund: boolean) => {
+        if (refund) attempts -= 1;
+        return Promise.resolve(1);
+      });
+      updater.replace.mockImplementation((_user: unknown, password: string) =>
+        Promise.resolve(
+          password === NEW_PASSWORD
+            ? { ok: true, data: undefined }
+            : {
+                ok: false,
+                status: HttpStatus.BAD_REQUEST,
+                message: 'Your password must be at least 12 characters.',
+              },
+        ),
+      );
+
+      const statuses: number[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        const weak = await service.reset({
+          email: 'shopper@example.com',
+          code: '481920',
+          newPassword: 'short',
+        });
+        statuses.push(weak.ok ? 200 : weak.status);
+      }
+      const strong = await service.reset({
+        email: 'shopper@example.com',
+        code: '481920',
+        newPassword: NEW_PASSWORD,
+      });
+
+      expect(statuses).toEqual([400, 400, 400, 400, 400]);
+      expect(strong).toEqual({ ok: true, data: undefined });
+    });
+
+    it('passes the refund flag to release only when a typed-in code claimed a slot', async () => {
       repository.findNewestLiveForEmail.mockResolvedValue(resetRow());
-      repository.incrementAttempts.mockResolvedValue(null);
+      updater.replace.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Your password must be at least 12 characters.',
+      });
+
+      await service.reset({ email: 'shopper@example.com', code: '481920', newPassword: 'short' });
+
+      expect(repository.release).toHaveBeenCalledWith('pr-1', CLAIMED_AT, true);
+    });
+
+    it('refunds the slot of a correct code when the account may not reset, with the same 400', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(
+        resetRow({ user: makeUser({ isActive: false }) }),
+      );
+
+      const result = await service.reset({
+        email: 'shopper@example.com',
+        code: '481920',
+        newPassword: NEW_PASSWORD,
+      });
+
+      expect(result).toEqual({ ok: false, status: HttpStatus.BAD_REQUEST, message: RESET_INVALID });
+      expect(repository.refundAttempt).toHaveBeenCalledWith('pr-1');
+    });
+
+    it('never refunds a wrong guess', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(resetRow());
+      repository.claimAttempt.mockResolvedValue(2);
+
+      await service.reset({ email: 'shopper@example.com', code: '000000', newPassword: 'short' });
+
+      expect(repository.refundAttempt).not.toHaveBeenCalled();
+      expect(repository.release).not.toHaveBeenCalled();
+    });
+
+    it('never refunds on a link token, which claims no slot', async () => {
+      repository.findByTokenHash.mockResolvedValue(
+        resetRow({ user: makeUser({ isActive: false }) }),
+      );
+
+      await service.reset({ token: 'raw-token', newPassword: NEW_PASSWORD });
+
+      expect(repository.refundAttempt).not.toHaveBeenCalled();
+    });
+
+    it('fails closed with 503 when the claim cannot be confirmed, and never compares the code', async () => {
+      repository.findNewestLiveForEmail.mockResolvedValue(resetRow());
+      repository.claimAttempt.mockResolvedValue(null);
+      const compare = jest.spyOn(codeCompare, 'codeMatches');
 
       const result = await service.reset({
         email: 'shopper@example.com',
@@ -529,8 +662,10 @@ describe('PasswordResetService', () => {
       expect(result).toEqual({
         ok: false,
         status: HttpStatus.SERVICE_UNAVAILABLE,
-        message: UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
       });
+      expect(compare).not.toHaveBeenCalled();
+      compare.mockRestore();
     });
   });
 
@@ -556,7 +691,7 @@ describe('PasswordResetService', () => {
       expect(repository.consumeAllForUser).not.toHaveBeenCalled();
       expect(users.updateEmailVerifiedAt).not.toHaveBeenCalled();
       expect(updater.announce).not.toHaveBeenCalled();
-      expect(repository.release).toHaveBeenCalledWith('pr-1', CLAIMED_AT);
+      expect(repository.release).toHaveBeenCalledWith('pr-1', CLAIMED_AT, false);
     });
 
     it('passes a 503 from the replace straight through and stops', async () => {
@@ -574,7 +709,7 @@ describe('PasswordResetService', () => {
         message: UNAVAILABLE,
       });
       expect(repository.consumeAllForUser).not.toHaveBeenCalled();
-      expect(repository.release).toHaveBeenCalledWith('pr-1', CLAIMED_AT);
+      expect(repository.release).toHaveBeenCalledWith('pr-1', CLAIMED_AT, false);
     });
 
     it('answers the replace failure unchanged, and logs, when the claim cannot be released', async () => {

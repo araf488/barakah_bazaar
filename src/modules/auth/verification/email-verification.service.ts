@@ -179,7 +179,7 @@ export class EmailVerificationService {
       return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.VerificationInvalid);
     }
 
-    return this.complete(found);
+    return this.complete(found, false);
   }
 
   private async verifyByCode(email: string, code: string): Promise<ServiceResponse<void>> {
@@ -193,35 +193,52 @@ export class EmailVerificationService {
       return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.VerificationInvalid);
     }
 
-    // The attempt cap is checked before the code is even compared: a record at the cap is
-    // already dead, so there is nothing to time-safe-compare against.
-    if (found.attempts >= AuthConstants.EmailVerificationMaxAttempts) {
-      return serviceFail(HttpStatus.TOO_MANY_REQUESTS, AuthMessages.VerificationTooManyAttempts);
+    const claimed = await this.claimGuess(found.id);
+    if (!claimed.ok) {
+      return claimed;
     }
 
     if (!codeMatches(code, found.codeHash)) {
-      return this.registerWrongCode(found.id);
+      return EmailVerificationService.wrongCode(claimed.data);
     }
 
-    return this.complete(found);
+    return this.complete(found, true);
+  }
+
+  /** Gives a claimed slot back; a fault is logged, and the caller still gets its own answer. */
+  private async refundSlot(id: string): Promise<void> {
+    const refunded = await this.repository.refundAttempt(id);
+    if (refunded === null) {
+      this.logger.error(
+        { verificationId: id },
+        'Could not refund the guess slot of a correct code after a failed verification write',
+      );
+    }
   }
 
   /**
-   * Atomically increments the attempt counter and answers accordingly.
+   * Claims one guess before the code is compared, atomically. Only a call that wins a slot ever
+   * learns whether its code matched, so a concurrent burst cannot out-guess the cap.
    *
-   * Fails closed: when the increment cannot be confirmed, the response is 503 — never the 400
-   * that would let the caller keep guessing against a counter that may not have actually
-   * advanced in storage. When it can be confirmed, the cap decision uses the count the database
-   * just returned rather than arithmetic done here, so a guess that reaches the cap answers 429
-   * immediately instead of waiting for a subsequent call to notice.
+   * Fails closed: an unconfirmed claim answers 503, never a 400 that would let the caller keep
+   * guessing against a counter that may not have advanced. No slot left answers 429.
    */
-  private async registerWrongCode(id: string): Promise<ServiceResponse<void>> {
-    const attempts = await this.repository.incrementAttempts(id);
+  private async claimGuess(id: string): Promise<ServiceResponse<number>> {
+    const attempts = await this.repository.claimAttempt(id);
 
     if (attempts === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
 
+    if (attempts === false) {
+      return serviceFail(HttpStatus.TOO_MANY_REQUESTS, AuthMessages.VerificationTooManyAttempts);
+    }
+
+    return serviceOk(attempts);
+  }
+
+  /** A wrong code: 429 once the claimed count reaches the cap, otherwise the same 400 as ever. */
+  private static wrongCode(attempts: number): ServiceResponse<void> {
     if (attempts >= AuthConstants.EmailVerificationMaxAttempts) {
       return serviceFail(HttpStatus.TOO_MANY_REQUESTS, AuthMessages.VerificationTooManyAttempts);
     }
@@ -229,10 +246,20 @@ export class EmailVerificationService {
     return serviceFail(HttpStatus.BAD_REQUEST, AuthMessages.VerificationInvalid);
   }
 
-  /** Sets `emailVerifiedAt`, closes every live record for the account, and mails confirmation. */
-  private async complete(record: EmailVerificationWithUser): Promise<ServiceResponse<void>> {
+  /**
+   * Sets `emailVerifiedAt`, closes every live record for the account, and mails confirmation.
+   * When the write fails after a CORRECT typed-in code, the guess slot it claimed goes back
+   * (`slotClaimed`), so a fault is not counted against the person's attempts.
+   */
+  private async complete(
+    record: EmailVerificationWithUser,
+    slotClaimed: boolean,
+  ): Promise<ServiceResponse<void>> {
     const updated = await this.users.updateEmailVerifiedAt(record.userId);
     if (!updated) {
+      if (slotClaimed) {
+        await this.refundSlot(record.id);
+      }
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
     }
 

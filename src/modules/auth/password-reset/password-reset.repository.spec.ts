@@ -1,5 +1,6 @@
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../../test/support/mocks';
+import { Prisma } from '../../../infra/prisma/prisma-client';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
 import { PasswordResetRepository } from './password-reset.repository';
 
@@ -130,21 +131,34 @@ describe('PasswordResetRepository', () => {
     });
   });
 
-  describe('incrementAttempts', () => {
-    it('issues an atomic increment rather than a computed literal, and returns the new count', async () => {
+  describe('claimAttempt', () => {
+    it('claims one guess atomically on an unspent code under the cap, and returns the new count', async () => {
       prisma.passwordReset.update.mockResolvedValue(row({ attempts: 3 }));
 
-      await expect(repository.incrementAttempts('pr-1')).resolves.toBe(3);
+      await expect(repository.claimAttempt('pr-1')).resolves.toBe(3);
       expect(prisma.passwordReset.update).toHaveBeenCalledWith({
-        where: { id: 'pr-1' },
+        where: { id: 'pr-1', consumedAt: null, attempts: { lt: 5 } },
         data: { attempts: { increment: 1 } },
       });
     });
 
-    it('reports null rather than throwing when the write fails, so the caller can fail closed', async () => {
+    it('is false when no row matched: spent, or already at the cap', async () => {
+      prisma.passwordReset.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('No record was found for an update.', {
+          code: 'P2025',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(repository.claimAttempt('pr-1')).resolves.toBe(false);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('returns null, and logs, on any other fault', async () => {
       prisma.passwordReset.update.mockRejectedValue(new Error('boom'));
 
-      await expect(repository.incrementAttempts('pr-1')).resolves.toBeNull();
+      await expect(repository.claimAttempt('pr-1')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalled();
     });
   });
 
@@ -190,17 +204,47 @@ describe('PasswordResetRepository', () => {
       prisma.passwordReset.updateMany.mockResolvedValue({ count: 1 });
       const claimedAt = new Date('2026-10-05T00:10:00.000Z');
 
-      await expect(repository.release('pr-1', claimedAt)).resolves.toBe(1);
+      await expect(repository.release('pr-1', claimedAt, false)).resolves.toBe(1);
       expect(prisma.passwordReset.updateMany).toHaveBeenCalledWith({
         where: { id: 'pr-1', consumedAt: new Date('2026-10-05T00:10:00.000Z') },
         data: { consumedAt: null },
       });
     });
 
+    it('also gives back the claimed guess slot, in the same write, when asked to refund', async () => {
+      prisma.passwordReset.updateMany.mockResolvedValue({ count: 1 });
+      const claimedAt = new Date('2026-10-05T00:10:00.000Z');
+
+      await expect(repository.release('pr-1', claimedAt, true)).resolves.toBe(1);
+      expect(prisma.passwordReset.updateMany).toHaveBeenCalledWith({
+        where: { id: 'pr-1', consumedAt: new Date('2026-10-05T00:10:00.000Z') },
+        data: { consumedAt: null, attempts: { decrement: 1 } },
+      });
+    });
+
     it('reports null, logged, when the write failed', async () => {
       prisma.passwordReset.updateMany.mockRejectedValue(new Error('boom'));
 
-      await expect(repository.release('pr-1', new Date())).resolves.toBeNull();
+      await expect(repository.release('pr-1', new Date(), false)).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('refundAttempt', () => {
+    it('gives one slot back only on an unconsumed record that has one to give', async () => {
+      prisma.passwordReset.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(repository.refundAttempt('pr-1')).resolves.toBe(1);
+      expect(prisma.passwordReset.updateMany).toHaveBeenCalledWith({
+        where: { id: 'pr-1', consumedAt: null, attempts: { gt: 0 } },
+        data: { attempts: { decrement: 1 } },
+      });
+    });
+
+    it('reports null, logged, when the write failed', async () => {
+      prisma.passwordReset.updateMany.mockRejectedValue(new Error('boom'));
+
+      await expect(repository.refundAttempt('pr-1')).resolves.toBeNull();
       expect(logger.error).toHaveBeenCalled();
     });
   });

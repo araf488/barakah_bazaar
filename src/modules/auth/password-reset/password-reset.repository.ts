@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { PasswordReset, User } from '../../../infra/prisma/prisma-client';
+import { PrismaErrorCodes } from '../../../common/constants/app.constants';
+import { PasswordReset, Prisma, User } from '../../../infra/prisma/prisma-client';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
+import { AuthConstants } from '../auth.constants';
 
 /** A reset row joined to the account it belongs to. */
 export type PasswordResetWithUser = PasswordReset & { user: User };
@@ -84,23 +86,62 @@ export class PasswordResetRepository {
   }
 
   /**
-   * Atomically increments the failed-attempt counter and returns the new count.
+   * Claims one guess against the code before it is compared, atomically, and returns the new
+   * attempt count.
    *
-   * A database-side `increment`, never a caller-computed `attempts + 1`. Sub-project 2 first
-   * shipped the read-then-write form, and concurrent guesses lost updates: the cap advanced once
-   * per several guesses. `null` only on a write fault, so the caller can fail closed.
+   * One conditional `update`: `where` carries the unspent and under-the-cap predicates beside the
+   * id, so the database matches and increments in a single statement. Concurrent guesses
+   * serialise on the row, and only those that find `attempts < PasswordResetMaxAttempts` get a slot, so a burst cannot
+   * out-guess the cap. The count comes back from that same statement, never from a second read
+   * another guess could have moved. Prisma raises `P2025` when nothing matched, which is
+   * `false`: the code is spent or out of attempts, not a fault.
+   *
+   * `null` on any other fault, so the caller can fail closed.
    */
-  async incrementAttempts(id: string): Promise<number | null> {
+  async claimAttempt(id: string): Promise<number | false | null> {
     try {
-      const updated = await this.prisma.passwordReset.update({
-        where: { id },
+      const claimed = await this.prisma.passwordReset.update({
+        where: {
+          id,
+          consumedAt: null,
+          attempts: { lt: AuthConstants.PasswordResetMaxAttempts },
+        },
         data: { attempts: { increment: 1 } },
       });
-      return updated.attempts;
+      return claimed.attempts;
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PrismaErrorCodes.RecordNotFound
+      ) {
+        return false;
+      }
+      this.logger.error(
+        { err: error, passwordResetId: id },
+        'Exception occurred in PasswordResetRepository.claimAttempt',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Gives back the guess slot a correct code claimed, when the redemption was refused for a
+   * reason that is not a guess. Applies only to a still-unconsumed record with a slot to give
+   * back (`attempts > 0`), so it can neither reopen a spent record nor push the count below zero.
+   * Returns the count, or `null` if the write failed.
+   */
+  async refundAttempt(id: string): Promise<number | null> {
+    try {
+      const result = await this.prisma.passwordReset.updateMany({
+        where: { id, consumedAt: null, attempts: { gt: 0 } },
+        data: { attempts: { decrement: 1 } },
+      });
+
+      return result.count;
     } catch (error) {
       this.logger.error(
         { err: error, passwordResetId: id },
-        'Exception occurred in PasswordResetRepository.incrementAttempts',
+        'Exception occurred in PasswordResetRepository.refundAttempt',
       );
       return null;
     }
@@ -137,13 +178,18 @@ export class PasswordResetRepository {
    * revocation that could not be confirmed) leaves the credential usable for the retry.
    *
    * Matched on the claim's own stamp, so it can only undo that claim and never reopens a record
-   * something else has since consumed. Returns the count, or `null` if the write failed.
+   * something else has since consumed. When `refundAttempt` is true the guess slot a correct
+   * code claimed is given back in the same write (`attempts` decrement), so a refusal that was
+   * not a guess costs no attempt; it is applied only to the record still carrying this claim.
+   * Returns the count, or `null` if the write failed.
    */
-  async release(id: string, claimedAt: Date): Promise<number | null> {
+  async release(id: string, claimedAt: Date, refundAttempt: boolean): Promise<number | null> {
     try {
       const result = await this.prisma.passwordReset.updateMany({
         where: { id, consumedAt: claimedAt },
-        data: { consumedAt: null },
+        data: refundAttempt
+          ? { consumedAt: null, attempts: { decrement: 1 } }
+          : { consumedAt: null },
       });
 
       return result.count;

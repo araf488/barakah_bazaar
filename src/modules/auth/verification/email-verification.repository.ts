@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { EmailVerification, User } from '../../../infra/prisma/prisma-client';
+import { PrismaErrorCodes } from '../../../common/constants/app.constants';
+import { EmailVerification, Prisma, User } from '../../../infra/prisma/prisma-client';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
+import { AuthConstants } from '../auth.constants';
 
 /** A verification row joined to the account it belongs to. */
 export type EmailVerificationWithUser = EmailVerification & { user: User };
@@ -82,28 +84,61 @@ export class EmailVerificationRepository {
   }
 
   /**
-   * Atomically increments the failed-attempt counter and returns the new count.
+   * Claims one guess against the code before it is compared, atomically, and returns the new
+   * attempt count.
    *
-   * `data: { attempts: { increment: 1 } }` is a database-side atomic increment: two concurrent
-   * wrong guesses each add 1 to whatever the column currently holds, rather than one racing the
-   * other's read of a value computed in the caller. A caller-computed `attempts + 1` can lose
-   * updates under concurrency — two guesses reading the same stale count both write the same
-   * next value, and the attempt cap advances by one for every two guesses instead of every one.
+   * One conditional `update`: `where` carries the unspent and under-the-cap predicates beside the
+   * id, so the database matches and increments in a single statement. Concurrent guesses
+   * serialise on the row, and only those that find `attempts < EmailVerificationMaxAttempts` get a slot, so a burst cannot
+   * out-guess the cap. The count comes back from that same statement, never from a second read
+   * another guess could have moved. Prisma raises `P2025` when nothing matched, which is
+   * `false`: the code is spent or out of attempts, not a fault.
    *
-   * `null` only on a write fault, so the caller can fail closed — a guess must not be allowed
-   * through just because the counter could not be confirmed.
+   * `null` on any other fault, so the caller can fail closed.
    */
-  async incrementAttempts(id: string): Promise<number | null> {
+  async claimAttempt(id: string): Promise<number | false | null> {
     try {
-      const updated = await this.prisma.emailVerification.update({
-        where: { id },
+      const claimed = await this.prisma.emailVerification.update({
+        where: {
+          id,
+          consumedAt: null,
+          attempts: { lt: AuthConstants.EmailVerificationMaxAttempts },
+        },
         data: { attempts: { increment: 1 } },
       });
-      return updated.attempts;
+      return claimed.attempts;
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PrismaErrorCodes.RecordNotFound
+      ) {
+        return false;
+      }
+      this.logger.error(
+        { err: error, verificationId: id },
+        'Exception occurred in EmailVerificationRepository.claimAttempt',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Gives back the guess slot a correct code claimed, when verification then failed for a reason
+   * that is not a guess. Applies only to a still-unconsumed record with a slot to give back
+   * (`attempts > 0`). Returns the count, or `null` if the write failed.
+   */
+  async refundAttempt(id: string): Promise<number | null> {
+    try {
+      const result = await this.prisma.emailVerification.updateMany({
+        where: { id, consumedAt: null, attempts: { gt: 0 } },
+        data: { attempts: { decrement: 1 } },
+      });
+
+      return result.count;
     } catch (error) {
       this.logger.error(
         { err: error, verificationId: id },
-        'Exception occurred in EmailVerificationRepository.incrementAttempts',
+        'Exception occurred in EmailVerificationRepository.refundAttempt',
       );
       return null;
     }
