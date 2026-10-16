@@ -37,6 +37,7 @@ const profile: UserProfileDto = {
   id: 'user-1',
   email: 'customer@example.com',
   phone: null,
+  phoneVerified: false,
   fullName: null,
   role: UserRole.CUSTOMER,
   createdAt: new Date('2025-12-01T00:00:00.000Z'),

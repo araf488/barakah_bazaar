@@ -59,6 +59,16 @@ export class AuthRepository {
     }
   }
 
+  /** Looks a user up by their stored (normalised) phone number. Three-valued like `findById`. */
+  async findByPhone(phone: string): Promise<User | null | undefined> {
+    try {
+      return (await this.prisma.user.findUnique({ where: { phone } })) ?? undefined;
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthRepository.findByPhone');
+      return null;
+    }
+  }
+
   /**
    * Creates a customer account. Staff accounts are invitation-only and are not created here.
    *
@@ -92,12 +102,16 @@ export class AuthRepository {
    * Writes a new password hash as a real password change: stamps `passwordChangedAt` and bumps
    * the session-cache generation. Callers are the password reset and change flows
    * (`PasswordUpdater`); the login-time rehash uses `updatePasswordEncoding` instead.
+   *
+   * The same write clears `phoneVerifiedAt` (the number itself stays). A verified phone is a
+   * password-less way to sign in, so a reset made to lock someone out must cut it off too; the
+   * owner re-verifies the number with one text. The cache bump below covers this field as well.
    */
   async updatePasswordHash(userId: string, passwordHash: string): Promise<User | null> {
     try {
       const updated = await this.prisma.user.update({
         where: { id: userId },
-        data: { passwordHash, passwordChangedAt: new Date() },
+        data: { passwordHash, passwordChangedAt: new Date(), phoneVerifiedAt: null },
       });
 
       // After the write commits, not before — see AdminUserRepository.updateAudited for why.

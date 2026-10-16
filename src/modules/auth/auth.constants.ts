@@ -1,11 +1,22 @@
 /** Auth-module constants. Cross-cutting values live in app.constants.ts. */
 export const AuthConstants = {
-  /** Digits in a phone-login OTP. */
-  OtpLength: 6,
-  /** How long an issued OTP stays valid. */
-  OtpTtlSeconds: 300,
-  /** Maximum verification attempts before an OTP is burned. */
-  OtpMaxAttempts: 5,
+  /** Digits in a phone verification or phone sign-in code. */
+  PhoneCodeDigits: 6,
+  /** How long an issued phone code stays valid. */
+  PhoneCodeTtlSeconds: 300,
+  /** Wrong attempts a phone code allows before it is burned. */
+  PhoneCodeMaxAttempts: 5,
+  /** Days a phone verification or sign-in challenge row is kept before the sweeper deletes it. */
+  PhoneChallengeRetentionDays: 30,
+  /** SMS body for a phone code. ASCII English; `{code}` is substituted at send time. */
+  PhoneCodeSmsTemplate: 'Barakah Bazaar code: {code}. Valid 5 minutes. Never share it.',
+  /** How long an outbound SMS gateway request may take before it counts as failed. */
+  SmsRequestTimeoutMs: 10_000,
+  /**
+   * The 'SMS daily limit reached' error log fires at most once per this many milliseconds per
+   * instance. Once the limit is hit every public phone request would otherwise log it.
+   */
+  SmsDailyLimitLogIntervalMs: 600_000,
   /** Resource label used in not-found messages about the local user row. */
   UserResourceName: 'User',
   /** Stored-hash format: scrypt$N$r$p$salt$hash. */
@@ -167,6 +178,15 @@ export const AuthConstants = {
    */
   RefreshReuseGraceMaxSeconds: 120,
   /**
+   * How far in the future a `previousRotatedAt` stamp may lie and still be read as "just now".
+   * The stamp comes from the clock of whichever instance rotated, so two racing refreshes
+   * served by hosts a few hundred milliseconds apart would otherwise see a negative elapsed
+   * time and revoke a legitimate session. Bounded so a host that is badly wrong cannot
+   * forgive replays for the length of its error: the most a future stamp ever adds to the
+   * grace window is this.
+   */
+  RotationClockSkewToleranceMs: 5_000,
+  /**
    * Ceiling on `emailVerificationGraceHours`: thirty days. An unverified account is allowed to
    * sign in for this long, so an unbounded value would quietly make verification optional.
    */
@@ -226,7 +246,6 @@ export const AuthConstants = {
 /** Injection tokens for the auth ports. */
 export const AuthTokens = {
   SmsGateway: Symbol('BARAKAH_SMS_GATEWAY'),
-  OtpService: Symbol('BARAKAH_OTP_SERVICE'),
   SessionCache: Symbol('BARAKAH_SESSION_CACHE'),
   /**
    * The auth module's own binding, deliberately separate from `AdminTokens.EmailSender`: the
@@ -277,6 +296,23 @@ export const AuthMessages = {
   ResetTooManyAttempts: 'Too many incorrect codes. Please request a new password reset email.',
   /** Wrong password, unknown address, or an unusable refresh token. Deliberately one message. */
   InvalidCredentials: 'Those sign-in details are not correct.',
+  /** Verifying a number that is already verified on a different account. */
+  PhoneInUse: 'This number is already linked to another account.',
+  /** Verifying a number that is already verified on the caller's own account. */
+  PhoneAlreadyVerified: 'This number is already verified on your account.',
+  /** A phone code was presented that does not match. */
+  PhoneCodeInvalid: 'That code is not correct.',
+  /** A phone code was presented after its lifetime ended. */
+  PhoneCodeExpired: 'That code has expired. Request a new one.',
+  /** A code was requested inside the resend cooldown. `{0}` is the seconds left. */
+  PhoneCodeCooldownTemplate: 'Please wait {0} seconds before requesting another code.',
+  /** A number reached its daily code limit. */
+  PhoneCodeDailyLimit: 'Too many codes were requested for this number today. Try again tomorrow.',
+  /** One account requested its daily share of verification codes, whatever the numbers. */
+  PhoneVerificationAccountLimit:
+    'Too many verification codes were requested for this account today. Try again tomorrow.',
+  /** The app-wide daily SMS ceiling was reached, or the gateway could not send. */
+  SmsUnavailable: 'Text messages are unavailable right now. Please try again later.',
   /** The account exists and the password was right, but the email is not verified. */
   EmailNotVerified: 'Please verify your email address before signing in.',
   /** Login or refresh arrived without the X-Device-Id header. */
@@ -303,4 +339,20 @@ export const AuthMessages = {
   /** Turning `staffMfaRequired` off was requested without the explicit confirmation flag. */
   StaffMfaDisableNeedsConfirmation:
     'Turning off two-factor authentication for staff needs explicit confirmation.',
+} as const;
+
+/**
+ * Alpha SMS (sms.net.bd) HTTP API contract, https://www.alpha.net.bd/SMS/API.
+ * A send is a form-encoded POST to `SMS_API_URL`; the body answers `{ error: 0, ... }` on success.
+ */
+export const AlphaSmsApi = {
+  ApiKeyField: 'api_key',
+  MessageField: 'msg',
+  RecipientField: 'to',
+  SenderIdField: 'sender_id',
+  /** `error` value in the response body that means the request was accepted. */
+  SuccessErrorCode: 0,
+  ContentType: 'application/x-www-form-urlencoded',
+  /** The API wants the country code without the leading plus (880...). */
+  PlusPrefix: '+',
 } as const;

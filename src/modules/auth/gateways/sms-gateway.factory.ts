@@ -1,7 +1,11 @@
 import { PinoLogger } from 'nestjs-pino';
 import { AppConfigService } from '../../../config';
 import { SmsGateway, SmsMessage } from '../ports/sms-gateway.port';
+import { AlphaSmsGateway } from './alpha-sms.gateway';
 import { NoopSmsGateway } from './noop-sms.gateway';
+
+/** Last digits of a number kept in logs. */
+const LOGGED_DIGITS = 3;
 
 /**
  * Reports every send as failed, loudly.
@@ -19,7 +23,7 @@ class UnavailableSmsGateway implements SmsGateway {
 
   send(message: SmsMessage): Promise<boolean> {
     this.logger.error(
-      { provider: this.provider, to: message.to },
+      { provider: this.provider, to: message.to.slice(-LOGGED_DIGITS) },
       'SMS_PROVIDER names a gateway this build has no adapter for; message not sent',
     );
     return Promise.resolve(false);
@@ -36,10 +40,13 @@ export const createSmsGateway = (config: AppConfigService, logger: PinoLogger): 
   const provider = config.get('SMS_PROVIDER', { infer: true });
 
   if (provider === 'noop') {
-    return new NoopSmsGateway(logger);
+    return new NoopSmsGateway(config, logger);
   }
 
-  // alpha-sms and ssl-wireless are in the enum as the documented roadmap; neither has an
-  // adapter yet. Fail honestly rather than quietly behaving like noop.
+  if (provider === 'alpha-sms') {
+    return new AlphaSmsGateway(config, logger);
+  }
+
+  // ssl-wireless is in the enum as the documented roadmap; it has no adapter yet. Fail honestly rather than quietly behaving like noop.
   return new UnavailableSmsGateway(provider, logger);
 };

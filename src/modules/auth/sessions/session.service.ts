@@ -813,11 +813,14 @@ export class SessionService {
    * path in this service can produce — and an unexplained state must not be the one that
    * grants access.
    *
-   * So is a stamp in the future. The timestamp is written by the application clock, not by the
-   * database, so a host whose clock ran ahead when the row was rotated leaves a stamp later
-   * than "now" — and a negative elapsed time satisfies `<= graceMs` for the whole length of
-   * the skew, forgiving every replay of that token until the clock catches up. A stamp that
-   * has not happened yet cannot vouch for anything.
+   * The timestamp is written by the application clock, not by the database, so with several
+   * instances a stamp can lie slightly in the future: the request that rotated first ran on a
+   * host whose clock is ahead of this one. Reading that as a replay would revoke a legitimate
+   * session on an ordinary concurrent refresh, so a stamp up to
+   * `RotationClockSkewToleranceMs` ahead counts as "just now". Beyond that it is a replay: a
+   * negative elapsed time would otherwise satisfy `<= graceMs` for the whole length of the
+   * skew, forgiving every replay of that token until the clock catches up, and a stamp that
+   * far from now cannot vouch for anything.
    *
    * The configured window is also clamped here. The read path already enforces
    * `RefreshReuseGraceMaxSeconds` (the shared `auth-settings.rules`, where a stored value above
@@ -835,7 +838,7 @@ export class SessionService {
 
     const elapsedMs = Date.now() - session.previousRotatedAt.getTime();
 
-    if (elapsedMs < 0) {
+    if (elapsedMs < -AuthConstants.RotationClockSkewToleranceMs) {
       return false;
     }
 

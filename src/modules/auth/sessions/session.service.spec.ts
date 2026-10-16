@@ -886,6 +886,40 @@ describe('SessionService', () => {
       expect(logger.warn).toHaveBeenCalled();
     });
 
+    it('forgives a stamp slightly in the future as clock skew between instances', async () => {
+      // The racing request that rotated first ran on a host whose clock is one second ahead.
+      repository.findByRefreshHash.mockResolvedValue(rotatedSession(-1_000));
+
+      const session = issued(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP));
+
+      expect(repository.revoke).not.toHaveBeenCalled();
+      expect(session.refreshToken).toBe(RAW_TOKEN);
+    });
+
+    it('forgives a future stamp exactly at the five-second skew tolerance', async () => {
+      repository.findByRefreshHash.mockResolvedValue(rotatedSession(-5_000));
+
+      const session = issued(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP));
+
+      expect(repository.revoke).not.toHaveBeenCalled();
+      expect(session.refreshToken).toBe(RAW_TOKEN);
+    });
+
+    it('treats a stamp beyond the five-second skew tolerance as a replay', async () => {
+      repository.findByRefreshHash.mockResolvedValue(rotatedSession(-5_001));
+
+      expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP)).status).toBe(401);
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+    });
+
+    it('does not let skew tolerance extend the grace window for a past stamp', async () => {
+      // 30s default grace; 34s ago would pass if the tolerance were added to the window.
+      repository.findByRefreshHash.mockResolvedValue(rotatedSession(34_000));
+
+      expect(failure(await service.refresh(RAW_TOKEN, DEVICE, 'jest', IP)).status).toBe(401);
+      expect(repository.revoke).toHaveBeenCalledWith('session-1');
+    });
+
     it('clamps an absurd configured grace window instead of trusting it', async () => {
       // A mistyped `86400` would otherwise forgive a replay for a full day.
       settings.current.mockResolvedValue(resolvedSettings({ refreshReuseGraceSeconds: 86_400 }));

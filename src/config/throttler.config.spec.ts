@@ -1,12 +1,13 @@
 import { ExecutionContext } from '@nestjs/common';
 import { createExecutionContext } from '../../test/support/mocks';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
-import { ThrottleBuckets, buildThrottlerOptions } from './throttler.config';
+import { ThrottleBuckets, buildThrottlerOptions, phoneFromBody } from './throttler.config';
 
 const LIMITS = {
   GEOCODING_RATE_LIMIT: 30,
   AUTH_RATE_LIMIT: 10,
   AUTH_ACCOUNT_RATE_LIMIT: 20,
+  AUTH_PHONE_RATE_LIMIT: 5,
   WRITE_RATE_LIMIT: 60,
 };
 
@@ -21,6 +22,9 @@ class Routes {
   // the shape refresh and MFA verification actually send.
   @RateLimit('auth-ip', 'auth-account')
   refresh(): void {}
+
+  @RateLimit('auth-phone')
+  phoneSignIn(): void {}
 
   @RateLimit('geocoding')
   search(): void {}
@@ -71,6 +75,15 @@ describe('buildThrottlerOptions', () => {
       expect(buckets).toContainEqual(expect.objectContaining({ name: 'auth-account', limit: 13 }));
     });
 
+    it('configures a bucket named "auth-phone" from AUTH_PHONE_RATE_LIMIT', () => {
+      expect(bucket('auth-phone')).toEqual(
+        expect.objectContaining({ name: 'auth-phone', ttl: 60_000, limit: 5 }),
+      );
+      expect(bucketsOf({ ...LIMITS, AUTH_PHONE_RATE_LIMIT: 9 })).toContainEqual(
+        expect.objectContaining({ name: 'auth-phone', limit: 9 }),
+      );
+    });
+
     it('keeps the existing geocoding bucket alongside them', () => {
       expect(bucket('geocoding')).toEqual(
         expect.objectContaining({ name: 'geocoding', ttl: 60_000, limit: 30 }),
@@ -84,7 +97,9 @@ describe('buildThrottlerOptions', () => {
     });
 
     it('gives every bucket the same one-minute window', () => {
-      expect(bucketsOf().map((option) => option.ttl)).toEqual([60_000, 60_000, 60_000, 60_000]);
+      expect(bucketsOf().map((option) => option.ttl)).toEqual([
+        60_000, 60_000, 60_000, 60_000, 60_000,
+      ]);
     });
 
     it('names each bucket exactly as ThrottleBuckets does, so a decorator cannot reference a bucket that was never registered', () => {
@@ -92,6 +107,7 @@ describe('buildThrottlerOptions', () => {
         ThrottleBuckets.Geocoding,
         ThrottleBuckets.AuthIp,
         ThrottleBuckets.AuthAccount,
+        ThrottleBuckets.AuthPhone,
         ThrottleBuckets.Writes,
       ]);
     });
@@ -287,5 +303,50 @@ describe('buildThrottlerOptions', () => {
       expect(applies('auth-ip', Routes.prototype.login, 'POST')).toBe(true);
       expect(bucket('auth-ip')?.limit).toBeLessThan(bucket('writes')?.limit as number);
     });
+  });
+});
+
+describe('phoneFromBody', () => {
+  it.each(['01712345678', ' +8801712345678 ', '+8801712345678'])(
+    'normalises %p to the one stored form',
+    (phone) => {
+      expect(phoneFromBody({ phone })).toBe('+8801712345678');
+    },
+  );
+
+  it.each([{ phone: '8801712345678' }, {}, { phone: 17 }, { phone: '017-1234-5678' }, undefined])(
+    'returns an empty key for %p',
+    (body) => {
+      expect(phoneFromBody(body)).toBe('');
+    },
+  );
+});
+
+describe('the auth-phone bucket', () => {
+  it('counts a request to an opted-in route that carries a valid phone', () => {
+    expect(
+      applies('auth-phone', Routes.prototype.phoneSignIn, 'POST', { phone: '01712345678' }),
+    ).toBe(true);
+  });
+
+  it('skips a route that did not opt in', () => {
+    expect(applies('auth-phone', Routes.prototype.browse, 'POST', { phone: '01712345678' })).toBe(
+      false,
+    );
+  });
+
+  it('skips a request with no usable phone rather than sharing one empty key', () => {
+    expect(applies('auth-phone', Routes.prototype.phoneSignIn, 'POST', { phone: 'abc' })).toBe(
+      false,
+    );
+    expect(applies('auth-phone', Routes.prototype.phoneSignIn, 'POST', {})).toBe(false);
+  });
+
+  it('tracks both spellings of one number under one key', () => {
+    const tracker = bucket('auth-phone')?.getTracker as (req: unknown) => string;
+
+    expect(tracker({ body: { phone: '01712345678' } })).toBe(
+      tracker({ body: { phone: '+8801712345678' } }),
+    );
   });
 });

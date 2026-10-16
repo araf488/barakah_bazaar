@@ -578,4 +578,92 @@ describe('LoginService', () => {
       });
     });
   });
+
+  describe('completeLogin', () => {
+    const run = (user: User, afterEligible?: () => Promise<void>) =>
+      service.completeLogin(user, DEVICE_ID, 'ua', '203.0.113.7', afterEligible);
+
+    it('issues a session for an eligible customer', async () => {
+      const result = await run(userRow());
+
+      expect(result).toEqual({
+        ok: true,
+        data: { kind: 'session', session: issuedSession, portal: 'STOREFRONT' },
+      });
+      expect(sessions.issue).toHaveBeenCalledWith(userRow(), DEVICE_ID, 'ua', '203.0.113.7');
+    });
+
+    it('hands off to a second factor for a user with totp enabled', async () => {
+      const result = await run(userRow({ totpEnabledAt: new Date('2026-02-01T00:00:00.000Z') }));
+
+      expect(result).toEqual({ ok: true, data: { kind: 'mfa', mfaToken: 'signed-token' } });
+      expect(sessions.issue).not.toHaveBeenCalled();
+    });
+
+    it('refuses a disabled account with the literal message', async () => {
+      const result = await run(userRow({ isActive: false }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: 403,
+        message: 'This account has been disabled. Please contact support.',
+      });
+    });
+
+    it('refuses an unverified email past the grace period with the literal message', async () => {
+      const eightDaysAgo = new Date(NOW.getTime() - 8 * 24 * 60 * 60 * 1000);
+
+      const result = await run(userRow({ emailVerifiedAt: null, createdAt: eightDaysAgo }));
+
+      expect(result).toEqual({
+        ok: false,
+        status: 403,
+        message: 'Please verify your email address before signing in.',
+      });
+    });
+
+    it('runs the hook after eligibility and before the session is issued', async () => {
+      const hook = jest.fn().mockResolvedValue(undefined);
+
+      await run(userRow(), hook);
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(settings.current.mock.invocationCallOrder[0]).toBeLessThan(
+        hook.mock.invocationCallOrder[0],
+      );
+      expect(hook.mock.invocationCallOrder[0]).toBeLessThan(
+        sessions.issue.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('runs the hook before the mfa decision', async () => {
+      const hook = jest.fn().mockResolvedValue(undefined);
+
+      await run(userRow({ totpEnabledAt: new Date('2026-02-01T00:00:00.000Z') }), hook);
+
+      expect(hook.mock.invocationCallOrder[0]).toBeLessThan(
+        tokens.sign.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('does not run the hook when eligibility fails', async () => {
+      const hook = jest.fn().mockResolvedValue(undefined);
+
+      await run(userRow({ isActive: false }), hook);
+
+      expect(hook).not.toHaveBeenCalled();
+    });
+
+    it('answers 500 and logs when something throws', async () => {
+      settings.current.mockRejectedValue(new Error('boom'));
+
+      const result = await run(userRow());
+
+      expect(result).toMatchObject({ ok: false, status: 500 });
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error) },
+        'Exception occurred in LoginService.completeLogin',
+      );
+    });
+  });
 });

@@ -70,6 +70,7 @@ import { UserModule } from './modules/user/user.module';
           GEOCODING_RATE_LIMIT: config.get('GEOCODING_RATE_LIMIT', { infer: true }),
           AUTH_RATE_LIMIT: config.get('AUTH_RATE_LIMIT', { infer: true }),
           AUTH_ACCOUNT_RATE_LIMIT: config.get('AUTH_ACCOUNT_RATE_LIMIT', { infer: true }),
+          AUTH_PHONE_RATE_LIMIT: config.get('AUTH_PHONE_RATE_LIMIT', { infer: true }),
           WRITE_RATE_LIMIT: config.get('WRITE_RATE_LIMIT', { infer: true }),
         }),
     }),

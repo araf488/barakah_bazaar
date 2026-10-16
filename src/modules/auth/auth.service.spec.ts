@@ -60,6 +60,7 @@ describe('AuthService', () => {
           id: 'user-1',
           email: 'customer@example.com',
           phone: '+8801711111111',
+          phoneVerified: false,
           fullName: 'Test Customer',
           role: UserRole.CUSTOMER,
           createdAt: new Date('2025-12-01T00:00:00.000Z'),

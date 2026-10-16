@@ -2,12 +2,17 @@ import { ExecutionContext } from '@nestjs/common';
 import { ThrottlerModuleOptions, ThrottlerOptions } from '@nestjs/throttler';
 import { ErrorMessages } from '../common/constants/error-messages.constants';
 import { optsIntoRateLimit } from '../common/decorators/rate-limit.decorator';
+import { BangladeshPhone } from '../common/phone/bangladesh-phone';
 import { Env } from './env.schema';
 
 /** Only the fields the throttler config needs, so callers can pass a ConfigService read. */
 export type ThrottlerEnv = Pick<
   Env,
-  'GEOCODING_RATE_LIMIT' | 'AUTH_RATE_LIMIT' | 'AUTH_ACCOUNT_RATE_LIMIT' | 'WRITE_RATE_LIMIT'
+  | 'GEOCODING_RATE_LIMIT'
+  | 'AUTH_RATE_LIMIT'
+  | 'AUTH_ACCOUNT_RATE_LIMIT'
+  | 'AUTH_PHONE_RATE_LIMIT'
+  | 'WRITE_RATE_LIMIT'
 >;
 
 /** Every named bucket below shares one window. */
@@ -34,6 +39,11 @@ export const ThrottleBuckets = {
    * one account spread across many IPs, which `AuthIp` alone cannot see.
    */
   AuthAccount: 'auth-account',
+  /**
+   * The phone sign-in routes, keyed by the submitted number in its one normalised form, so
+   * both spellings of a number share a count and one number cannot be hammered across IPs.
+   */
+  AuthPhone: 'auth-phone',
   /** The outbound map-search proxies. */
   Geocoding: 'geocoding',
   /** Baseline for every state-changing request; the one bucket no route has to ask for. */
@@ -52,6 +62,23 @@ interface CredentialRequestBody {
 const emailFromBody = (body: unknown): string => {
   const email = (body as CredentialRequestBody | undefined)?.email;
   return typeof email === 'string' ? email.toLowerCase() : '';
+};
+
+/** Shape of the parsed JSON body on a phone route, once the pipeline has run. */
+interface PhoneRequestBody {
+  phone?: unknown;
+}
+
+/**
+ * The submitted phone in its single stored form (`+8801XXXXXXXXX`), or `''` when the body
+ * carries none or one that is not a valid Bangladeshi mobile number. Normalising here is what
+ * makes `01712345678` and `+8801712345678` land in the same bucket.
+ */
+export const phoneFromBody = (body: unknown): string => {
+  const phone = (body as PhoneRequestBody | undefined)?.phone;
+  return typeof phone === 'string' && BangladeshPhone.isValid(phone)
+    ? BangladeshPhone.normalize(phone)
+    : '';
 };
 
 /** Whether the current request's body carries an email to key the account bucket on. */
@@ -98,6 +125,25 @@ const optInAccountBucket = (name: string, limit: number): ThrottlerOptions => ({
   getTracker: (req) => emailFromBody((req as { body?: unknown }).body),
 });
 
+/** Whether the current request's body carries a valid phone to key the phone bucket on. */
+const requestHasPhone = (context: ExecutionContext): boolean => {
+  const request = context.switchToHttp().getRequest<{ body?: unknown } | undefined>();
+  return phoneFromBody(request?.body) !== '';
+};
+
+/**
+ * A bucket keyed by the submitted phone number, mirroring `optInAccountBucket`: it skips when
+ * the route did not ask for it and when the body has no valid phone, since every such request
+ * would otherwise share one `''` key and throttle each other.
+ */
+const optInPhoneBucket = (name: string, limit: number): ThrottlerOptions => ({
+  name,
+  ttl: THROTTLE_WINDOW_MS,
+  limit,
+  skipIf: (context) => !optsIntoRateLimit(context, name) || !requestHasPhone(context),
+  getTracker: (req) => phoneFromBody((req as { body?: unknown }).body),
+});
+
 /** Whether this request only reads, and so falls outside the write baseline. */
 const isReadOnly = (context: ExecutionContext): boolean => {
   const request = context.switchToHttp().getRequest<{ method?: string } | undefined>();
@@ -122,8 +168,9 @@ const writeBaselineBucket = (limit: number): ThrottlerOptions => ({
 
 /**
  * Named rate-limit buckets, registered for the globally applied guard (see
- * `AuthThrottlerGuard`). `geocoding`, `auth-ip` and `auth-account` apply only to the routes
- * carrying `@RateLimit` for them; `writes` applies to every state-changing request.
+ * `AuthThrottlerGuard`). `geocoding`, `auth-ip`, `auth-account` and `auth-phone` apply only
+ * to the routes carrying `@RateLimit` for them; `writes` applies to every state-changing
+ * request.
  *
  * A `@RateLimit('x')` decorator does nothing unless a bucket named `x` is registered here —
  * this is that registration.
@@ -137,6 +184,7 @@ export const buildThrottlerOptions = (env: ThrottlerEnv): ThrottlerModuleOptions
     optInBucket(ThrottleBuckets.Geocoding, env.GEOCODING_RATE_LIMIT),
     optInBucket(ThrottleBuckets.AuthIp, env.AUTH_RATE_LIMIT),
     optInAccountBucket(ThrottleBuckets.AuthAccount, env.AUTH_ACCOUNT_RATE_LIMIT),
+    optInPhoneBucket(ThrottleBuckets.AuthPhone, env.AUTH_PHONE_RATE_LIMIT),
     writeBaselineBucket(env.WRITE_RATE_LIMIT),
   ],
   // The object form rather than a bare array purely so this is honoured: the library reads

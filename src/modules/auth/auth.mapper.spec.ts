@@ -33,10 +33,23 @@ describe('AuthMapper', () => {
       id: 'user-1',
       email: 'customer@barakahbazaar.com.bd',
       phone: '+8801711111111',
+      phoneVerified: false,
       fullName: 'Rahim Uddin',
       role: UserRole.CUSTOMER,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
     });
+  });
+
+  it('reports phoneVerified true when the number was proved', () => {
+    const profile = AuthMapper.toProfile(
+      userRow({ phoneVerifiedAt: new Date('2026-10-01T00:00:00.000Z') }),
+    );
+
+    expect(profile.phoneVerified).toBe(true);
+  });
+
+  it('reports phoneVerified false when the number was never proved', () => {
+    expect(AuthMapper.toProfile(userRow({ phoneVerifiedAt: null })).phoneVerified).toBe(false);
   });
 
   it('never leaks the operational columns', () => {
@@ -83,6 +96,14 @@ describe('AuthMapper.toSessionResponse', () => {
 
     expect(JSON.stringify(response)).not.toContain('scrypt$');
     expect(JSON.stringify(response)).not.toContain('sealed');
+  });
+
+  it('carries phoneVerified on the login response user', () => {
+    const response = AuthMapper.toSessionResponse(
+      issuedSession({ user: userRow({ phoneVerifiedAt: new Date('2026-10-01T00:00:00.000Z') }) }),
+    );
+
+    expect(response.user?.phoneVerified).toBe(true);
   });
 
   it('resolves STOREFRONT for a customer', () => {

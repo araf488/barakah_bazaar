@@ -12,6 +12,9 @@ export class UserProfileDto {
   @ApiPropertyOptional({ nullable: true })
   phone?: string | null;
 
+  @ApiProperty({ description: 'Whether the number above was proved with a texted code.' })
+  phoneVerified!: boolean;
+
   @ApiPropertyOptional({ nullable: true })
   fullName?: string | null;
 

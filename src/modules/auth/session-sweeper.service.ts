@@ -2,6 +2,8 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AuthConstants } from './auth.constants';
 import { PasswordResetRepository } from './password-reset/password-reset.repository';
+import { PhoneLoginChallengeRepository } from './phone/phone-login-challenge.repository';
+import { PhoneVerificationRepository } from './phone/phone-verification.repository';
 import { SessionRepository } from './sessions/session.repository';
 import { EmailVerificationRepository } from './verification/email-verification.repository';
 
@@ -30,6 +32,9 @@ import { EmailVerificationRepository } from './verification/email-verification.r
  * "When was this account's password reset, and from which request" is an incident-review
  * question too.
  *
+ * **Finished phone codes (both tables) are kept for `PhoneChallengeRetentionDays`** on the same
+ * terms; the repositories' `deleteStale` never touches a live code.
+ *
  * Runs on a plain interval rather than through BullMQ or a scheduler package, copying
  * `ReservationSweeper`: the queue is optional and off by default, and this has to work on a
  * bare deployment with no Redis. Two instances sweeping at once is harmless — both issue the
@@ -43,6 +48,8 @@ export class SessionSweeper implements OnModuleInit, OnModuleDestroy {
     private readonly repository: SessionRepository,
     private readonly verifications: EmailVerificationRepository,
     private readonly passwordResets: PasswordResetRepository,
+    private readonly phoneVerifications: PhoneVerificationRepository,
+    private readonly phoneLoginChallenges: PhoneLoginChallengeRepository,
     @InjectPinoLogger(SessionSweeper.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -73,7 +80,20 @@ export class SessionSweeper implements OnModuleInit, OnModuleDestroy {
       const passwordResets = await this.passwordResets.deleteStale(
         SessionSweeper.cutoff(AuthConstants.PasswordResetRetentionDays),
       );
-      const counts = { sessions, recoveryCodes, verifications, passwordResets };
+      const phoneVerifications = await this.phoneVerifications.deleteStale(
+        SessionSweeper.cutoff(AuthConstants.PhoneChallengeRetentionDays),
+      );
+      const phoneLoginChallenges = await this.phoneLoginChallenges.deleteStale(
+        SessionSweeper.cutoff(AuthConstants.PhoneChallengeRetentionDays),
+      );
+      const counts = {
+        sessions,
+        recoveryCodes,
+        verifications,
+        passwordResets,
+        phoneVerifications,
+        phoneLoginChallenges,
+      };
 
       if (Object.values(counts).includes(null)) {
         // A failed delete is not a problem the caller can act on and not one that grows:
@@ -88,6 +108,8 @@ export class SessionSweeper implements OnModuleInit, OnModuleDestroy {
             recoveryCodes: recoveryCodes ?? 0,
             verifications: verifications ?? 0,
             passwordResets: passwordResets ?? 0,
+            phoneVerifications: phoneVerifications ?? 0,
+            phoneLoginChallenges: phoneLoginChallenges ?? 0,
           },
           'Swept expired sessions, dead recovery codes, finished verifications and resets',
         );

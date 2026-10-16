@@ -189,6 +189,10 @@ export interface SeedUserOptions {
   /** Defaults to verified: an unverified account is refused once its grace window passes. */
   emailVerified?: boolean;
   isActive?: boolean;
+  /** A normalised number (`+8801XXXXXXXXX`) to store on the row. */
+  phone?: string;
+  /** Stamps `phoneVerifiedAt` with now. Ignored when no `phone` is given. */
+  phoneVerified?: boolean;
 }
 
 /**
@@ -214,6 +218,8 @@ export const seedVerifiedUser = async (
       role: options.role ?? UserRole.CUSTOMER,
       emailVerifiedAt: (options.emailVerified ?? true) ? new Date() : null,
       isActive: options.isActive ?? true,
+      phone: options.phone ?? null,
+      phoneVerifiedAt: options.phone && options.phoneVerified ? new Date() : null,
     },
   });
 };

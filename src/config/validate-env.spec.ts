@@ -233,6 +233,37 @@ describe('validateEnv', () => {
       ).toThrow(/EMAIL_FROM and the EMAIL_SMTP_\* credentials are required/);
     });
 
+    it('refuses a configured SMS provider with no credentials', () => {
+      expect(() => validateEnv({ ...productionEnv, SMS_PROVIDER: 'alpha-sms' })).toThrow(
+        /SMS_PROVIDER is set but SMS_API_URL and SMS_API_KEY are not\./,
+      );
+    });
+
+    it('refuses a configured SMS provider with only the URL', () => {
+      expect(() =>
+        validateEnv({
+          ...productionEnv,
+          SMS_PROVIDER: 'alpha-sms',
+          SMS_API_URL: 'https://api.sms.net.bd/sendsms',
+        }),
+      ).toThrow(/SMS_API_KEY|SMS_API_URL and SMS_API_KEY/);
+    });
+
+    it('accepts a configured SMS provider with its URL and key', () => {
+      expect(() =>
+        validateEnv({
+          ...productionEnv,
+          SMS_PROVIDER: 'alpha-sms',
+          SMS_API_URL: 'https://api.sms.net.bd/sendsms',
+          SMS_API_KEY: 'key',
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts the noop SMS provider with no credentials', () => {
+      expect(() => validateEnv({ ...productionEnv, SMS_PROVIDER: 'noop' })).not.toThrow();
+    });
+
     it('stays permissive in development', () => {
       expect(() => validateEnv({ NODE_ENV: 'development', SWAGGER_ENABLED: 'true' })).not.toThrow();
     });
@@ -303,6 +334,29 @@ describe('validateEnv', () => {
       expect(() => validateEnv({ ...stagingEnv, APP_PUBLIC_BASE_URL: insecure })).toThrow(
         /APP_PUBLIC_BASE_URL must begin with https/,
       );
+    });
+  });
+
+  describe('phone verification limits', () => {
+    it.each([
+      ['PHONE_CODE_RESEND_COOLDOWN_SECONDS', 60],
+      ['PHONE_CODE_DAILY_LIMIT_PER_NUMBER', 5],
+      ['PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT', 5],
+      ['SMS_DAILY_LIMIT', 500],
+      ['AUTH_PHONE_RATE_LIMIT', 5],
+    ])('defaults %s to %d when absent', (key, expected) => {
+      expect(validateEnv({})[key as keyof ReturnType<typeof validateEnv>]).toBe(expected);
+    });
+
+    it.each([
+      'PHONE_CODE_RESEND_COOLDOWN_SECONDS',
+      'PHONE_CODE_DAILY_LIMIT_PER_NUMBER',
+      'PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT',
+      'SMS_DAILY_LIMIT',
+      'AUTH_PHONE_RATE_LIMIT',
+    ])('rejects 0 and a non-number for %s', (key) => {
+      expect(() => validateEnv({ [key]: '0' })).toThrow();
+      expect(() => validateEnv({ [key]: 'abc' })).toThrow();
     });
   });
 });

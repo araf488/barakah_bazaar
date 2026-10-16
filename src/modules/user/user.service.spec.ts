@@ -66,6 +66,7 @@ describe('UserService', () => {
         'fullName',
         'id',
         'phone',
+        'phoneVerified',
         'role',
       ]);
     });

@@ -1,8 +1,8 @@
 # Auth module
 
 **Status:** in use — password login, TOTP second factor, sessions, refresh rotation, session
-management, registration, email verification and password reset/change are live. Phone/OTP
-login is specified but unimplemented.
+management, registration, email verification, password reset/change, phone verification and
+phone sign-in are live.
 
 This module is the whole of identity. It stores the credentials, issues the tokens, and
 answers every "who is this and may they" question from this database. **No third party takes
@@ -19,6 +19,9 @@ here, and a Supabase outage cannot sign anybody in or out.
 - `email_verifications` ✅ — hashed link token + code; no RLS policy
 - `password_resets` ✅ — the same shape in its own table, so a verification token can never be
   redeemed as a reset; no RLS policy
+- `phone_verifications` ✅ — a signed-in customer proving a number; hashed code only
+- `phone_login_challenges` ✅ — a sign-in code for a verified number; hashed code only. A
+  separate table from the one above, so a verification code can never be redeemed as a sign-in
 
 ## The two-stage guard
 
@@ -145,6 +148,13 @@ concurrent refresh, not an attack. Outside it, presenting a rotated token is a r
 session is revoked — a stolen refresh token therefore gets one use and costs the thief the
 session.
 
+The rotation stamp comes from the clock of the instance that rotated, so behind a load
+balancer it can lie slightly in the future. A stamp up to `RotationClockSkewToleranceMs`
+(5 seconds) ahead counts as "just now", so racing refreshes served by two hosts do not sign
+the user out. A stamp further ahead is treated as a replay. The tolerance never lengthens the
+window for a stamp in the past. Instances still need NTP: skew above 5 seconds turns ordinary
+concurrent refreshes back into revocations.
+
 `expiresAt` slides forward on each refresh; `absoluteExpiresAt` never moves. Both deadlines,
 and the grace window, come from `auth_settings` and differ by role, so staff sessions can be
 made short-lived without touching a customer's.
@@ -168,10 +178,108 @@ transaction, the caller's included (see the admin module README).
 - **Sessions are revoked before the new hash is written** (`PasswordUpdater.replace`). If
   revocation cannot be confirmed, nothing is written and the answer is 503.
 - A reset revokes every session; a change keeps the calling one (`SessionService.revokeAllExcept`).
+- **A reset or a change clears phone verification.** `AuthRepository.updatePasswordHash` writes
+  `phoneVerifiedAt = null` in the same update as the hash (the number itself stays on the
+  account) and then bumps the session cache. A verified phone is a password-less way in, so a
+  reset made to lock an intruder out must end phone sign-in too; the owner re-verifies with one
+  text. The login-time rehash (`updatePasswordEncoding`) is not a change and leaves it alone.
 - The reset credential lives `PASSWORD_RESET_TTL_MINUTES` (default 60). Completing a reset also
   verifies the address, since it needed a credential mailed there.
 - `forgot-password` answers the identical 202 for a known address, an unknown one, a disabled
   account, a pending invitation and a cooldown.
+
+## Phone verification and phone sign-in
+
+Routes (`src/modules/auth/phone/phone.controller.ts`), all under `@RateLimit(AuthIp, AuthPhone)`:
+
+| Route                                   | Auth        | Answer                                         |
+| --------------------------------------- | ----------- | ---------------------------------------------- |
+| `POST /auth/phone/verification`         | signed in   | 202 `{ expiresInSeconds, resendAfterSeconds }` |
+| `POST /auth/phone/verification/confirm` | signed in   | 200 `{ phone, phoneVerified: true }`           |
+| `POST /auth/phone/login`                | `@Public()` | 202, same body always                          |
+| `POST /auth/phone/login/verify`         | `@Public()` | 200, the same body as `POST /auth/login`       |
+
+The phone is validated with `BangladeshPhone.isValid` and normalised with
+`BangladeshPhone.normalize` before any lookup, limit or write, so `01712345678` and
+`+8801712345678` share one account match, one cooldown, one daily count and one throttle key.
+
+**Verifying.** The number is refused with 409 when another account holds it
+(`PhoneInUse`) or when it is already this account's verified number (`PhoneAlreadyVerified`).
+The caller's own unverified legacy number is allowed. Confirming writes `users.phone` and
+`users.phoneVerifiedAt` in one transaction that also consumes the code; a unique violation on
+`users.phone` answers 409 `PhoneInUse`. Wrong code is 400, expired / spent / exhausted is 410.
+Every successful confirm, a first link included, mails the account address a notice ("A phone
+number was linked to your account", last 3 digits only, greeting by the account's name, which
+the confirm transaction's existing user read supplies). It says that resetting the password
+takes the number out of sign-in. The caller's session cache is invalidated after commit.
+
+**Signing in.** `login/verify` hands the customer to `LoginService.completeLogin`, the same
+path a correct password reaches, so the active-account check, the email-verification grace
+and MFA all apply: a customer with TOTP enabled gets `kind: 'mfa'` and finishes on
+`POST /auth/login/mfa`. No new kind of session exists. Only `CUSTOMER` accounts with a
+verified number can sign in this way; redemption re-checks that `users.phone` still equals the
+challenge's number, that it is still verified and that the role is still `CUSTOMER`, so a code
+sent before a number or role change signs nobody in.
+
+**Codes.** 6 digits, valid 300 seconds, stored only as a SHA-256 hash. Each guess claims an
+attempt slot atomically _before_ the compare, so a concurrent burst cannot exceed 5 attempts per
+code; a sixth presentation answers as expired / invalid. A newer code replaces the earlier one.
+
+**Limits.** `created_at` on both code tables is the database default `statement_timestamp()`
+(`dbgenerated` in the schema; Prisma's `now()` would be filled from the application clock). The
+24-hour send counts and the resend cooldown compare it against SQL `now()`, so instance clock
+skew cannot shift those windows; the counts span both tables over a rolling 24 hours, taken
+under a per-number advisory lock. The per-account verification count
+(`phone_verifications` only, by `user_id`) runs in the same transaction under a second advisory
+lock on the user id, always taken after the number lock, so two concurrent requests from one
+account for two different numbers cannot both pass it. The same count is also read lock-free
+before the ownership lookup, so a capped account gets 429 for every number and cannot read 409
+`PhoneInUse` off it; the 409 itself counts nothing, so before the cap an account can still learn
+which numbers are registered until it has spent its 5 daily sends on unregistered numbers. Code expiry is different: it is minted
+from the application clock, and the liveness, consume and stale-row checks use the application's
+`new Date()`.
+
+| Limit                                | Value                                                                             | Env                                  |
+| ------------------------------------ | --------------------------------------------------------------------------------- | ------------------------------------ |
+| Resend cooldown per number           | 60 s, then 429 with the wait                                                      | `PHONE_CODE_RESEND_COOLDOWN_SECONDS` |
+| Sends per number per 24 h            | 5, then 429                                                                       | `PHONE_CODE_DAILY_LIMIT_PER_NUMBER`  |
+| Verification sends per account, 24 h | 5 to any numbers, then 429 `PhoneVerificationAccountLimit`                        | `PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT` |
+| Sends across all numbers per 24 h    | 500, then 503 `SmsUnavailable` (soft: concurrent requests may overshoot slightly) | `SMS_DAILY_LIMIT`                    |
+| HTTP requests per number per minute  | 5, keyed by the normalised `body.phone`                                           | `AUTH_PHONE_RATE_LIMIT`              |
+| HTTP requests per IP per minute      | `ThrottleBuckets.AuthIp`                                                          | `AUTH_RATE_LIMIT`                    |
+
+**Enumeration safety.** `POST /auth/phone/login` answers the identical 202 for an unknown
+number, a staff number, an unverified number, a disabled account and a per-number limit, and
+writes and sends nothing in those cases. The text for an eligible number is sent detached after
+the transaction commits, so response time does not reveal which numbers are registered; a
+gateway failure there is logged and still answers 202. Only conditions that do not depend on
+the number differ: the global daily limit and a database fault answer 503. Once the global limit
+is hit, `'SMS daily limit reached'` is logged at error at most once per 10 minutes per instance
+(`PhoneCodeIssuer.reportDailyLimit`, carrying how many hits it held back), so public requests
+cannot flood the alert channel. `login/verify`
+answers one 401 (`InvalidCredentials`) for an unknown number, no live challenge, an expired,
+spent or wrong code, and a failed redemption re-check. (Verification, being signed in, does say
+409 for a number another account holds.)
+
+**No code in any response**, in any `SMS_PROVIDER` mode: the login route is public, so a
+staging `noop` that echoed codes would let anyone sign in as any customer. Logs carry the last
+3 digits of a number, never a code, a code hash or an SMS body. The one exception is the noop
+gateway under `NODE_ENV=development`, which logs the full number and body at debug so a
+developer can read a code; in any other environment it logs the last 3 digits and the body
+length only.
+
+**SMS gateway.** `SMS_PROVIDER` selects the adapter. `noop` is the default and sends nothing.
+`alpha-sms` posts to Alpha SMS and **requires `SMS_API_URL` and `SMS_API_KEY`**
+(`SMS_SENDER_ID` is optional); in a deployed environment (`NODE_ENV` staging or production)
+startup validation fails when either is missing, so set both in `.env` alongside
+`SMS_PROVIDER=alpha-sms`. `ssl-wireless` is accepted by the schema but has no adapter: every
+send reports failure.
+
+**Retention.** `SessionSweeper` deletes finished (consumed or expired) `phone_verifications`
+and `phone_login_challenges` rows older than 30 days; a live code is never touched.
+
+**Profile.** `phoneVerified` (`users.phone_verified_at IS NOT NULL`) is on `GET /auth/me`,
+`PATCH /users/me` and the `user` of every login response.
 
 ## Before writing code here
 

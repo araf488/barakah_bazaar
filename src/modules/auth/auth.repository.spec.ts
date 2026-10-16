@@ -163,6 +163,32 @@ describe('AuthRepository', () => {
     });
   });
 
+  describe('findByPhone', () => {
+    it('looks the user up by the exact normalised number', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      await expect(repository.findByPhone('+8801712345678')).resolves.toEqual({ id: 'user-1' });
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { phone: '+8801712345678' } });
+    });
+
+    it('returns undefined when no user has the number', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(repository.findByPhone('+8801712345678')).resolves.toBeUndefined();
+    });
+
+    it('returns null, and logs without the number, when the database fails', async () => {
+      const failure = new Error('connection refused');
+      prisma.user.findUnique.mockRejectedValue(failure);
+
+      await expect(repository.findByPhone('+8801712345678')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: failure },
+        'Exception occurred in AuthRepository.findByPhone',
+      );
+    });
+  });
+
   describe('createCustomer', () => {
     it('creates a CUSTOMER with the address lowercased', async () => {
       prisma.user.create.mockResolvedValue(userRow());
@@ -200,7 +226,7 @@ describe('AuthRepository', () => {
   });
 
   describe('updatePasswordHash', () => {
-    it('writes the new hash and stamps passwordChangedAt', async () => {
+    it('writes the new hash, stamps passwordChangedAt and clears phone verification, keeping the phone', async () => {
       // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
       prisma.user.update.mockResolvedValue({ id: 'user-1', passwordHash: 'scrypt$new' });
 
@@ -208,9 +234,21 @@ describe('AuthRepository', () => {
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
-        // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
-        data: { passwordHash: 'scrypt$new', passwordChangedAt: expect.any(Date) },
+        data: {
+          // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+          passwordHash: 'scrypt$new',
+          passwordChangedAt: expect.any(Date),
+          phoneVerifiedAt: null,
+        },
       });
+      expect(prisma.user.update.mock.calls[0][0].data).not.toHaveProperty('phone');
+    });
+
+    it('clears phone verification in the same write that changes the password', async () => {
+      await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(prisma.user.update).toHaveBeenCalledTimes(1);
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
     });
 
     it('returns null when the write fails', async () => {

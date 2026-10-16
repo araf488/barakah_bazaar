@@ -30,6 +30,7 @@ import {
   testPrisma,
   waitForEmailTo,
 } from './support/auth-fixtures';
+import { RecordingSmsGateway, codeFrom, countSmsTo, waitForSmsTo } from './support/sms-fixtures';
 
 // ConfigModule.forRoot() reads and validates the environment when app.module.ts is imported,
 // not when the module is instantiated — so every value has to be set at module scope, before
@@ -58,12 +59,29 @@ process.env.SESSION_CACHE_ENABLED = 'false';
 process.env.AUTH_RATE_LIMIT = '1000';
 process.env.AUTH_ACCOUNT_RATE_LIMIT = '1000';
 process.env.WRITE_RATE_LIMIT = '1000';
+// The per-number phone bucket defaults to 5; the limit cases below send more than that to one number.
+process.env.AUTH_PHONE_RATE_LIMIT = '1000';
 
 const DEVICE = 'device-e2e-1';
 const OTHER_DEVICE = 'device-e2e-2';
 const PASSWORD = 'correct horse battery staple';
 const CUSTOMER_EMAIL = 'shopper@barakahbazaar.com.bd';
 const STAFF_EMAIL = 'ops@barakahbazaar.com.bd';
+
+const PHONE_VERIFICATION = '/api/v1/auth/phone/verification';
+const PHONE_CONFIRM = '/api/v1/auth/phone/verification/confirm';
+const PHONE_LOGIN = '/api/v1/auth/phone/login';
+const PHONE_LOGIN_VERIFY = '/api/v1/auth/phone/login/verify';
+const PHONE_LOCAL = '01712345678';
+const PHONE_E164 = '+8801712345678';
+const OTHER_PHONE_E164 = '+8801812345678';
+const PHONE_IN_USE = 'This number is already linked to another account.';
+const PHONE_DAILY_LIMIT =
+  'Too many codes were requested for this number today. Try again tomorrow.';
+const PHONE_ACCOUNT_LIMIT =
+  'Too many verification codes were requested for this account today. Try again tomorrow.';
+const PHONE_LINKED_SUBJECT = 'A phone number was linked to your account';
+const OTHER_CUSTOMER_EMAIL = 'neighbour@barakahbazaar.com.bd';
 
 const ME = '/api/v1/auth/me';
 const LOGIN = '/api/v1/auth/login';
@@ -131,6 +149,7 @@ describe('Identity (end to end)', () => {
   // way a real recipient would — out of the email, since POST /auth/register never echoes
   // either one back in its response.
   const emailSender = new RecordingEmailSender();
+  const smsGateway = new RecordingSmsGateway();
 
   /** Writes the singleton settings row, so a test can change one rule and re-read it. */
   const writeSettings = async (overrides: Record<string, unknown> = {}): Promise<void> => {
@@ -173,6 +192,8 @@ describe('Identity (end to end)', () => {
       // the way an invitee would. EMAIL_PROVIDER stays noop, so invite still echoes the token.
       .overrideProvider(AdminTokens.EmailSender)
       .useValue(emailSender)
+      .overrideProvider(AuthTokens.SmsGateway)
+      .useValue(smsGateway)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -202,6 +223,7 @@ describe('Identity (end to end)', () => {
     await resetDatabase(prisma);
     await writeSettings();
     emailSender.reset();
+    smsGateway.reset();
   });
 
   describe('signing in', () => {
@@ -2617,6 +2639,367 @@ describe('Identity (end to end)', () => {
       expect(JSON.stringify(rows[0].after)).not.toContain('scrypt$');
       expect(JSON.stringify(rows[0].before)).not.toContain('passwordHash');
       expect(JSON.stringify(rows[0].after)).not.toContain('passwordHash');
+    });
+  });
+
+  describe('phone verification and sign-in', () => {
+    const server = (): ReturnType<INestApplication['getHttpServer']> => app.getHttpServer();
+
+    /** A signed-in customer's headers. */
+    const signedIn = async (email: string): Promise<Record<string, string>> => {
+      const tokens = await loginAs(app, email, PASSWORD, DEVICE);
+      return authHeaders(tokens.accessToken, DEVICE);
+    };
+
+    const requestVerification = (headers: Record<string, string>, phone: string) =>
+      request(server()).post(PHONE_VERIFICATION).set(headers).send({ phone });
+
+    const confirmVerification = (headers: Record<string, string>, phone: string, code: string) =>
+      request(server()).post(PHONE_CONFIRM).set(headers).send({ phone, code });
+
+    const requestLoginCode = (phone: string) => request(server()).post(PHONE_LOGIN).send({ phone });
+
+    const verifyLogin = (phone: string, code: string) =>
+      request(server()).post(PHONE_LOGIN_VERIFY).set('x-device-id', DEVICE).send({ phone, code });
+
+    /** Requests a verification code and returns the code read off the captured SMS. */
+    const verificationCodeFor = async (
+      headers: Record<string, string>,
+      phone: string,
+      sentTo: string,
+    ): Promise<string> => {
+      const seen = countSmsTo(smsGateway, sentTo);
+      const response = await requestVerification(headers, phone);
+      expect(response.status).toBe(202);
+      return codeFrom((await waitForSmsTo(smsGateway, sentTo, seen)).body);
+    };
+
+    /** Requests a sign-in code and returns the code read off the captured SMS. */
+    const loginCodeFor = async (phone: string): Promise<string> => {
+      const seen = countSmsTo(smsGateway, phone);
+      const response = await requestLoginCode(phone);
+      expect(response.status).toBe(202);
+      return codeFrom((await waitForSmsTo(smsGateway, phone, seen)).body);
+    };
+
+    const wrongCodeFor = (code: string): string => (code === '111111' ? '222222' : '111111');
+
+    it('verifies a number from the texted code, and /auth/me then reports it', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(CUSTOMER_EMAIL);
+
+      const code = await verificationCodeFor(headers, ` ${PHONE_LOCAL} `, PHONE_E164);
+      const confirmed = await confirmVerification(headers, PHONE_LOCAL, code);
+
+      expect(confirmed.status).toBe(200);
+      expect(confirmed.body).toEqual({ phone: '+8801712345678', phoneVerified: true });
+      const me = await request(server()).get(ME).set(headers);
+      expect(me.body.phone).toBe('+8801712345678');
+      expect(me.body.phoneVerified).toBe(true);
+    });
+
+    it('writes the number to the account only once the code is confirmed', async () => {
+      const user = await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(CUSTOMER_EMAIL);
+
+      const seen = countSmsTo(smsGateway, PHONE_E164);
+      const requested = await requestVerification(headers, PHONE_LOCAL);
+      expect(requested.status).toBe(202);
+      const code = codeFrom((await waitForSmsTo(smsGateway, PHONE_E164, seen)).body);
+
+      const beforeConfirm = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(beforeConfirm.phone).toBeNull();
+      expect(beforeConfirm.phoneVerifiedAt).toBeNull();
+
+      const confirmed = await confirmVerification(headers, PHONE_LOCAL, code);
+      expect(confirmed.status).toBe(200);
+
+      const afterConfirm = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      expect(afterConfirm.phone).toBe('+8801712345678');
+      expect(afterConfirm.phoneVerifiedAt).not.toBeNull();
+    });
+
+    it('signs in with the password while the phone is unverified, and reports phoneVerified false', async () => {
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: PHONE_E164,
+        phoneVerified: false,
+      });
+
+      const response = await request(server())
+        .post(LOGIN)
+        .set('x-device-id', DEVICE)
+        .send({ email: CUSTOMER_EMAIL, password: PASSWORD });
+
+      expect(response.status).toBe(200);
+      expect(response.body.kind).toBe('session');
+      const me = await request(server())
+        .get(ME)
+        .set(authHeaders(response.body.accessToken as string, DEVICE));
+      expect(me.status).toBe(200);
+      expect(me.body.phoneVerified).toBe(false);
+    });
+
+    it('refuses a number another account already holds, and sends nothing', async () => {
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: PHONE_E164,
+        phoneVerified: true,
+      });
+      await seedVerifiedUser(prisma, { email: OTHER_CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(OTHER_CUSTOMER_EMAIL);
+      const before = countSmsTo(smsGateway, PHONE_E164);
+
+      const response = await requestVerification(headers, PHONE_LOCAL);
+      await settleDetachedWork();
+
+      expect(response.status).toBe(409);
+      expect(response.body.message).toBe(PHONE_IN_USE);
+      expect(countSmsTo(smsGateway, PHONE_E164)).toBe(before);
+    });
+
+    it('signs a customer in with a texted code, and the token works', async () => {
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: PHONE_E164,
+        phoneVerified: true,
+      });
+
+      const code = await loginCodeFor(PHONE_E164);
+      const response = await verifyLogin(PHONE_E164, code);
+
+      expect(response.status).toBe(200);
+      expect(response.body.kind).toBe('session');
+      const me = await request(server())
+        .get(ME)
+        .set(authHeaders(response.body.accessToken as string, DEVICE));
+      expect(me.status).toBe(200);
+      expect(me.body.email).toBe(CUSTOMER_EMAIL);
+    });
+
+    it('asks for the second factor when the customer has TOTP enabled', async () => {
+      const user = await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: PHONE_E164,
+        phoneVerified: true,
+      });
+      const cipher = new SecretCipher({ get: () => process.env.TOTP_ENCRYPTION_KEY } as never);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          totpSecretEncrypted: cipher.encrypt(new TotpService().generateSecret()),
+          totpEnabledAt: new Date(),
+        },
+      });
+
+      const code = await loginCodeFor(PHONE_E164);
+      const response = await verifyLogin(PHONE_E164, code);
+
+      expect(response.status).toBe(200);
+      expect(response.body.kind).toBe('mfa');
+      expect(response.body.accessToken).toBeUndefined();
+    });
+
+    it('answers an unknown, staff or unverified number identically and texts none of them', async () => {
+      const staffPhone = '+8801911111111';
+      const unverifiedPhone = '+8801611111111';
+      const unknownPhone = '+8801511111111';
+      await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.SUPPORT,
+        phone: staffPhone,
+        phoneVerified: true,
+      });
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: unverifiedPhone,
+        phoneVerified: false,
+      });
+
+      const answers = [];
+      for (const phone of [unknownPhone, staffPhone, unverifiedPhone]) {
+        answers.push(await requestLoginCode(phone));
+      }
+      await settleDetachedWork();
+
+      for (const answer of answers) {
+        expect(answer.status).toBe(202);
+        expect(answer.body).toEqual(answers[0].body);
+      }
+      expect(smsGateway.sent).toHaveLength(0);
+    });
+
+    it('refuses the right code after five wrong ones', async () => {
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: PHONE_E164,
+        phoneVerified: true,
+      });
+      const code = await loginCodeFor(PHONE_E164);
+
+      for (let guess = 0; guess < 5; guess += 1) {
+        const wrong = await verifyLogin(PHONE_E164, wrongCodeFor(code));
+        expect(wrong.status).toBe(401);
+      }
+      const right = await verifyLogin(PHONE_E164, code);
+
+      expect(right.status).toBe(401);
+      expect(right.body.message).toBe('Those sign-in details are not correct.');
+    });
+
+    it('kills a sign-in code requested for the old number once the number changes', async () => {
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: PHONE_E164,
+        phoneVerified: true,
+      });
+      const headers = await signedIn(CUSTOMER_EMAIL);
+      const oldCode = await loginCodeFor(PHONE_E164);
+
+      const changeCode = await verificationCodeFor(headers, OTHER_PHONE_E164, OTHER_PHONE_E164);
+      const emailsBefore = countEmailsTo(emailSender, CUSTOMER_EMAIL);
+      const changed = await confirmVerification(headers, OTHER_PHONE_E164, changeCode);
+      expect(changed.status).toBe(200);
+
+      const stale = await verifyLogin(PHONE_E164, oldCode);
+      expect(stale.status).toBe(401);
+      expect(stale.body.message).toBe('Those sign-in details are not correct.');
+
+      // The verification just sent to this number holds the shared 60 s cooldown; move it back
+      // so the sign-in code is not silently withheld.
+      await prisma.phoneVerification.updateMany({
+        data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      });
+      const newCode = await loginCodeFor(OTHER_PHONE_E164);
+      const fresh = await verifyLogin(OTHER_PHONE_E164, newCode);
+      expect(fresh.status).toBe(200);
+      expect(fresh.body.kind).toBe('session');
+
+      const notice = await waitForEmailTo(emailSender, CUSTOMER_EMAIL, emailsBefore);
+      expect(notice.subject).toBe(PHONE_LINKED_SUBJECT);
+    }, 30_000);
+
+    it('shares one cooldown between the two written forms of a number', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(CUSTOMER_EMAIL);
+      await verificationCodeFor(headers, PHONE_LOCAL, PHONE_E164);
+
+      const second = await requestVerification(headers, PHONE_E164);
+      await settleDetachedWork();
+
+      expect(second.status).toBe(429);
+      expect(second.body.message).toMatch(/^Please wait/);
+      expect(countSmsTo(smsGateway, PHONE_E164)).toBe(1);
+    });
+
+    it('refuses the sixth verification code one account requests in a day, across six numbers', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(CUSTOMER_EMAIL);
+      // Six distinct numbers: no per-number limit or cooldown can be what refuses the sixth.
+      const numbers = ['1', '2', '3', '4', '5', '6'].map((digit) => `0171000000${digit}`);
+
+      for (const phone of numbers.slice(0, 5)) {
+        const accepted = await requestVerification(headers, phone);
+        expect(accepted.status).toBe(202);
+      }
+      const sentBefore = smsGateway.sent.length;
+      const sixth = await requestVerification(headers, numbers[5]);
+      await settleDetachedWork();
+
+      expect(sixth.status).toBe(429);
+      expect(sixth.body.message).toBe(PHONE_ACCOUNT_LIMIT);
+      expect(smsGateway.sent).toHaveLength(sentBefore);
+      expect(countSmsTo(smsGateway, '+8801710000006')).toBe(0);
+    });
+
+    it('answers a capped account 429, not 409, for a number another account holds', async () => {
+      await seedVerifiedUser(prisma, {
+        email: CUSTOMER_EMAIL,
+        password: PASSWORD,
+        phone: PHONE_E164,
+        phoneVerified: true,
+      });
+      await seedVerifiedUser(prisma, { email: OTHER_CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(OTHER_CUSTOMER_EMAIL);
+      const spare = ['1', '2', '3', '4', '5'].map((digit) => `0171000000${digit}`);
+      for (const phone of spare) {
+        expect((await requestVerification(headers, phone)).status).toBe(202);
+      }
+
+      const probe = await requestVerification(headers, PHONE_LOCAL);
+
+      expect(probe.status).toBe(429);
+      expect(probe.body.message).toBe(PHONE_ACCOUNT_LIMIT);
+    });
+
+    it('a password reset clears phone verification, keeps the number, and ends phone sign-in', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(CUSTOMER_EMAIL);
+      const code = await verificationCodeFor(headers, PHONE_LOCAL, PHONE_E164);
+      const linkMailsBefore = countEmailsTo(emailSender, CUSTOMER_EMAIL);
+      const confirmed = await confirmVerification(headers, PHONE_LOCAL, code);
+      expect(confirmed.status).toBe(200);
+      // A first link mails the owner too.
+      const linked = await waitForEmailTo(emailSender, CUSTOMER_EMAIL, linkMailsBefore);
+      expect(linked.subject).toBe(PHONE_LINKED_SUBJECT);
+
+      const resetMailsBefore = countEmailsTo(emailSender, CUSTOMER_EMAIL);
+      await request(server()).post(FORGOT_PASSWORD).send({ email: CUSTOMER_EMAIL });
+      const resetCode = extractVerificationCode(
+        (await waitForEmailTo(emailSender, CUSTOMER_EMAIL, resetMailsBefore)).body,
+      );
+      const reset = await request(server())
+        .post(RESET_PASSWORD)
+        .send({ email: CUSTOMER_EMAIL, code: resetCode, newPassword: REGISTRATION_PASSWORD });
+      expect(reset.status).toBe(200);
+
+      const tokens = await loginAs(app, CUSTOMER_EMAIL, REGISTRATION_PASSWORD, DEVICE);
+      const me = await request(server()).get(ME).set(authHeaders(tokens.accessToken, DEVICE));
+      expect(me.status).toBe(200);
+      expect(me.body.phone).toBe('+8801712345678');
+      expect(me.body.phoneVerified).toBe(false);
+
+      // Move the verification back past the shared 60 s cooldown, so a withheld text below can
+      // only mean the number no longer signs anyone in.
+      await prisma.phoneVerification.updateMany({
+        data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      });
+      const smsBefore = countSmsTo(smsGateway, PHONE_E164);
+      const login = await requestLoginCode(PHONE_E164);
+      await settleDetachedWork();
+
+      expect(login.status).toBe(202);
+      expect(countSmsTo(smsGateway, PHONE_E164)).toBe(smsBefore);
+    }, 30_000);
+
+    it('refuses the sixth code requested for one number within a day', async () => {
+      await seedVerifiedUser(prisma, { email: CUSTOMER_EMAIL, password: PASSWORD });
+      const headers = await signedIn(CUSTOMER_EMAIL);
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+      for (let sent = 0; sent < 5; sent += 1) {
+        const accepted = await requestVerification(headers, PHONE_LOCAL);
+        expect(accepted.status).toBe(202);
+        // The cooldown reads the database clock; moving earlier rows back skips it without
+        // leaving the 24 h window the daily count looks at.
+        await prisma.phoneVerification.updateMany({ data: { createdAt: twoHoursAgo } });
+      }
+      // The sixth comes from a second account: the first has also spent its own five daily
+      // sends, which would now answer with the account limit before the number is considered.
+      await seedVerifiedUser(prisma, { email: OTHER_CUSTOMER_EMAIL, password: PASSWORD });
+      const otherHeaders = await signedIn(OTHER_CUSTOMER_EMAIL);
+      const sixth = await requestVerification(otherHeaders, PHONE_LOCAL);
+
+      expect(sixth.status).toBe(429);
+      expect(sixth.body.message).toBe(PHONE_DAILY_LIMIT);
     });
   });
 });

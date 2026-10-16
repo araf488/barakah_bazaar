@@ -20,6 +20,7 @@ export const AuthMapper = {
       id: user.id,
       email: user.email,
       phone: user.phone,
+      phoneVerified: user.phoneVerifiedAt !== null,
       fullName: user.fullName,
       role: user.role,
       createdAt: user.createdAt,

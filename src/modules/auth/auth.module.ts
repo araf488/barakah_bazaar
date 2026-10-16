@@ -31,6 +31,12 @@ import { SessionRepository } from './sessions/session.repository';
 import { SessionService } from './sessions/session.service';
 import { SignInDependencies } from './sign-in.dependencies';
 import { AccessTokenService } from './tokens/access-token.service';
+import { PhoneCodeIssuer } from './phone/phone-code.issuer';
+import { PhoneController } from './phone/phone.controller';
+import { PhoneLoginService } from './phone/phone-login.service';
+import { PhoneVerificationService } from './phone/phone-verification.service';
+import { PhoneLoginChallengeRepository } from './phone/phone-login-challenge.repository';
+import { PhoneVerificationRepository } from './phone/phone-verification.repository';
 import { EmailVerificationRepository } from './verification/email-verification.repository';
 import { EmailVerificationService } from './verification/email-verification.service';
 
@@ -47,11 +53,9 @@ import { EmailVerificationService } from './verification/email-verification.serv
  * of each — duplicating any of these in `app.module.ts` as well would produce a second
  * `AuthSettingsService` cache and a second `AccessTokenService` signing key, silently
  * disagreeing with the one this module builds.
- *
- * AuthTokens.OtpService is intentionally not provided yet — see ports/otp.port.ts.
  */
 @Module({
-  controllers: [AuthController],
+  controllers: [AuthController, PhoneController],
   providers: [
     AuthService,
     AuthRepository,
@@ -127,6 +131,11 @@ import { EmailVerificationService } from './verification/email-verification.serv
     // pools its own connections, at the cost of one extra idle connection to the relay.
     PasswordPolicy,
     EmailVerificationRepository,
+    PhoneVerificationRepository,
+    PhoneLoginChallengeRepository,
+    PhoneCodeIssuer,
+    PhoneVerificationService,
+    PhoneLoginService,
     EmailVerificationService,
     RegistrationService,
     {

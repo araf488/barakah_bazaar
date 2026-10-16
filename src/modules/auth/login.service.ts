@@ -93,13 +93,38 @@ export class LoginService {
         return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
       }
 
+      return await this.completeLogin(user, deviceId, userAgent, ip, () =>
+        this.rehashIfNeeded(user, dto.password),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in LoginService.login');
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * Turns an authenticated user into what the sign-in produces: a refusal for a disabled or
+   * unverified account, then a second-factor hand-off or a session. Shared by every way of
+   * proving who the caller is (password, phone code).
+   *
+   * `afterEligible` runs once the account is known to be eligible and before the second-factor
+   * decision; the password flow uses it for the rehash, so a refused account is never rehashed.
+   */
+  async completeLogin(
+    user: User,
+    deviceId: string,
+    userAgent: string | null,
+    ip: string | null,
+    afterEligible: () => Promise<void> = () => Promise.resolve(),
+  ): Promise<ServiceResponse<LoginResult>> {
+    try {
       const settings = await this.settings.current();
       const ineligible = LoginService.checkEligibility(user, settings);
       if (ineligible) {
         return ineligible;
       }
 
-      await this.rehashIfNeeded(user, dto.password);
+      await afterEligible();
 
       if (user.totpEnabledAt) {
         return serviceOk({
@@ -122,7 +147,7 @@ export class LoginService {
 
       return serviceOk({ kind: 'session', session: issued.data, portal: portalFor(user.role) });
     } catch (error) {
-      this.logger.error({ err: error }, 'Exception occurred in LoginService.login');
+      this.logger.error({ err: error }, 'Exception occurred in LoginService.completeLogin');
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
   }

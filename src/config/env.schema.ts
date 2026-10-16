@@ -133,6 +133,25 @@ const baseEnvSchema = z.object({
    * AUTH_RATE_LIMIT alone cannot see since it counts each IP separately.
    */
   AUTH_ACCOUNT_RATE_LIMIT: z.coerce.number().int().positive().default(20),
+  /**
+   * Requests per minute, per submitted phone number, against all four `/auth/phone` routes —
+   * bounds code guessing and SMS spend against one number from many IPs.
+   */
+  AUTH_PHONE_RATE_LIMIT: z.coerce.number().int().positive().default(5),
+  /** Seconds a number must wait before another code (verification or sign-in) may be sent to it. */
+  PHONE_CODE_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(60),
+  /**
+   * Codes one number may be sent per rolling 24 hours, counting verification and sign-in codes
+   * together across both code tables.
+   */
+  PHONE_CODE_DAILY_LIMIT_PER_NUMBER: z.coerce.number().int().positive().default(5),
+  /**
+   * Verification codes one signed-in account may request per rolling 24 hours, whatever numbers
+   * they go to. Stops one account spending the whole SMS_DAILY_LIMIT on strangers' numbers.
+   */
+  PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT: z.coerce.number().int().positive().default(5),
+  /** Total SMS the app may send per day, across all numbers — a ceiling on SMS spend. */
+  SMS_DAILY_LIMIT: z.coerce.number().int().positive().default(500),
   AUTH_SETTINGS_CACHE_SECONDS: z.coerce.number().int().min(0).default(60),
   SESSION_TOUCH_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(5),
   /** Base for verification and reset links. NEVER derived from the request Host header. */
@@ -177,6 +196,12 @@ const EMAIL_PROVIDER_REQUIRED_KEYS = [
   'EMAIL_SMTP_PASSWORD',
 ] as const satisfies readonly (keyof Env)[];
 
+/** Required once a real SMS provider is selected; the noop default needs neither. */
+const SMS_PROVIDER_REQUIRED_KEYS = [
+  'SMS_API_URL',
+  'SMS_API_KEY',
+] as const satisfies readonly (keyof Env)[];
+
 const isDeployedEnv = (nodeEnv: Env['NODE_ENV']): boolean =>
   (DEPLOYED_ENVS as readonly string[]).includes(nodeEnv);
 
@@ -213,6 +238,14 @@ const enforceDeployedEnvRules = (env: Env, ctx: z.RefinementCtx): void => {
   );
   if (env.EMAIL_PROVIDER !== 'noop' && emailProviderMissingCredentials) {
     addIssue(ctx, 'EMAIL_FROM', EnvValidationMessages.EmailProviderNotConfigured);
+  }
+
+  // Same reasoning as email: fail at start-up, not on the first customer's code request.
+  const smsProviderMissingCredentials = SMS_PROVIDER_REQUIRED_KEYS.some(
+    (key) => env[key] === undefined,
+  );
+  if (env.SMS_PROVIDER !== 'noop' && smsProviderMissingCredentials) {
+    addIssue(ctx, 'SMS_API_URL', EnvValidationMessages.SmsProviderNotConfigured);
   }
 };
 

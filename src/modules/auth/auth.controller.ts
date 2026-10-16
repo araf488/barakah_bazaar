@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -23,9 +22,10 @@ import { ErrorMessages } from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { ThrottleBuckets } from '../../config/throttler.config';
-import { AuthConstants, AuthMessages } from './auth.constants';
+import { AuthConstants } from './auth.constants';
 import { AuthEventsService } from './auth-events.service';
 import { AuthMapper } from './auth.mapper';
+import { requireDeviceId, userAgentOf } from './request-context';
 import { AuthService } from './auth.service';
 import { LoginDto, LoginResponseDto, MfaVerifyDto, RefreshDto } from './dto/login.dto';
 import {
@@ -572,23 +572,11 @@ export class AuthController {
     return user;
   }
 
-  /**
-   * The caller's declared device id, required on every route that mints or refreshes a
-   * session. Mirrors `SessionAuthGuard`'s own reading of the header, but this is a 400 —
-   * malformed input — rather than the guard's 401, since no credential has been checked yet.
-   */
   private static requireDeviceId(request: Request): string {
-    const value = request.headers[AuthConstants.DeviceIdHeader] as string | undefined;
-
-    if (!value || value.length > AuthConstants.DeviceIdMaxLength) {
-      throw new BadRequestException(AuthMessages.DeviceIdRequired);
-    }
-
-    return value;
+    return requireDeviceId(request);
   }
 
   private static userAgent(request: Request): string | null {
-    const value = request.headers['user-agent'];
-    return typeof value === 'string' ? value : null;
+    return userAgentOf(request);
   }
 }

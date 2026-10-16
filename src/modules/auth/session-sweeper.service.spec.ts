@@ -2,6 +2,8 @@ import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AuthConstants } from './auth.constants';
 import { PasswordResetRepository } from './password-reset/password-reset.repository';
+import { PhoneLoginChallengeRepository } from './phone/phone-login-challenge.repository';
+import { PhoneVerificationRepository } from './phone/phone-verification.repository';
 import { SessionRepository } from './sessions/session.repository';
 import { SessionSweeper } from './session-sweeper.service';
 import { EmailVerificationRepository } from './verification/email-verification.repository';
@@ -15,6 +17,8 @@ describe('SessionSweeper', () => {
     deleteStale: jest.Mock;
   };
   let passwordResets: { deleteStale: jest.Mock };
+  let phoneVerifications: { deleteStale: jest.Mock };
+  let phoneChallenges: { deleteStale: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let sweeper: SessionSweeper;
 
@@ -27,11 +31,15 @@ describe('SessionSweeper', () => {
       deleteStale: jest.fn().mockResolvedValue(0),
     };
     passwordResets = { deleteStale: jest.fn().mockResolvedValue(0) };
+    phoneVerifications = { deleteStale: jest.fn().mockResolvedValue(0) };
+    phoneChallenges = { deleteStale: jest.fn().mockResolvedValue(0) };
     logger = createMockLogger();
     sweeper = new SessionSweeper(
       repository as unknown as SessionRepository,
       verifications as unknown as EmailVerificationRepository,
       passwordResets as unknown as PasswordResetRepository,
+      phoneVerifications as unknown as PhoneVerificationRepository,
+      phoneChallenges as unknown as PhoneLoginChallengeRepository,
       logger,
     );
   });
@@ -80,7 +88,14 @@ describe('SessionSweeper', () => {
       await sweeper.sweep();
 
       expect(logger.info).toHaveBeenCalledWith(
-        { sessions: 4, recoveryCodes: 6, verifications: 3, passwordResets: 0 },
+        {
+          sessions: 4,
+          recoveryCodes: 6,
+          verifications: 3,
+          passwordResets: 0,
+          phoneVerifications: 0,
+          phoneLoginChallenges: 0,
+        },
         'Swept expired sessions, dead recovery codes, finished verifications and resets',
       );
     });
@@ -117,6 +132,50 @@ describe('SessionSweeper', () => {
       await sweeper.sweep();
 
       expect(logger.info.mock.calls[0][0]).toMatchObject({ passwordResets: 2 });
+    });
+  });
+
+  describe('phone tables', () => {
+    it('sweeps both phone tables below the 30-day cutoff', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-10-31T00:00:00.000Z'));
+
+      await sweeper.sweep();
+
+      expect(phoneVerifications.deleteStale).toHaveBeenCalledWith(
+        new Date('2026-10-01T00:00:00.000Z'),
+      );
+      expect(phoneChallenges.deleteStale).toHaveBeenCalledWith(
+        new Date('2026-10-01T00:00:00.000Z'),
+      );
+    });
+
+    it('reports the phone rows it removed', async () => {
+      phoneVerifications.deleteStale.mockResolvedValue(7);
+      phoneChallenges.deleteStale.mockResolvedValue(9);
+
+      await sweeper.sweep();
+
+      expect(logger.info.mock.calls[0][0]).toMatchObject({
+        phoneVerifications: 7,
+        phoneLoginChallenges: 9,
+      });
+    });
+
+    it('warns when the phone verification delete fails, and still sweeps the challenges', async () => {
+      phoneVerifications.deleteStale.mockResolvedValue(null);
+
+      await sweeper.sweep();
+
+      expect(phoneChallenges.deleteStale).toHaveBeenCalled();
+      expect(logger.warn.mock.calls[0][0]).toMatchObject({ phoneVerifications: null });
+    });
+
+    it('warns when the sign-in challenge delete fails', async () => {
+      phoneChallenges.deleteStale.mockResolvedValue(null);
+
+      await sweeper.sweep();
+
+      expect(logger.warn.mock.calls[0][0]).toMatchObject({ phoneLoginChallenges: null });
     });
   });
 

@@ -199,19 +199,21 @@ model User {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  sessions            Session[]
-  emailVerifications  EmailVerification[]
-  passwordResets      PasswordReset[]
-  recoveryCodes       MfaRecoveryCode[]
-  addresses           Address[]
-  auditLog            AdminAuditLog[]
-  redemptions         PromotionRedemption[]
-  reviews             Review[]
-  invitationsSent     StaffInvitation[]     @relation("StaffInvitationsSent")
-  invitationsAccepted StaffInvitation[]     @relation("StaffInvitationsAccepted")
-  cart                Cart?
-  notifications       Notification[]
-  orders              Order[]
+  sessions             Session[]
+  emailVerifications   EmailVerification[]
+  passwordResets       PasswordReset[]
+  recoveryCodes        MfaRecoveryCode[]
+  addresses            Address[]
+  auditLog             AdminAuditLog[]
+  redemptions          PromotionRedemption[]
+  reviews              Review[]
+  invitationsSent      StaffInvitation[]     @relation("StaffInvitationsSent")
+  invitationsAccepted  StaffInvitation[]     @relation("StaffInvitationsAccepted")
+  cart                 Cart?
+  notifications        Notification[]
+  orders               Order[]
+  phoneVerifications   PhoneVerification[]
+  phoneLoginChallenges PhoneLoginChallenge[]
 
   @@index([role])
   @@map("users")
@@ -1151,4 +1153,48 @@ model DeliverySlot {
 
   @@index([warehouseId, isActive])
   @@map("delivery_slots")
+}
+
+/// A signed-in user proving a number. The number is written to `users` only on success.
+model PhoneVerification {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// The number being proved, normalised (`+8801XXXXXXXXX`). Not yet on the user row.
+  phone      String
+  /// SHA-256 of the 6-digit code. Deliberately not unique: two live codes may collide.
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  /// Database clock, not the app's: the send limits compare it with `now()` in SQL.
+  createdAt  DateTime  @default(dbgenerated("statement_timestamp()")) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([phone, createdAt])
+  @@index([createdAt])
+  @@map("phone_verifications")
+}
+
+/// A customer signing in with a verified number.
+model PhoneLoginChallenge {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// The number the code was sent to. Must still be the user's verified phone at redemption.
+  phone      String
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  ipAddress  String?   @map("ip_address")
+  /// Database clock, not the app's: the send limits compare it with `now()` in SQL.
+  createdAt  DateTime  @default(dbgenerated("statement_timestamp()")) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([phone, createdAt])
+  @@index([createdAt])
+  @@map("phone_login_challenges")
 }
