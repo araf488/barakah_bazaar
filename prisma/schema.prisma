@@ -900,23 +900,26 @@ model Notification {
 /// Rows are append-only in practice. A failed attempt stays FAILED and a second attempt is a
 /// second row, so the history of a difficult payment survives instead of being overwritten.
 model PaymentTransaction {
-  id               String                   @id @default(uuid()) @db.Uuid
-  orderId          String                   @map("order_id") @db.Uuid
-  method           PaymentMethod
-  direction        PaymentDirection         @default(CHARGE)
-  status           PaymentTransactionStatus @default(PENDING)
+  id                   String                   @id @default(uuid()) @db.Uuid
+  orderId              String                   @map("order_id") @db.Uuid
+  method               PaymentMethod
+  direction            PaymentDirection         @default(CHARGE)
+  status               PaymentTransactionStatus @default(PENDING)
   /// Always positive, in poysha. The direction says which way it went.
-  amountPoysha     BigInt                   @map("amount_poysha")
+  amountPoysha         BigInt                   @map("amount_poysha")
   /// The gateway's own id for this movement, or null for cash. Unique when present, so a
   /// replayed webhook cannot record the same payment twice.
-  gatewayReference String?                  @unique @map("gateway_reference")
+  gatewayReference     String?                  @unique @map("gateway_reference")
+  /// bKash's trxID, set when the charge is CAPTURED. A refund names it. Unique when present, so
+  /// one gateway transaction cannot back two ledger rows.
+  gatewayTransactionId String?                  @unique @map("gateway_transaction_id")
   /// Staff member who took the cash. Null for a gateway payment, which has no human.
-  collectedBy      String?                  @map("collected_by") @db.Uuid
+  collectedBy          String?                  @map("collected_by") @db.Uuid
   /// Gateway failure text. Never a token, a PIN or a card number.
-  failureReason    String?                  @map("failure_reason")
-  capturedAt       DateTime?                @map("captured_at")
-  createdAt        DateTime                 @default(now()) @map("created_at")
-  updatedAt        DateTime                 @updatedAt @map("updated_at")
+  failureReason        String?                  @map("failure_reason")
+  capturedAt           DateTime?                @map("captured_at")
+  createdAt            DateTime                 @default(now()) @map("created_at")
+  updatedAt            DateTime                 @updatedAt @map("updated_at")
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 

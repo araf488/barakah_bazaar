@@ -104,6 +104,11 @@ export const AdminAuditActions = {
   PromotionUpdated: 'promotion.updated',
   SlotCreated: 'delivery_slot.created',
   SlotUpdated: 'delivery_slot.updated',
+  /**
+   * A SUPER_ADMIN settled an automatic bKash refund claim left PENDING, after checking the bKash
+   * merchant portal: `after.outcome` says whether bKash had refunded it (ruling R18).
+   */
+  PaymentRefundClaimResolved: 'payment.refund_claim_resolved',
 
   // Authentication events, written by AuthEventsService. Staff only — see the class comment
   // there for why a customer login is deliberately not recorded.
@@ -147,6 +152,7 @@ export const AdminAuditEntities = {
   DeliverySlot: 'DeliverySlot',
   Session: 'Session',
   AuthSettings: 'AuthSettings',
+  PaymentTransaction: 'PaymentTransaction',
 } as const;
 
 export const AdminMessages = {

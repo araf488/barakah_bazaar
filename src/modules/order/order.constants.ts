@@ -5,6 +5,8 @@ export const OrderConstants = {
   RouteBase: 'orders',
   AdminRouteBase: 'admin/orders',
   OrderResourceName: 'Order',
+  /** `reference_type` on an order's stock reservations, movements and holds. */
+  HoldReferenceType: 'Order',
   OrderNumberPrefix: 'BB',
   MaxCustomerNoteLength: 500,
   MaxStaffNoteLength: 500,
@@ -22,8 +24,16 @@ export const OrderConstants = {
    * This is a backstop against an order nobody ever actions, not a payment timeout.
    */
   CodHoldHours: 168,
+  /**
+   * Order event note when the customer moves an order from bKash to cash on delivery. Owned
+   * here, not by the payment module: the switch is an order write, and the payment module
+   * already imports from this one, so importing back would make the two modules cyclic.
+   */
+  SwitchedToCodNote: 'Customer switched to cash on delivery.',
   /** How often the sweep looks for holds that have outlived their order. */
   SweepIntervalMinutes: 5,
+  /** How many abandoned orders one sweep pass picks up, oldest hold first. */
+  ExpiredHoldBatchSize: 100,
 } as const;
 
 /**
@@ -74,9 +84,22 @@ export const OrderMessages = {
     'We cannot deliver {0} to that address — it needs to stay cold over a shorter distance. Remove it to continue.',
   /** {0} = from, {1} = to. */
   IllegalTransitionTemplate: 'An order cannot go from {0} to {1}.',
+  /**
+   * Returned (409) when the order moved between the read and the swap, so the move the caller
+   * asked for was never applied. Not the same as an illegal move: the move may be perfectly
+   * legal from the order's new status.
+   */
+  OrderChangedConcurrently:
+    'This order changed while you were working on it. Reload it and try again.',
   /** The sweep cancelled an order nobody acted on. */
   AbandonedBySweep:
     'Cancelled automatically: the order was not confirmed in time and the stock was returned.',
+  /**
+   * Returned (409) by `PATCH /orders/:id/payment-method` when the order cannot move to cash
+   * on delivery: not a bKash order, no longer PLACED, already paid, past its hold, or holding
+   * a captured bKash charge.
+   */
+  CannotSwitchToCod: 'This order can no longer switch to cash on delivery.',
   /** A customer tried to cancel an order that has already left. */
   TooLateToCancel:
     'This order has already been dispatched and can no longer be cancelled. Contact support.',

@@ -4,6 +4,7 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -152,4 +153,11 @@ export class CancelOrderDto {
   @IsString()
   @MaxLength(OrderConstants.MaxCustomerNoteLength)
   reason?: string | null;
+}
+
+/** Moving a bKash order to cash on delivery. COD is the only method an order may switch to. */
+export class SwitchPaymentMethodDto {
+  @ApiProperty({ enum: [PaymentMethod.CASH_ON_DELIVERY] })
+  @IsIn([PaymentMethod.CASH_ON_DELIVERY])
+  paymentMethod!: PaymentMethod;
 }

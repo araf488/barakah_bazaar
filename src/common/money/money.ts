@@ -5,6 +5,8 @@ export const POYSHA_PER_TAKA = 100n;
 
 const GRAMS_PER_KILOGRAM = 1000n;
 const ROUNDING_HALF = 500n;
+const DECIMAL_STRING_PATTERN = /^(\d+)(?:\.(\d{1,2}))?$/;
+const POYSHA_DECIMAL_DIGITS = 2;
 
 /**
  * Integer-only money helpers.
@@ -58,6 +60,33 @@ export const Money = {
     }
     const scaled = pricePerKilogramPoysha * BigInt(grams);
     return (scaled + ROUNDING_HALF) / GRAMS_PER_KILOGRAM;
+  },
+
+  /**
+   * Renders poysha as a plain two-decimal Taka string, e.g. `12345n` → `"123.45"`. Pure
+   * integer arithmetic, so it is exact at any size. For a gateway wire format, not for display.
+   */
+  toDecimalString(poysha: bigint): string {
+    if (poysha < 0n) {
+      throw new RangeError('Poysha amount must not be negative.');
+    }
+    const whole = poysha / POYSHA_PER_TAKA;
+    const fraction = poysha % POYSHA_PER_TAKA;
+    return `${whole}.${fraction.toString().padStart(POYSHA_DECIMAL_DIGITS, '0')}`;
+  },
+
+  /**
+   * Parses a plain decimal Taka string (digits, optionally a dot and one or two decimals) to
+   * poysha, or `null` for anything else. Pure string and integer arithmetic: no `Number`, no
+   * rounding, so `"12.345"` is refused rather than silently rounded.
+   */
+  fromDecimalString(value: string): bigint | null {
+    const match = DECIMAL_STRING_PATTERN.exec(value);
+    if (!match) {
+      return null;
+    }
+    const [, whole, fraction = ''] = match;
+    return BigInt(whole + fraction.padEnd(POYSHA_DECIMAL_DIGITS, '0'));
   },
 
   /** Formats poysha as a localized currency string, e.g. "৳1,250.50". */

@@ -3,19 +3,35 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ErrorMessages } from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
+import { Money } from '../../common/money/money';
 import {
   Order,
   OrderStatus,
   PaymentDirection,
   PaymentMethod,
   PaymentStatus,
+  PaymentTransaction,
   PaymentTransactionStatus,
+  Prisma,
 } from '../../infra/prisma/prisma-client';
+import { AdminAuditActions, AdminAuditEntities } from '../admin/admin.constants';
+import { AuditLogWriteData } from '../admin/audit-log.repository';
 import { AuthService } from '../auth/auth.service';
 import { OrderRepository } from '../order/order.repository';
-import { PaymentConstants, PaymentMessages, PaymentTokens } from './payment.constants';
+import {
+  PaymentConstants,
+  PaymentMessages,
+  PaymentTokens,
+  RefundClaimOutcome,
+  RefundClaimOutcomes,
+} from './payment.constants';
 import { PaymentGateway } from './ports/payment-gateway.port';
-import { PaymentRepository, PaymentTotals } from './payment.repository';
+import {
+  PAYMENT_DUPLICATE,
+  PaymentRepository,
+  PaymentTotals,
+  refundClearsOrder,
+} from './payment.repository';
 import { PaymentMapper } from './payment.mapper';
 import {
   CollectCashDto,
@@ -23,11 +39,20 @@ import {
   PaymentListDto,
   PaymentQueryDto,
   PaymentTransactionDto,
+  RefundClaimResolutionDto,
   RefundOrderDto,
+  ResolveRefundClaimDto,
 } from './dto/payment.dto';
 
 /** Statuses at which cash may legitimately be in a rider's hand. */
 const CASH_COLLECTABLE: readonly OrderStatus[] = [OrderStatus.DISPATCHED, OrderStatus.DELIVERED];
+
+/** Who is resolving a refund claim, and the claim as it was read. */
+interface ClaimResolution {
+  staff: AuthenticatedUser;
+  actorId: string;
+  claim: PaymentTransaction;
+}
 
 /**
  * The record of money moving.
@@ -79,7 +104,9 @@ export class PaymentService {
         return eligible;
       }
 
-      const totals = await this.repository.totalsForOrder(orderId);
+      // Cash rows only (ruling R16): a bKash capture on an order switched to cash on delivery is
+      // the automatic refund's business, and must not make the cash look already paid.
+      const totals = await this.repository.totalsForOrder(orderId, PaymentMethod.CASH_ON_DELIVERY);
       if (totals === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
       }
@@ -127,12 +154,11 @@ export class PaymentService {
         return guard;
       }
 
-      const totals = await this.repository.totalsForOrder(orderId);
-      if (totals === null) {
+      const refundable = await this.refundable(order as Order);
+      if (refundable === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
       }
 
-      const refundable = totals.capturedPoysha - totals.refundedPoysha;
       if (refundable <= 0n) {
         return serviceFail(HttpStatus.CONFLICT, PaymentMessages.NothingToRefund);
       }
@@ -185,13 +211,56 @@ export class PaymentService {
     }
   }
 
-  /** The whole ledger, for staff reconciliation. */
+  /**
+   * Settles an automatic bKash refund claim left PENDING (ruling R18), once a SUPER_ADMIN has
+   * checked the bKash merchant portal by the charge's trxID.
+   *
+   * `refunded` completes the claim, marking a cancelled order REFUNDED by the same rule the sweep
+   * applies; `not-refunded` releases it, so the next sweep asks bKash to refund the charge again.
+   * Only a PENDING bKash REFUND row can be resolved, and every resolution is audited in the same
+   * transaction as the write.
+   */
+  async resolveRefundClaim(
+    staff: AuthenticatedUser,
+    claimId: string,
+    dto: ResolveRefundClaimDto,
+  ): Promise<ServiceResponse<RefundClaimResolutionDto>> {
+    try {
+      const actor = await this.authService.resolveActiveUserId(staff);
+      if (!actor.ok) {
+        return actor;
+      }
+
+      const claim = await this.repository.findById(claimId);
+      const refusal = PaymentService.guardRefundClaim(claim, dto);
+      if (refusal) {
+        return refusal;
+      }
+
+      const resolution = { staff, actorId: actor.data, claim: claim as PaymentTransaction };
+      return dto.outcome === RefundClaimOutcomes.Refunded
+        ? await this.completeClaim(resolution, dto.refundTransactionId ?? null)
+        : await this.releaseClaim(resolution);
+    } catch (error) {
+      this.logger.error(
+        { err: error, claimId },
+        'Exception occurred in PaymentService.resolveRefundClaim',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /** The whole ledger, for staff reconciliation, optionally narrowed by status and direction. */
   async list(query: PaymentQueryDto): Promise<ServiceResponse<PaymentListDto>> {
     try {
       const take = query.pageSize ?? PaymentConstants.DefaultPageSize;
       const page = query.page ?? 1;
 
-      const result = await this.repository.findPage({}, (page - 1) * take, take);
+      const result = await this.repository.findPage(
+        PaymentService.listFilter(query),
+        (page - 1) * take,
+        take,
+      );
 
       if (result === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
@@ -207,6 +276,164 @@ export class PaymentService {
       this.logger.error({ err: error }, 'Exception occurred in PaymentService.list');
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
+  }
+
+  /** Only the filters given; `status=PENDING&direction=REFUND` lists stale refund claims. */
+  private static listFilter(query: PaymentQueryDto): Prisma.PaymentTransactionWhereInput {
+    return {
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.direction ? { direction: query.direction } : {}),
+    };
+  }
+
+  /** Records the refund bKash made, marking the order REFUNDED when it clears what is owed. */
+  private async completeClaim(
+    resolution: ClaimResolution,
+    refundTransactionId: string | null,
+  ): Promise<ServiceResponse<RefundClaimResolutionDto>> {
+    const { claim } = resolution;
+    const orderRefunded = await this.claimClearsOrder(claim);
+
+    if (orderRefunded === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
+    }
+
+    const completed = await this.repository.completeRefund(
+      claim.id,
+      refundTransactionId,
+      orderRefunded,
+      PaymentService.claimAudit(resolution, {
+        outcome: RefundClaimOutcomes.Refunded,
+        refundTransactionId,
+        orderRefunded,
+      }),
+    );
+
+    return PaymentService.resolved(completed, claim, RefundClaimOutcomes.Refunded, orderRefunded);
+  }
+
+  /** Gives the claim up, so the charge is owed again and the next sweep refunds it. */
+  private async releaseClaim(
+    resolution: ClaimResolution,
+  ): Promise<ServiceResponse<RefundClaimResolutionDto>> {
+    const released = await this.repository.releaseRefundClaim(
+      resolution.claim.id,
+      PaymentService.claimAudit(resolution, {
+        outcome: RefundClaimOutcomes.NotRefunded,
+        refundTransactionId: null,
+        orderRefunded: false,
+      }),
+    );
+
+    return PaymentService.resolved(
+      released,
+      resolution.claim,
+      RefundClaimOutcomes.NotRefunded,
+      false,
+    );
+  }
+
+  /**
+   * Whether completing this claim clears what its cancelled order is owed: the rule the sweep
+   * applies when it refunds. The owed read nets this PENDING claim as already given back, so the
+   * order was owed the claim's amount more before it.
+   */
+  private async claimClearsOrder(claim: PaymentTransaction): Promise<boolean | null> {
+    const owed = await this.repository.findOwedForOrder(claim.orderId);
+
+    if (owed === null) {
+      return null;
+    }
+
+    if (owed === undefined) {
+      return false;
+    }
+
+    return refundClearsOrder(
+      owed.cancelled,
+      claim.amountPoysha,
+      owed.owedPoysha + claim.amountPoysha,
+    );
+  }
+
+  /** Only a PENDING automatic bKash refund claim can be resolved; anything else is refused. */
+  private static guardRefundClaim(
+    claim: PaymentTransaction | null | undefined,
+    dto: ResolveRefundClaimDto,
+  ): ServiceResponse<never> | null {
+    if (claim === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
+    }
+
+    if (
+      claim === undefined ||
+      claim.method !== PaymentMethod.BKASH ||
+      claim.direction !== PaymentDirection.REFUND
+    ) {
+      return serviceFail(HttpStatus.NOT_FOUND, PaymentMessages.RefundClaimNotFound);
+    }
+
+    if (claim.status !== PaymentTransactionStatus.PENDING) {
+      return serviceFail(HttpStatus.CONFLICT, PaymentMessages.RefundClaimAlreadyResolved);
+    }
+
+    if (dto.outcome === RefundClaimOutcomes.NotRefunded && dto.refundTransactionId) {
+      return serviceFail(HttpStatus.BAD_REQUEST, PaymentMessages.RefundTransactionIdNotApplicable);
+    }
+
+    return null;
+  }
+
+  /** Turns the repository's answer to a resolve into the response. */
+  private static resolved(
+    written: boolean | typeof PAYMENT_DUPLICATE | null,
+    claim: PaymentTransaction,
+    outcome: RefundClaimOutcome,
+    orderRefunded: boolean,
+  ): ServiceResponse<RefundClaimResolutionDto> {
+    if (written === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
+    }
+
+    if (written === PAYMENT_DUPLICATE) {
+      return serviceFail(HttpStatus.CONFLICT, PaymentMessages.RefundTransactionIdRecorded);
+    }
+
+    if (!written) {
+      return serviceFail(HttpStatus.CONFLICT, PaymentMessages.RefundClaimAlreadyResolved);
+    }
+
+    return serviceOk({ claimId: claim.id, orderId: claim.orderId, outcome, orderRefunded });
+  }
+
+  /** The audit row for a resolve: the claim as it was, and what the person decided. */
+  private static claimAudit(
+    resolution: ClaimResolution,
+    after: {
+      outcome: RefundClaimOutcome;
+      refundTransactionId: string | null;
+      orderRefunded: boolean;
+    },
+  ): AuditLogWriteData {
+    const { staff, actorId, claim } = resolution;
+
+    return {
+      actorId,
+      // Phone-only accounts carry `''`, so emptiness is what "no email" means.
+      actorEmail: staff.email || null,
+      actorRole: staff.role,
+      action: AdminAuditActions.PaymentRefundClaimResolved,
+      entityType: AdminAuditEntities.PaymentTransaction,
+      entityId: claim.id,
+      before: {
+        status: claim.status,
+        orderId: claim.orderId,
+        amountPoysha: Money.toJsonNumber(claim.amountPoysha),
+        gatewayReference: claim.gatewayReference,
+      },
+      after,
+      requestId: null,
+    };
   }
 
   /** Writes the capture and the resulting order summary status together. */
@@ -304,7 +531,38 @@ export class PaymentService {
     return await this.gateway.refund({
       amountPoysha: amount,
       originalReference: charge.gatewayReference,
+      // bKash refunds name the transaction, not the payment; without it bKash refuses.
+      transactionId: charge.gatewayTransactionId,
     });
+  }
+
+  /**
+   * What staff may still give back: captured minus refunded, in the order's **current** method
+   * only (ruling R16), minus automatic bKash refunds that are claimed but not completed. Those
+   * may already have paid out, so counting them as still refundable could send the same money
+   * back twice. A bKash capture on an order switched to cash on delivery is left to the
+   * automatic refund: refunding it here would record cash going back for money bKash holds.
+   */
+  private async refundable(order: Order): Promise<bigint | null> {
+    const [totals, inFlight] = await Promise.all([
+      this.repository.totalsForOrder(order.id, order.paymentMethod),
+      this.inFlightRefunds(order),
+    ]);
+
+    if (totals === null || inFlight === null) {
+      return null;
+    }
+
+    return totals.capturedPoysha - totals.refundedPoysha - inFlight;
+  }
+
+  /** Automatic refund claims exist only for bKash, so only a bKash order nets them. */
+  private async inFlightRefunds(order: Order): Promise<bigint | null> {
+    if (order.paymentMethod !== PaymentMethod.BKASH) {
+      return 0n;
+    }
+
+    return await this.repository.sumPendingRefundClaims(order.id);
   }
 
   /** Total minus what has been captured, plus anything already given back. */

@@ -18,7 +18,13 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginatedResponseDto } from '../../common/dto/pagination.dto';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
-import { CancelOrderDto, OrderDto, OrderQueryDto, PlaceOrderDto } from './dto/order.dto';
+import {
+  CancelOrderDto,
+  OrderDto,
+  OrderQueryDto,
+  PlaceOrderDto,
+  SwitchPaymentMethodDto,
+} from './dto/order.dto';
 import { OrderConstants } from './order.constants';
 import { DeliveryConstants } from '../delivery/delivery.constants';
 import { SlotOccurrenceDto, SlotQueryDto } from '../delivery/dto/slot.dto';
@@ -139,6 +145,33 @@ export class OrderController {
       this.logger.error(
         { err: error, orderId: id },
         'Exception occurred in OrderController.cancel',
+      );
+      throw error;
+    }
+  }
+
+  @Patch(':id/payment-method')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Switch my bKash order to cash on delivery, while it can still be paid',
+  })
+  @ApiResponse({ status: HttpStatus.OK, type: OrderDto })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description: 'Not a bKash order, no longer open, already paid, or past its payment window',
+  })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND })
+  async switchPaymentMethod(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SwitchPaymentMethodDto,
+  ): Promise<OrderDto> {
+    try {
+      return unwrapOrThrow(await this.orderService.switchToCod(OrderController.require(user), id));
+    } catch (error) {
+      this.logger.error(
+        { err: error, orderId: id, paymentMethod: dto.paymentMethod },
+        'Exception occurred in OrderController.switchPaymentMethod',
       );
       throw error;
     }

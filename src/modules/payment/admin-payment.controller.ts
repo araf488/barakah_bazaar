@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
@@ -15,7 +16,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
 import { UserRole } from '../../infra/prisma/prisma-client';
-import { PaymentConstants } from './payment.constants';
+import { PaymentConstants, PaymentMessages } from './payment.constants';
 import { PaymentService } from './payment.service';
 import {
   CollectCashDto,
@@ -23,7 +24,9 @@ import {
   PaymentListDto,
   PaymentQueryDto,
   PaymentTransactionDto,
+  RefundClaimResolutionDto,
   RefundOrderDto,
+  ResolveRefundClaimDto,
 } from './dto/payment.dto';
 
 /**
@@ -47,7 +50,12 @@ export class AdminPaymentController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'The whole payment ledger, newest first' })
+  @ApiOperation({
+    summary: 'The whole payment ledger, newest first',
+    description:
+      '`?status=PENDING&direction=REFUND` lists automatic bKash refund claims; one older than a ' +
+      'few minutes is stuck and needs resolving.',
+  })
   @ApiResponse({ status: HttpStatus.OK, type: PaymentListDto })
   async list(@Query() query: PaymentQueryDto): Promise<PaymentListDto> {
     try {
@@ -87,6 +95,41 @@ export class AdminPaymentController {
       this.logger.error(
         { err: error, orderId },
         'Exception occurred in AdminPaymentController.collectCash',
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Settles an automatic bKash refund claim the sweep left PENDING (ruling R18). SUPER_ADMIN
+   * only: it records money as returned, or sends the sweep to refund it again, on a person's
+   * reading of the bKash merchant portal.
+   */
+  @Post(PaymentConstants.RefundClaimResolveRoute)
+  @Roles(UserRole.SUPER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Resolve a stuck automatic bKash refund claim' })
+  @ApiResponse({ status: HttpStatus.OK, type: RefundClaimResolutionDto })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: PaymentMessages.RefundTransactionIdNotApplicable,
+  })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: PaymentMessages.RefundClaimNotFound })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description: `${PaymentMessages.RefundClaimAlreadyResolved} / ${PaymentMessages.RefundTransactionIdRecorded}`,
+  })
+  async resolveRefundClaim(
+    @CurrentUser() staff: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) claimId: string,
+    @Body() dto: ResolveRefundClaimDto,
+  ): Promise<RefundClaimResolutionDto> {
+    try {
+      return unwrapOrThrow(await this.paymentService.resolveRefundClaim(staff, claimId, dto));
+    } catch (error) {
+      this.logger.error(
+        { err: error, claimId },
+        'Exception occurred in AdminPaymentController.resolveRefundClaim',
       );
       throw error;
     }

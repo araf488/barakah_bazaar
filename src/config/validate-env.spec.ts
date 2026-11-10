@@ -1,3 +1,4 @@
+import { envSchema } from './env.schema';
 import { validateEnv } from './validate-env';
 
 const productionEnv = {
@@ -9,6 +10,22 @@ const productionEnv = {
   JWT_SECRET: 'a'.repeat(32),
   TOTP_ENCRYPTION_KEY: 'dGhpcnR5LXR3by1ieXRlcy1vZi1rZXktbWF0ZXJpYWwh',
   APP_PUBLIC_BASE_URL: 'https://api.barakahbazaar.com.bd',
+};
+
+const bkashCredentials = {
+  PAYMENT_PROVIDER: 'bkash',
+  PAYMENT_API_URL: 'https://tokenized.sandbox.bka.sh/v1.2.0-beta',
+  PAYMENT_APP_KEY: 'app-key',
+  PAYMENT_APP_SECRET: 'app-secret',
+  PAYMENT_USERNAME: 'merchant-user',
+  // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture value, not a credential
+  PAYMENT_PASSWORD: 'merchant-pass',
+};
+
+/** The credentials plus the https API origin a deployed bkash environment also needs. */
+const bkashProductionEnv = {
+  ...bkashCredentials,
+  API_PUBLIC_BASE_URL: 'https://api.barakahbazaar.com.bd',
 };
 
 /** productionEnv minus one key, to prove that key is genuinely required. */
@@ -334,6 +351,125 @@ describe('validateEnv', () => {
       expect(() => validateEnv({ ...stagingEnv, APP_PUBLIC_BASE_URL: insecure })).toThrow(
         /APP_PUBLIC_BASE_URL must begin with https/,
       );
+    });
+  });
+
+  describe('payment provider', () => {
+    const PAYMENT_KEYS = [
+      'PAYMENT_API_URL',
+      'PAYMENT_APP_KEY',
+      'PAYMENT_APP_SECRET',
+      'PAYMENT_USERNAME',
+      'PAYMENT_PASSWORD',
+    ] as const;
+
+    const without = (key: (typeof PAYMENT_KEYS)[number]): Record<string, unknown> => {
+      const env: Record<string, unknown> = { ...bkashProductionEnv };
+      delete env[key];
+      return env;
+    };
+
+    it('accepts bkash in production with all five credentials and an https API URL', () => {
+      expect(() => validateEnv({ ...productionEnv, ...bkashProductionEnv })).not.toThrow();
+    });
+
+    it.each(PAYMENT_KEYS)('refuses bkash in production without %s', (key) => {
+      expect(() => validateEnv({ ...productionEnv, ...without(key) })).toThrow(
+        /PAYMENT_PROVIDER is set but its credentials are not\./,
+      );
+    });
+
+    it('reports the missing credentials against PAYMENT_API_URL', () => {
+      const result = envSchema.safeParse({
+        ...productionEnv,
+        ...without('PAYMENT_PASSWORD'),
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues).toEqual([
+        expect.objectContaining({
+          path: ['PAYMENT_API_URL'],
+          message: 'PAYMENT_PROVIDER is set but its credentials are not.',
+        }),
+      ]);
+    });
+
+    it('refuses bkash in staging without credentials too', () => {
+      expect(() => validateEnv({ ...stagingEnv, PAYMENT_PROVIDER: 'bkash' })).toThrow(
+        /PAYMENT_PROVIDER is set but its credentials are not\./,
+      );
+    });
+
+    it('accepts the noop provider with no credentials in production', () => {
+      expect(() => validateEnv({ ...productionEnv, PAYMENT_PROVIDER: 'noop' })).not.toThrow();
+    });
+
+    it('accepts bkash with no credentials in development', () => {
+      expect(() =>
+        validateEnv({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'bkash' }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('API_PUBLIC_BASE_URL', () => {
+    // The cleartext URLs are the input under test: the assertion is that they are rejected.
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols
+    const insecure = 'http://api.barakahbazaar.com.bd';
+
+    it('defaults to the local API', () => {
+      expect(validateEnv({}).API_PUBLIC_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('is not required in production while the provider is noop, so existing hosts still boot', () => {
+      expect(() => validateEnv(productionEnv)).not.toThrow();
+      expect(validateEnv(productionEnv).API_PUBLIC_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('is not required in staging while the provider is noop', () => {
+      expect(() => validateEnv(stagingEnv)).not.toThrow();
+    });
+
+    it('refuses the http default in production with bkash', () => {
+      expect(() => validateEnv({ ...productionEnv, ...bkashCredentials })).toThrow(
+        /API_PUBLIC_BASE_URL must begin with https/,
+      );
+    });
+
+    it('refuses an explicit http value in production with bkash', () => {
+      expect(() =>
+        validateEnv({ ...productionEnv, ...bkashCredentials, API_PUBLIC_BASE_URL: insecure }),
+      ).toThrow(/API_PUBLIC_BASE_URL must begin with https/);
+    });
+
+    it('reports the issue against API_PUBLIC_BASE_URL', () => {
+      const result = envSchema.safeParse({ ...productionEnv, ...bkashCredentials });
+
+      expect(result.error?.issues).toEqual([
+        expect.objectContaining({
+          path: ['API_PUBLIC_BASE_URL'],
+          message: 'API_PUBLIC_BASE_URL must begin with https:// in a deployed environment',
+        }),
+      ]);
+    });
+
+    it('refuses an http value in staging with bkash', () => {
+      expect(() =>
+        validateEnv({ ...stagingEnv, ...bkashCredentials, API_PUBLIC_BASE_URL: insecure }),
+      ).toThrow(/API_PUBLIC_BASE_URL must begin with https/);
+    });
+
+    it('accepts an https value in production with bkash', () => {
+      expect(() =>
+        validateEnv({
+          ...productionEnv,
+          ...bkashCredentials,
+          API_PUBLIC_BASE_URL: 'https://api.barakahbazaar.com.bd',
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts http in development with bkash', () => {
+      expect(() => validateEnv({ NODE_ENV: 'development', ...bkashCredentials })).not.toThrow();
     });
   });
 

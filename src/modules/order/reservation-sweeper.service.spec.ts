@@ -1,5 +1,6 @@
 import { PinoLogger } from 'nestjs-pino';
-import { OrderStatus } from '../../infra/prisma/prisma-client';
+import { OrderStatus, PaymentStatus } from '../../infra/prisma/prisma-client';
+import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { OrderRepository } from './order.repository';
 import { ReservationSweeper } from './reservation-sweeper.service';
@@ -75,7 +76,27 @@ describe('ReservationSweeper', () => {
 
     expect(repository.transition).toHaveBeenCalledTimes(2);
     expect(logger.info).toHaveBeenCalledWith(
-      { examined: 2, cancelled: 1 },
+      { examined: 2, cancelled: 1, skipped: 0 },
+      'Released stock held by abandoned orders',
+    );
+  });
+
+  it('skips an order someone else already moved and carries on with the next', async () => {
+    repository.findExpiredHolds.mockResolvedValue([staleOrder('ord-1'), staleOrder('ord-2')]);
+    repository.transition.mockResolvedValueOnce('stale').mockResolvedValueOnce({} as never);
+
+    await sweeper.sweep();
+
+    expect(repository.transition).toHaveBeenCalledTimes(2);
+    expect(repository.transition).toHaveBeenLastCalledWith(
+      'ord-2',
+      OrderStatus.PLACED,
+      OrderStatus.CANCELLED,
+      null,
+      expect.any(String),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      { examined: 2, cancelled: 1, skipped: 1 },
       'Released stock held by abandoned orders',
     );
   });
@@ -85,6 +106,56 @@ describe('ReservationSweeper', () => {
 
     await expect(sweeper.sweep()).resolves.toBeUndefined();
     expect(logger.error).toHaveBeenCalled();
+  });
+
+  describe('with the real hold query', () => {
+    it('cancels the abandoned orders the query returns', async () => {
+      const prisma = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: 'ord-open' }]),
+        order: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'ord-open',
+              status: OrderStatus.CONFIRMED,
+              paymentStatus: PaymentStatus.PENDING,
+            },
+          ]),
+        },
+      };
+      const real = new OrderRepository(prisma as unknown as PrismaService, createMockLogger());
+      const transition = jest.spyOn(real, 'transition').mockResolvedValue({} as never);
+
+      await new ReservationSweeper(real, logger).sweep();
+
+      expect(transition).toHaveBeenCalledTimes(1);
+      expect(transition.mock.calls[0][0]).toBe('ord-open');
+    });
+
+    it('re-applies the paid filter on the order read, so a late payment is not cancelled', async () => {
+      const orders = [
+        { id: 'ord-paid', status: OrderStatus.CONFIRMED, paymentStatus: PaymentStatus.PAID },
+        { id: 'ord-open', status: OrderStatus.CONFIRMED, paymentStatus: PaymentStatus.PENDING },
+      ];
+      const prisma = {
+        // Both ids were selected, then the first was paid before the order read.
+        $queryRaw: jest.fn().mockResolvedValue([{ id: 'ord-paid' }, { id: 'ord-open' }]),
+        // Applies the paymentStatus filter the way the database would.
+        order: {
+          findMany: jest.fn(({ where }: { where: { paymentStatus: { not: PaymentStatus } } }) =>
+            Promise.resolve(
+              orders.filter((order) => order.paymentStatus !== where.paymentStatus.not),
+            ),
+          ),
+        },
+      };
+      const real = new OrderRepository(prisma as unknown as PrismaService, createMockLogger());
+      const transition = jest.spyOn(real, 'transition').mockResolvedValue({} as never);
+
+      await new ReservationSweeper(real, logger).sweep();
+
+      expect(transition).toHaveBeenCalledTimes(1);
+      expect(transition.mock.calls[0][0]).toBe('ord-open');
+    });
   });
 
   describe('lifecycle', () => {

@@ -2,7 +2,8 @@ import { HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common
 import { PinoLogger } from 'nestjs-pino';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
-import { UserRole } from '../../infra/prisma/prisma-client';
+import { PaymentMethod, UserRole } from '../../infra/prisma/prisma-client';
+import { SwitchPaymentMethodDto } from './dto/order.dto';
 import { SlotQueryDto } from '../delivery/dto/slot.dto';
 import { OrderController } from './order.controller';
 import { OrderService } from './order.service';
@@ -13,6 +14,10 @@ const customer: AuthenticatedUser = {
   email: 'test@example.com',
   role: UserRole.CUSTOMER,
 };
+
+const cod = Object.assign(new SwitchPaymentMethodDto(), {
+  paymentMethod: PaymentMethod.CASH_ON_DELIVERY,
+});
 
 const query = (overrides: Partial<SlotQueryDto> = {}): SlotQueryDto =>
   Object.assign(new SlotQueryDto(), { addressId: 'address-1' }, overrides);
@@ -38,6 +43,7 @@ describe('OrderController', () => {
       listMyOrders: jest.fn(),
       getMyOrder: jest.fn(),
       cancelMyOrder: jest.fn(),
+      switchToCod: jest.fn(),
       listDeliverySlots: jest.fn().mockResolvedValue({ ok: true, data: [] }),
     };
     logger = createMockLogger();
@@ -145,6 +151,54 @@ describe('OrderController', () => {
       await expect(controller.cancel(undefined, 'order-1', {})).rejects.toThrow(
         UnauthorizedException,
       );
+    });
+  });
+
+  describe('switching to cash on delivery', () => {
+    it('hands the caller and the order id to the service and returns the order', async () => {
+      orderService.switchToCod.mockResolvedValue({ ok: true, data: { id: 'order-1' } });
+
+      await expect(controller.switchPaymentMethod(customer, 'order-1', cod)).resolves.toEqual({
+        id: 'order-1',
+      });
+      expect(orderService.switchToCod).toHaveBeenCalledWith(customer, 'order-1');
+    });
+
+    it('turns a service refusal into the matching HTTP error', async () => {
+      orderService.switchToCod.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This order can no longer switch to cash on delivery.',
+      });
+
+      const failure: unknown = await controller
+        .switchPaymentMethod(customer, 'order-1', cod)
+        .catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(HttpException);
+      expect((failure as HttpException).getStatus()).toBe(HttpStatus.CONFLICT);
+      expect((failure as HttpException).message).toBe(
+        'This order can no longer switch to cash on delivery.',
+      );
+    });
+
+    it('refuses to switch an order for nobody', async () => {
+      await expect(controller.switchPaymentMethod(undefined, 'order-1', cod)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(orderService.switchToCod).not.toHaveBeenCalled();
+    });
+
+    it('logs with the order id when switching throws', async () => {
+      orderService.switchToCod.mockRejectedValue(new Error('boom'));
+
+      await expect(controller.switchPaymentMethod(customer, 'order-1', cod)).rejects.toThrow(
+        'boom',
+      );
+      expect(logger.error.mock.calls[0][0]).toMatchObject({
+        orderId: 'order-1',
+        paymentMethod: 'CASH_ON_DELIVERY',
+      });
     });
   });
 

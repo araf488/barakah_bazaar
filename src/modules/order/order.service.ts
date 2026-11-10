@@ -9,7 +9,13 @@ import { PaginatedResponseDto } from '../../common/dto/pagination.dto';
 import { Money } from '../../common/money/money';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
-import { OrderStatus, PaymentMethod, Prisma, Warehouse } from '../../infra/prisma/prisma-client';
+import {
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+  Prisma,
+  Warehouse,
+} from '../../infra/prisma/prisma-client';
 import { AuthService } from '../auth/auth.service';
 import { CartLine, CartWithItems } from '../cart/cart.repository';
 import {
@@ -32,7 +38,15 @@ import { DeliveryService } from '../delivery/delivery.service';
 import { AppliedDiscount, DiscountBasis, PromotionService } from '../promotion/promotion.service';
 import { NotificationService } from '../notification/notification.service';
 import { CheckoutSources } from './checkout-sources';
-import { OrderRepository, OrderWithDetail, PlaceOrderData } from './order.repository';
+import {
+  OrderRepository,
+  OrderWithDetail,
+  PlaceOrderData,
+  TRANSITION_STALE,
+} from './order.repository';
+
+/** Milliseconds in an hour, for the COD hold window. */
+const MS_PER_HOUR = 3_600_000;
 
 /** Only the address fields the delivery-reach rules read. */
 interface DeliveryDestinationAddress {
@@ -161,6 +175,89 @@ export class OrderService {
       this.logger.error({ err: error }, 'Exception occurred in OrderService.placeOrder');
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
+  }
+
+  /**
+   * Moves a bKash order to cash on delivery while it can still be paid for (spec §4): loads it
+   * through the caller's own orders, refuses with 409 unless it is a PLACED, unpaid, still-held
+   * bKash order with no captured charge, then switches it and stretches the hold to the COD
+   * window. A failed read answers 503, never a refusal.
+   */
+  async switchToCod(user: AuthenticatedUser, id: string): Promise<ServiceResponse<OrderDto>> {
+    try {
+      const owner = await this.authService.resolveActiveUserId(user);
+      if (!owner.ok) {
+        return owner;
+      }
+
+      const order = await this.repository.findForUser(owner.data, id);
+
+      if (!order) {
+        return OrderService.single(order, true);
+      }
+
+      const refusal = await this.switchRefusal(order);
+      if (refusal) {
+        return refusal;
+      }
+
+      const holdUntil = new Date(Date.now() + OrderConstants.CodHoldHours * MS_PER_HOUR);
+      const switched = await this.repository.switchToCod(order.id, holdUntil);
+
+      if (switched === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+      }
+
+      if (switched === TRANSITION_STALE) {
+        // The order stopped being a PLACED bKash order after the read: paid, cancelled or
+        // already switched. From where the caller stands it simply cannot switch any more.
+        return serviceFail(HttpStatus.CONFLICT, OrderMessages.CannotSwitchToCod);
+      }
+
+      return serviceOk(OrderService.toDto(switched, true));
+    } catch (error) {
+      this.logger.error(
+        { err: error, orderId: id },
+        'Exception occurred in OrderService.switchToCod',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * Why an order cannot switch to cash on delivery, or null when it can. Cheap checks on the
+   * loaded order first, then the two reads: whether the hold is still live, and whether bKash
+   * already holds the customer's money for it.
+   */
+  private async switchRefusal(order: OrderWithDetail): Promise<ServiceResponse<never> | null> {
+    const cannotSwitch = serviceFail(HttpStatus.CONFLICT, OrderMessages.CannotSwitchToCod);
+    const unavailable = serviceFail(
+      HttpStatus.SERVICE_UNAVAILABLE,
+      ErrorMessages.ServiceUnavailable,
+    );
+
+    if (
+      order.paymentMethod !== PaymentMethod.BKASH ||
+      order.status !== OrderStatus.PLACED ||
+      order.paymentStatus === PaymentStatus.PAID
+    ) {
+      return cannotSwitch;
+    }
+
+    const held = await this.repository.holdActive(order.id);
+    if (held === null) {
+      return unavailable;
+    }
+    if (!held) {
+      return cannotSwitch;
+    }
+
+    const charged = await this.repository.hasCapturedCharge(order.id);
+    if (charged === null) {
+      return unavailable;
+    }
+
+    return charged ? cannotSwitch : null;
   }
 
   async listMyOrders(
@@ -299,6 +396,12 @@ export class OrderService {
 
     if (moved === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ErrorMessages.ServiceUnavailable);
+    }
+
+    if (moved === TRANSITION_STALE) {
+      // Someone else moved the order after we read it. The move was legal from what we saw, so
+      // say the order changed rather than claiming the move is illegal.
+      return serviceFail(HttpStatus.CONFLICT, OrderMessages.OrderChangedConcurrently);
     }
 
     await this.announce(moved);

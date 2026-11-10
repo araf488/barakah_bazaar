@@ -106,6 +106,11 @@ describe('OrderService', () => {
       findForUser: jest.fn().mockResolvedValue(order()),
       findPage: jest.fn().mockResolvedValue({ items: [order()], total: 1 }),
       transition: jest.fn().mockResolvedValue(order({ status: OrderStatus.CONFIRMED })),
+      holdActive: jest.fn().mockResolvedValue(true),
+      hasCapturedCharge: jest.fn().mockResolvedValue(false),
+      switchToCod: jest
+        .fn()
+        .mockResolvedValue(order({ paymentMethod: PaymentMethod.CASH_ON_DELIVERY })),
     };
     cartRepository = { findOrCreate: jest.fn().mockResolvedValue(cart()) };
     addressRepository = { findOneForUser: jest.fn().mockResolvedValue(addressFixture()) };
@@ -334,6 +339,30 @@ describe('OrderService', () => {
         expect(!result.ok && result.status).toBe(HttpStatus.CONFLICT);
       },
     );
+
+    it('answers 409 when another writer moved the order between the read and the swap', async () => {
+      repository.findById.mockResolvedValue(order({ status: OrderStatus.PLACED }));
+      repository.transition.mockResolvedValue('stale');
+
+      const result = await service.transitionOrder(staff, 'ord-1', {
+        status: OrderStatus.CONFIRMED,
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This order changed while you were working on it. Reload it and try again.',
+      });
+    });
+
+    it('announces nothing when the swap went stale', async () => {
+      repository.findById.mockResolvedValue(order({ status: OrderStatus.PLACED }));
+      repository.transition.mockResolvedValue('stale');
+
+      await service.transitionOrder(staff, 'ord-1', { status: OrderStatus.CONFIRMED });
+
+      expect(notifications.notifyOrderStatus).not.toHaveBeenCalled();
+    });
 
     it('records the staff member who moved it', async () => {
       await service.transitionOrder(staff, 'ord-1', {
@@ -939,6 +968,18 @@ describe('OrderService', () => {
       );
     });
 
+    it('answers 409 when the order moved between the read and the cancel', async () => {
+      repository.transition.mockResolvedValue('stale');
+
+      const result = await service.cancelMyOrder(customer, 'ord-1', {});
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This order changed while you were working on it. Reload it and try again.',
+      });
+    });
+
     it.each([OrderStatus.PICKING, OrderStatus.DISPATCHED, OrderStatus.DELIVERED])(
       'refuses a customer cancelling once it is %s',
       async (status) => {
@@ -958,6 +999,158 @@ describe('OrderService', () => {
       const result = await service.cancelMyOrder(customer, 'ord-9', {});
 
       expect(!result.ok && result.status).toBe(HttpStatus.NOT_FOUND);
+    });
+  });
+
+  describe('switchToCod', () => {
+    const bkashOrder = (overrides = {}) =>
+      order({ paymentMethod: PaymentMethod.BKASH, status: OrderStatus.PLACED, ...overrides });
+
+    const conflict = (message: string) => ({
+      ok: false,
+      status: HttpStatus.CONFLICT,
+      message,
+    });
+
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-10-17T10:00:00.000Z') });
+      repository.findForUser.mockResolvedValue(bkashOrder());
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('switches a payable bKash order and answers the updated order', async () => {
+      const result = await service.switchToCod(customer, 'ord-1');
+
+      expect(result.ok && result.data).toMatchObject({
+        id: 'ord-1',
+        paymentMethod: PaymentMethod.CASH_ON_DELIVERY,
+      });
+      expect(repository.findForUser).toHaveBeenCalledWith('user-1', 'ord-1');
+    });
+
+    it('extends the hold to a week from now', async () => {
+      await service.switchToCod(customer, 'ord-1');
+
+      expect(repository.switchToCod).toHaveBeenCalledWith(
+        'ord-1',
+        new Date('2026-10-24T10:00:00.000Z'),
+      );
+    });
+
+    it('does not announce anything: the status did not move', async () => {
+      await service.switchToCod(customer, 'ord-1');
+
+      expect(notifications.notifyOrderStatus).not.toHaveBeenCalled();
+    });
+
+    it('refuses an order that is not paid by bKash', async () => {
+      repository.findForUser.mockResolvedValue(
+        bkashOrder({ paymentMethod: PaymentMethod.CASH_ON_DELIVERY }),
+      );
+
+      await expect(service.switchToCod(customer, 'ord-1')).resolves.toEqual(
+        conflict('This order can no longer switch to cash on delivery.'),
+      );
+      expect(repository.switchToCod).not.toHaveBeenCalled();
+    });
+
+    it.each([OrderStatus.CONFIRMED, OrderStatus.CANCELLED, OrderStatus.DISPATCHED])(
+      'refuses an order that is %s',
+      async (status) => {
+        repository.findForUser.mockResolvedValue(bkashOrder({ status }));
+
+        await expect(service.switchToCod(customer, 'ord-1')).resolves.toEqual(
+          conflict('This order can no longer switch to cash on delivery.'),
+        );
+        expect(repository.switchToCod).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses an order that is already paid', async () => {
+      repository.findForUser.mockResolvedValue(bkashOrder({ paymentStatus: 'PAID' }));
+
+      await expect(service.switchToCod(customer, 'ord-1')).resolves.toEqual(
+        conflict('This order can no longer switch to cash on delivery.'),
+      );
+      expect(repository.switchToCod).not.toHaveBeenCalled();
+    });
+
+    it('refuses once the stock hold has lapsed', async () => {
+      repository.holdActive.mockResolvedValue(false);
+
+      await expect(service.switchToCod(customer, 'ord-1')).resolves.toEqual(
+        conflict('This order can no longer switch to cash on delivery.'),
+      );
+      expect(repository.holdActive).toHaveBeenCalledWith('ord-1');
+      expect(repository.switchToCod).not.toHaveBeenCalled();
+    });
+
+    it('refuses when a captured bKash charge exists, even on a PLACED unpaid-looking order', async () => {
+      repository.hasCapturedCharge.mockResolvedValue(true);
+
+      await expect(service.switchToCod(customer, 'ord-1')).resolves.toEqual(
+        conflict('This order can no longer switch to cash on delivery.'),
+      );
+      expect(repository.hasCapturedCharge).toHaveBeenCalledWith('ord-1');
+      expect(repository.switchToCod).not.toHaveBeenCalled();
+    });
+
+    it('answers 409 when the order stopped being a PLACED bKash order after the read', async () => {
+      repository.switchToCod.mockResolvedValue('stale');
+
+      await expect(service.switchToCod(customer, 'ord-1')).resolves.toEqual(
+        conflict('This order can no longer switch to cash on delivery.'),
+      );
+    });
+
+    it("answers 404 for another customer's order", async () => {
+      repository.findForUser.mockResolvedValue(undefined);
+
+      const result = await service.switchToCod(customer, 'ord-9');
+
+      expect(!result.ok && result.status).toBe(HttpStatus.NOT_FOUND);
+      expect(repository.switchToCod).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the order read', () => repository.findForUser.mockResolvedValue(null)],
+      ['the hold read', () => repository.holdActive.mockResolvedValue(null)],
+      ['the captured-charge read', () => repository.hasCapturedCharge.mockResolvedValue(null)],
+      ['the switch itself', () => repository.switchToCod.mockResolvedValue(null)],
+    ])('answers 503 when %s fails, never a refusal', async (_case, arrange) => {
+      arrange();
+
+      const result = await service.switchToCod(customer, 'ord-1');
+
+      expect(!result.ok && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('passes a failed owner resolution straight through', async () => {
+      authService.resolveActiveUserId.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'nope',
+      });
+
+      const result = await service.switchToCod(customer, 'ord-1');
+
+      expect(!result.ok && result.status).toBe(HttpStatus.UNAUTHORIZED);
+      expect(repository.findForUser).not.toHaveBeenCalled();
+    });
+
+    it('answers 500 and logs when something throws', async () => {
+      repository.holdActive.mockRejectedValue(new Error('boom'));
+
+      const result = await service.switchToCod(customer, 'ord-1');
+
+      expect(!result.ok && result.status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: 'ord-1' }),
+        'Exception occurred in OrderService.switchToCod',
+      );
     });
   });
 

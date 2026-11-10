@@ -148,27 +148,29 @@ table. See [prisma/rls/001_enable_rls.sql](prisma/rls/001_enable_rls.sql).
 Full annotated list in [.env.example](.env.example). Validation runs at boot and
 fails with every problem at once, so a bad deploy is diagnosed in one pass.
 
-| Variable                     | Required                    | Notes                                                                          |
-| ---------------------------- | --------------------------- | ------------------------------------------------------------------------------ |
-| `NODE_ENV`                   | no                          | `development` \| `test` \| `staging` \| `production`                           |
-| `PORT`                       | no                          | Default `3000`                                                                 |
-| `API_PREFIX` / `API_VERSION` | no                          | Routes mount at `/{prefix}/{version}` → `/api/v1`                              |
-| `LOG_LEVEL`                  | no                          | pino level; `silent` in tests                                                  |
-| `CORS_ALLOWED_ORIGINS`       | **in staging & production** | Comma-separated. Empty = no cross-origin browser call allowed                  |
-| `SWAGGER_ENABLED`            | no                          | Rejected in production                                                         |
-| `DATABASE_URL`               | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container |
-| `DIRECT_URL`                 | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable    |
-| `SUPABASE_URL`               | **in staging & production** | Storage only — signing upload URLs                                             |
-| `SUPABASE_SERVICE_ROLE_KEY`  | **in staging & production** | **Bypasses RLS. Server-side only — never in a client bundle**                  |
-| `JWT_SECRET`                 | **in staging & production** | HS256, ≥32 chars. Unset, each process signs with its own random key            |
-| `TOTP_ENCRYPTION_KEY`        | **in staging & production** | base64, 32 bytes. Unset, no staff member with MFA can sign in                  |
-| `APP_PUBLIC_BASE_URL`        | **https in staging & prod** | Base for verification and reset links, which carry a credential                |
-| `QUEUE_ENABLED`, `REDIS_*`   | no                          | BullMQ is off unless enabled                                                   |
-| `SMS_PROVIDER`, `SMS_*`      | no                          | `noop` by default, so tests spend no SMS credits                               |
+| Variable                        | Required                    | Notes                                                                               |
+| ------------------------------- | --------------------------- | ----------------------------------------------------------------------------------- |
+| `NODE_ENV`                      | no                          | `development` \| `test` \| `staging` \| `production`                                |
+| `PORT`                          | no                          | Default `3000`                                                                      |
+| `API_PREFIX` / `API_VERSION`    | no                          | Routes mount at `/{prefix}/{version}` → `/api/v1`                                   |
+| `LOG_LEVEL`                     | no                          | pino level; `silent` in tests                                                       |
+| `CORS_ALLOWED_ORIGINS`          | **in staging & production** | Comma-separated. Empty = no cross-origin browser call allowed                       |
+| `SWAGGER_ENABLED`               | no                          | Rejected in production                                                              |
+| `DATABASE_URL`                  | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container      |
+| `DIRECT_URL`                    | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable         |
+| `SUPABASE_URL`                  | **in staging & production** | Storage only — signing upload URLs                                                  |
+| `SUPABASE_SERVICE_ROLE_KEY`     | **in staging & production** | **Bypasses RLS. Server-side only — never in a client bundle**                       |
+| `JWT_SECRET`                    | **in staging & production** | HS256, ≥32 chars. Unset, each process signs with its own random key                 |
+| `TOTP_ENCRYPTION_KEY`           | **in staging & production** | base64, 32 bytes. Unset, no staff member with MFA can sign in                       |
+| `APP_PUBLIC_BASE_URL`           | **https in staging & prod** | Base for verification and reset links, which carry a credential                     |
+| `API_PUBLIC_BASE_URL`           | **https when `bkash`**      | This API's own origin; the payment callback URL is built from it. Unused for `noop` |
+| `PAYMENT_PROVIDER`, `PAYMENT_*` | no                          | `noop` by default. `bkash` needs all five `PAYMENT_*` credentials in staging & prod |
+| `QUEUE_ENABLED`, `REDIS_*`      | no                          | BullMQ is off unless enabled                                                        |
+| `SMS_PROVIDER`, `SMS_*`         | no                          | `noop` by default, so tests spend no SMS credits                                    |
 
 In any deployed environment (`staging` or `production`) the app additionally
 refuses to start if the CORS allowlist is empty or `APP_PUBLIC_BASE_URL` is not
-https. In production it also refuses to start if Swagger is enabled.
+https (`API_PUBLIC_BASE_URL` too, once `PAYMENT_PROVIDER=bkash`). In production it also refuses to start if Swagger is enabled.
 
 ### Environment matrix
 
@@ -192,7 +194,8 @@ design, rather than serving QA under the wrong configuration.
 `staging` and `production` are both **deployed environments** and share the same
 required-key checks: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
 `JWT_SECRET`, `TOTP_ENCRYPTION_KEY`, a non-empty CORS allowlist, and an https
-`APP_PUBLIC_BASE_URL`. Only the Swagger rule is production-only, because QA and
+`APP_PUBLIC_BASE_URL`. With `PAYMENT_PROVIDER=bkash` they also require the five
+`PAYMENT_*` credentials and an https `API_PUBLIC_BASE_URL`. Only the Swagger rule is production-only, because QA and
 the client need the docs page.
 
 In CI these values live in **GitHub Environments** (`dev`, `stage`, `prod`) as

@@ -18,6 +18,7 @@ export const PaymentMapper = {
       status: row.status,
       amountPoysha: Money.toJsonNumber(row.amountPoysha),
       gatewayReference: row.gatewayReference,
+      gatewayTransactionId: row.gatewayTransactionId,
       failureReason: row.failureReason,
       capturedAt: row.capturedAt ? row.capturedAt.toISOString() : null,
       createdAt: row.createdAt.toISOString(),

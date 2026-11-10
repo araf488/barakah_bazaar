@@ -2,7 +2,7 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { OrderStatus } from '../../infra/prisma/prisma-client';
 import { OrderConstants, OrderMessages } from './order.constants';
-import { OrderRepository } from './order.repository';
+import { OrderRepository, TRANSITION_STALE } from './order.repository';
 
 /**
  * Returns stock held by orders nobody completed.
@@ -58,6 +58,7 @@ export class ReservationSweeper implements OnModuleInit, OnModuleDestroy {
       }
 
       let cancelled = 0;
+      let skipped = 0;
 
       for (const order of stale) {
         const result = await this.repository.transition(
@@ -68,7 +69,10 @@ export class ReservationSweeper implements OnModuleInit, OnModuleDestroy {
           OrderMessages.AbandonedBySweep,
         );
 
-        if (result) {
+        if (result === TRANSITION_STALE) {
+          // Someone else moved it first, most likely a payment confirming. Not ours to cancel.
+          skipped += 1;
+        } else if (result) {
           cancelled += 1;
         }
       }
@@ -76,7 +80,7 @@ export class ReservationSweeper implements OnModuleInit, OnModuleDestroy {
       // Worth info level: a sudden rise here means customers are abandoning checkout, which
       // is a product problem rather than a technical one.
       this.logger.info(
-        { examined: stale.length, cancelled },
+        { examined: stale.length, cancelled, skipped },
         'Released stock held by abandoned orders',
       );
     } catch (error) {

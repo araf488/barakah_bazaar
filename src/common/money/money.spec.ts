@@ -111,4 +111,59 @@ describe('Money', () => {
       expect(Money.toJsonNumber(125050n)).toBe(125050);
     });
   });
+
+  describe('toDecimalString', () => {
+    it('renders poysha as a two-decimal Taka string', () => {
+      expect(Money.toDecimalString(12345n)).toBe('123.45');
+    });
+
+    it('pads a sub-Taka amount with a leading zero', () => {
+      expect(Money.toDecimalString(5n)).toBe('0.05');
+    });
+
+    it('keeps two decimals on a whole Taka amount', () => {
+      expect(Money.toDecimalString(100n)).toBe('1.00');
+    });
+
+    it('renders zero', () => {
+      expect(Money.toDecimalString(0n)).toBe('0.00');
+    });
+
+    it('rejects a negative amount rather than printing a malformed string', () => {
+      expect(() => Money.toDecimalString(-5n)).toThrow(RangeError);
+    });
+
+    it('stays exact beyond the float-safe range', () => {
+      expect(Money.toDecimalString(900719925474099312n)).toBe('9007199254740993.12');
+    });
+  });
+
+  describe('fromDecimalString', () => {
+    it('parses a two-decimal amount', () => {
+      expect(Money.fromDecimalString('1.00')).toBe(100n);
+    });
+
+    it('parses the smallest amount', () => {
+      expect(Money.fromDecimalString('0.01')).toBe(1n);
+    });
+
+    it('pads a single decimal digit', () => {
+      expect(Money.fromDecimalString('1250.5')).toBe(125050n);
+    });
+
+    it('parses a whole number with no decimals', () => {
+      expect(Money.fromDecimalString('250')).toBe(25000n);
+    });
+
+    it('stays exact beyond the float-safe range', () => {
+      expect(Money.fromDecimalString('9007199254740993.12')).toBe(900719925474099312n);
+    });
+
+    it.each(['1,250.50', '12.345', '', '-1.00', '1e3', '1.', '.5', ' 1.00', '1.00 ', '১.০০'])(
+      'rejects %j',
+      (value) => {
+        expect(Money.fromDecimalString(value)).toBeNull();
+      },
+    );
+  });
 });

@@ -1,9 +1,14 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PinoLogger } from 'nestjs-pino';
+import { AdminModule } from '../admin/admin.module';
 import { AuthModule } from '../auth/auth.module';
+import { NotificationModule } from '../notification/notification.module';
 import { OrderRepository } from '../order/order.repository';
 import { AdminPaymentController } from './admin-payment.controller';
+import { BkashCheckoutService } from './bkash-checkout.service';
+import { BkashReconciliationSweeper } from './bkash-reconciliation.sweeper';
+import { BkashController } from './bkash.controller';
 import { createPaymentGateway } from './gateways/payment-gateway.factory';
 import { PaymentConstants, PaymentTokens } from './payment.constants';
 import { PaymentRepository } from './payment.repository';
@@ -18,13 +23,18 @@ import { PaymentService } from './payment.service';
  *
  * OrderRepository is provided directly rather than by importing OrderModule, for the same
  * reason as NotificationModule: the order module will eventually read payment state, and
- * importing it back would be a cycle.
+ * importing it back would be a cycle. NotificationModule itself is safe to import: it depends
+ * on neither this module nor OrderModule, and a captured bKash payment sends its CONFIRMED SMS.
+ * AdminModule is imported for its AuditLogRepository: resolving a stuck refund claim is audited
+ * in the same transaction as the write, and AdminModule imports neither this module nor orders.
  */
 @Module({
-  imports: [AuthModule],
-  controllers: [AdminPaymentController],
+  imports: [AuthModule, NotificationModule, AdminModule],
+  controllers: [AdminPaymentController, BkashController],
   providers: [
     PaymentService,
+    BkashCheckoutService,
+    BkashReconciliationSweeper,
     PaymentRepository,
     OrderRepository,
     {

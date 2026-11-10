@@ -3,7 +3,10 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import {
   Order,
   OrderStatus,
+  PaymentDirection,
   PaymentMethod,
+  PaymentStatus,
+  PaymentTransactionStatus,
   Prisma,
   StockMovementReason,
 } from '../../infra/prisma/prisma-client';
@@ -13,12 +16,16 @@ import { OrderConstants } from './order.constants';
 
 export type OrderResult = Order | null | undefined;
 
-const orderInclude = {
+/** The order shape every repository read returns. Exported so a settle in another module returns the same. */
+export const orderInclude = {
   items: true,
   events: { orderBy: { createdAt: 'asc' } },
 } satisfies Prisma.OrderInclude;
 
 export type OrderWithDetail = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
+
+/** What `transition` returns when the order was no longer in the status the caller expected. */
+export const TRANSITION_STALE = 'stale' as const;
 
 export interface OrderPage {
   items: OrderWithDetail[];
@@ -260,6 +267,12 @@ export class OrderRepository {
   /**
    * Moves an order, records the event, and settles the stock the move implies.
    *
+   * The move is a compare-and-swap on `from`: the update only matches while the order is still
+   * in the status the caller read. If something else got there first (the reservation sweeper
+   * cancelling while a payment confirms, or two staff clicking at once) nothing matches, the
+   * transaction does no stock, event or release work, and the caller gets
+   * {@link TRANSITION_STALE} instead of a half-applied move.
+   *
    * DISPATCHED is where reserved stock actually leaves the shelf: the hold is released and
    * the on-hand count drops. CANCELLED and REFUNDED release the hold without a sale. Doing
    * this anywhere but inside the status transition is how stock and orders drift apart.
@@ -270,17 +283,28 @@ export class OrderRepository {
     to: OrderStatus,
     actorId: string | null,
     note: string | null,
-  ): Promise<OrderWithDetail | null> {
+  ): Promise<OrderWithDetail | typeof TRANSITION_STALE | null> {
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const order = await tx.order.update({
-          where: { id: orderId },
+        const swapped = await tx.order.updateMany({
+          where: { id: orderId, status: from },
           data: {
             status: to,
             ...(to === OrderStatus.DELIVERED ? { deliveredAt: new Date() } : {}),
             ...(to === OrderStatus.CANCELLED ? { cancelledAt: new Date() } : {}),
-            events: { create: { fromStatus: from, toStatus: to, actorId, note } },
           },
+        });
+
+        if (swapped.count === 0) {
+          return TRANSITION_STALE;
+        }
+
+        await tx.orderEvent.create({
+          data: { orderId, fromStatus: from, toStatus: to, actorId, note },
+        });
+
+        const order = await tx.order.findUniqueOrThrow({
+          where: { id: orderId },
           include: orderInclude,
         });
 
@@ -398,20 +422,148 @@ export class OrderRepository {
   }
 
   /**
+   * Whether the order still holds its stock: some unreleased reservation runs past now.
+   * `null` means the read failed, so a caller never mistakes a fault for a lapsed hold.
+   */
+  async holdActive(orderId: string): Promise<boolean | null> {
+    try {
+      const live = await this.prisma.stockReservation.count({
+        where: {
+          referenceType: OrderConstants.HoldReferenceType,
+          referenceId: orderId,
+          releasedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+      });
+
+      return live > 0;
+    } catch (error) {
+      this.logger.error(
+        { err: error, orderId },
+        'Exception occurred in OrderRepository.holdActive',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Whether any bKash charge on the order has been CAPTURED: money is already held for it.
+   * `null` means the read failed, so a caller never mistakes a fault for "no charge".
+   */
+  async hasCapturedCharge(orderId: string): Promise<boolean | null> {
+    try {
+      const captured = await this.prisma.paymentTransaction.count({
+        where: {
+          orderId,
+          method: PaymentMethod.BKASH,
+          direction: PaymentDirection.CHARGE,
+          status: PaymentTransactionStatus.CAPTURED,
+        },
+      });
+
+      return captured > 0;
+    } catch (error) {
+      this.logger.error(
+        { err: error, orderId },
+        'Exception occurred in OrderRepository.hasCapturedCharge',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Moves a PLACED bKash order to cash on delivery, stretches its stock hold to `holdUntil`,
+   * and records the switch, in one transaction.
+   *
+   * The swap is conditional on the order still being a PLACED bKash order, so a payment that
+   * confirmed it, a cancel, or a second switch gets {@link TRANSITION_STALE} and nothing else
+   * is written. Touches only the order row, its reservations and its event: never a payment
+   * attempt. A bKash attempt still open then settles through `captureAttempt`, which refunds
+   * it because the order is no longer a bKash order.
+   *
+   * Lock order: the order row (the conditional update), then the reservations. `captureAttempt`
+   * locks the attempt row and then the order row, so the two meet only on the order row and
+   * cannot wait on each other in a cycle.
+   */
+  async switchToCod(
+    orderId: string,
+    holdUntil: Date,
+  ): Promise<OrderWithDetail | typeof TRANSITION_STALE | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const swapped = await tx.order.updateMany({
+          where: {
+            id: orderId,
+            status: OrderStatus.PLACED,
+            paymentMethod: PaymentMethod.BKASH,
+          },
+          data: { paymentMethod: PaymentMethod.CASH_ON_DELIVERY },
+        });
+
+        if (swapped.count === 0) {
+          return TRANSITION_STALE;
+        }
+
+        // Forwards only: a hold that already runs longer is left alone.
+        await tx.stockReservation.updateMany({
+          where: {
+            referenceType: OrderConstants.HoldReferenceType,
+            referenceId: orderId,
+            releasedAt: null,
+            expiresAt: { lt: holdUntil },
+          },
+          data: { expiresAt: holdUntil },
+        });
+
+        await tx.orderEvent.create({
+          data: {
+            orderId,
+            fromStatus: OrderStatus.PLACED,
+            toStatus: OrderStatus.PLACED,
+            actorId: null,
+            note: OrderConstants.SwitchedToCodNote,
+          },
+        });
+
+        return await tx.order.findUniqueOrThrow({
+          where: { id: orderId },
+          include: orderInclude,
+        });
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, orderId },
+        'Exception occurred in OrderRepository.switchToCod',
+      );
+      return null;
+    }
+  }
+
+  /**
    * Orders whose stock hold has outlived its window while the order is still open.
    *
    * Only PLACED and CONFIRMED qualify: once an order is PICKING or beyond, staff are working
    * it and the hold is doing its job however long it has been. Terminal orders have already
-   * released their stock.
+   * released their stock. Paid orders are excluded too: money has been taken for them.
    */
   async findExpiredHolds(): Promise<OrderWithDetail[] | null> {
     try {
-      const holds = await this.prisma.stockReservation.findMany({
-        where: { releasedAt: null, expiresAt: { lt: new Date() }, referenceType: 'Order' },
-        select: { referenceId: true },
-        distinct: ['referenceId'],
-        take: 100,
-      });
+      // The filters live in this query, not after it. `reference_id` is polymorphic text with no
+      // foreign key, so the join needs the cast; and a paid CONFIRMED order keeps an expired,
+      // unreleased hold until dispatch, so filtering after the limit would let those fill the
+      // window and starve the genuinely abandoned orders behind them.
+      const holds = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT o.id
+        FROM stock_reservations r
+        JOIN orders o ON o.id::text = r.reference_id
+        WHERE r.reference_type = 'Order'
+          AND r.released_at IS NULL
+          AND r.expires_at < ${new Date()}
+          AND o.status IN ('PLACED', 'CONFIRMED')
+          AND o.payment_status <> 'PAID'
+        GROUP BY o.id
+        ORDER BY MIN(r.expires_at), o.id
+        LIMIT ${OrderConstants.ExpiredHoldBatchSize}`;
 
       if (holds.length === 0) {
         return [];
@@ -419,8 +571,11 @@ export class OrderRepository {
 
       return await this.prisma.order.findMany({
         where: {
-          id: { in: holds.map((hold) => hold.referenceId) },
+          id: { in: holds.map((hold) => hold.id) },
           status: { in: [OrderStatus.PLACED, OrderStatus.CONFIRMED] },
+          // A paid order is never abandoned. Cancelling it here would release the stock and
+          // keep the customer's money, and nothing downstream would refund it.
+          paymentStatus: { not: PaymentStatus.PAID },
         },
         include: orderInclude,
       });

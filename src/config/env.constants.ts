@@ -19,6 +19,11 @@ export const EnvValidationMessages = {
     'EMAIL_FROM and the EMAIL_SMTP_* credentials are required when EMAIL_PROVIDER is not noop',
   /** Raised when a deployed environment selects a real SMS provider with no credentials. */
   SmsProviderNotConfigured: 'SMS_PROVIDER is set but SMS_API_URL and SMS_API_KEY are not.',
+  /** Raised when a deployed environment with a real payment provider would build its callback URL over plain http. */
+  ApiPublicBaseUrlNotHttps:
+    'API_PUBLIC_BASE_URL must begin with https:// in a deployed environment',
+  /** Raised when a deployed environment selects a real payment provider with no credentials. */
+  PaymentProviderNotConfigured: 'PAYMENT_PROVIDER is set but its credentials are not.',
   /** Raised when Swagger is left enabled in production. Staging may enable it. */
   SwaggerEnabledInProduction: 'SWAGGER_ENABLED must be false in production',
 } as const;

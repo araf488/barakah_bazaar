@@ -1,5 +1,5 @@
 import { PinoLogger } from 'nestjs-pino';
-import { OrderStatus, PaymentMethod } from '../../infra/prisma/prisma-client';
+import { OrderStatus, PaymentMethod, PaymentStatus } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { OrderRepository, PlaceOrderData } from './order.repository';
@@ -45,7 +45,13 @@ const placement = (overrides: Partial<PlaceOrderData> = {}): PlaceOrderData => (
 
 describe('OrderRepository', () => {
   let tx: {
-    order: { create: jest.Mock; update: jest.Mock };
+    order: {
+      create: jest.Mock;
+      updateMany: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+    };
+    orderEvent: { create: jest.Mock };
+    paymentTransaction: { create: jest.Mock; update: jest.Mock; updateMany: jest.Mock };
     stockReservation: { create: jest.Mock; findMany: jest.Mock; updateMany: jest.Mock };
     promotionRedemption: { create: jest.Mock };
     inventoryBatch: { findMany: jest.Mock; update: jest.Mock };
@@ -58,7 +64,9 @@ describe('OrderRepository', () => {
   let prisma: {
     $transaction: jest.Mock;
     order: { findMany: jest.Mock };
-    stockReservation: { findMany: jest.Mock };
+    stockReservation: { count: jest.Mock };
+    paymentTransaction: { count: jest.Mock };
+    $queryRaw: jest.Mock;
   };
   let logger: jest.Mocked<PinoLogger>;
   let repository: OrderRepository;
@@ -67,8 +75,11 @@ describe('OrderRepository', () => {
     tx = {
       order: {
         create: jest.fn().mockResolvedValue({ id: 'ord-1' }),
-        update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn(),
       },
+      orderEvent: { create: jest.fn() },
+      paymentTransaction: { create: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
       stockReservation: { create: jest.fn(), findMany: jest.fn(), updateMany: jest.fn() },
       promotionRedemption: { create: jest.fn() },
       inventoryBatch: { findMany: jest.fn().mockResolvedValue([]), update: jest.fn() },
@@ -81,7 +92,9 @@ describe('OrderRepository', () => {
     prisma = {
       $transaction: jest.fn((fn: (client: unknown) => unknown) => fn(tx)),
       order: { findMany: jest.fn() },
-      stockReservation: { findMany: jest.fn() },
+      stockReservation: { count: jest.fn() },
+      paymentTransaction: { count: jest.fn() },
+      $queryRaw: jest.fn(),
     };
     logger = createMockLogger();
     repository = new OrderRepository(prisma as unknown as PrismaService, logger);
@@ -163,7 +176,7 @@ describe('OrderRepository', () => {
     });
 
     beforeEach(() => {
-      tx.order.update.mockResolvedValue(dispatched());
+      tx.order.findUniqueOrThrow.mockResolvedValue(dispatched());
     });
 
     it('decrements the batches, not only the aggregate on-hand', async () => {
@@ -239,7 +252,7 @@ describe('OrderRepository', () => {
     });
 
     it('settles every line of a multi-line order', async () => {
-      tx.order.update.mockResolvedValue(
+      tx.order.findUniqueOrThrow.mockResolvedValue(
         dispatched([
           { variantId: 'var-1', quantity: 2 },
           { variantId: 'var-2', quantity: 3 },
@@ -261,25 +274,157 @@ describe('OrderRepository', () => {
     });
   });
 
+  describe('transition — compare-and-swap on the from status', () => {
+    const cancelled = {
+      id: 'ord-1',
+      orderNumber: 'BB-20260831-000001',
+      warehouseId: 'wh-1',
+      items: [{ variantId: 'var-1', quantity: 5 }],
+    };
+
+    it('only moves the order while it is still in the status the caller saw', async () => {
+      tx.order.findUniqueOrThrow.mockResolvedValue(cancelled);
+
+      await repository.transition(
+        'ord-1',
+        OrderStatus.PLACED,
+        OrderStatus.CONFIRMED,
+        'user-1',
+        'ok',
+      );
+
+      expect(tx.order.updateMany).toHaveBeenCalledTimes(1);
+      expect(tx.order.updateMany.mock.calls[0][0]).toMatchObject({
+        where: { id: 'ord-1', status: OrderStatus.PLACED },
+        data: { status: OrderStatus.CONFIRMED },
+      });
+    });
+
+    it('records the event and returns the order with its detail once the swap wins', async () => {
+      tx.order.findUniqueOrThrow.mockResolvedValue(cancelled);
+
+      const result = await repository.transition(
+        'ord-1',
+        OrderStatus.PLACED,
+        OrderStatus.CONFIRMED,
+        'user-1',
+        'ok',
+      );
+
+      expect(tx.orderEvent.create).toHaveBeenCalledWith({
+        data: {
+          orderId: 'ord-1',
+          fromStatus: OrderStatus.PLACED,
+          toStatus: OrderStatus.CONFIRMED,
+          actorId: 'user-1',
+          note: 'ok',
+        },
+      });
+      expect(tx.order.findUniqueOrThrow.mock.calls[0][0]).toMatchObject({
+        where: { id: 'ord-1' },
+      });
+      expect(result).toBe(cancelled);
+    });
+
+    it('reports stale when another writer already moved the order', async () => {
+      tx.order.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await repository.transition(
+        'ord-1',
+        OrderStatus.PLACED,
+        OrderStatus.CANCELLED,
+        null,
+        null,
+      );
+
+      expect(result).toBe('stale');
+    });
+
+    it.each([OrderStatus.CANCELLED, OrderStatus.REFUNDED, OrderStatus.DISPATCHED])(
+      'changes nothing when the swap loses, even for a move to %s',
+      async (to) => {
+        tx.order.updateMany.mockResolvedValue({ count: 0 });
+
+        await repository.transition('ord-1', OrderStatus.PICKING, to, null, null);
+
+        expect(tx.orderEvent.create).not.toHaveBeenCalled();
+        expect(tx.order.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(tx.inventory.update).not.toHaveBeenCalled();
+        expect(tx.inventoryBatch.update).not.toHaveBeenCalled();
+        expect(tx.stockMovement.create).not.toHaveBeenCalled();
+        expect(tx.stockReservation.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('still releases the hold when a cancel wins the swap', async () => {
+      tx.order.findUniqueOrThrow.mockResolvedValue(cancelled);
+
+      await repository.transition('ord-1', OrderStatus.PLACED, OrderStatus.CANCELLED, null, null);
+
+      expect(tx.inventory.update).toHaveBeenCalledTimes(1);
+      expect(tx.stockReservation.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null and logs when the transaction throws', async () => {
+      tx.order.updateMany.mockRejectedValue(new Error('connection reset'));
+
+      const result = await repository.transition(
+        'ord-1',
+        OrderStatus.PLACED,
+        OrderStatus.CONFIRMED,
+        null,
+        null,
+      );
+
+      expect(result).toBeNull();
+      expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
   describe('findExpiredHolds', () => {
+    /** The text of the one raw query, with its bound values shown as `?`. */
+    const holdSql = (): string => {
+      const strings = prisma.$queryRaw.mock.calls[0][0] as string[];
+
+      return strings.join('?').replace(/\s+/g, ' ');
+    };
+
     it('asks only for live holds that are already past their expiry', async () => {
-      prisma.stockReservation.findMany.mockResolvedValue([]);
+      prisma.$queryRaw.mockResolvedValue([]);
 
       await repository.findExpiredHolds();
 
-      const where = prisma.stockReservation.findMany.mock.calls[0][0].where as {
-        releasedAt: null;
-        expiresAt: { lt: Date };
-        referenceType: string;
-      };
+      const expiry = prisma.$queryRaw.mock.calls[0][1] as Date;
 
-      expect(where.releasedAt).toBeNull();
-      expect(where.referenceType).toBe('Order');
-      expect(where.expiresAt.lt.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(holdSql()).toContain("r.reference_type = 'Order'");
+      expect(holdSql()).toContain('r.released_at IS NULL');
+      expect(holdSql()).toContain('r.expires_at < ?');
+      expect(expiry.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('joins reservations to orders, so the order filters apply before the limit', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await repository.findExpiredHolds();
+
+      expect(holdSql()).toContain(
+        'FROM stock_reservations r JOIN orders o ON o.id::text = r.reference_id',
+      );
+      expect(holdSql()).toContain("o.status IN ('PLACED', 'CONFIRMED')");
+      expect(holdSql()).toContain("o.payment_status <> 'PAID'");
+    });
+
+    it('takes the oldest holds first and caps the batch at 100', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await repository.findExpiredHolds();
+
+      expect(holdSql()).toContain('GROUP BY o.id ORDER BY MIN(r.expires_at), o.id LIMIT ?');
+      expect(prisma.$queryRaw.mock.calls[0][2]).toBe(100);
     });
 
     it('returns only orders still open, so a picked or dispatched order keeps its stock', async () => {
-      prisma.stockReservation.findMany.mockResolvedValue([{ referenceId: 'ord-1' }]);
+      prisma.$queryRaw.mockResolvedValue([{ id: 'ord-1' }]);
       prisma.order.findMany.mockResolvedValue([{ id: 'ord-1' }]);
 
       await repository.findExpiredHolds();
@@ -289,27 +434,205 @@ describe('OrderRepository', () => {
       });
     });
 
+    it('never offers a paid order, so the sweep cannot cancel money it has taken', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'ord-1' }]);
+      prisma.order.findMany.mockResolvedValue([]);
+
+      await repository.findExpiredHolds();
+
+      expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
+        id: { in: ['ord-1'] },
+        status: { in: [OrderStatus.PLACED, OrderStatus.CONFIRMED] },
+        paymentStatus: { not: PaymentStatus.PAID },
+      });
+    });
+
+    it('returns the abandoned orders the query selected', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ id: 'ord-1' }, { id: 'ord-2' }]);
+      prisma.order.findMany.mockResolvedValue([{ id: 'ord-1' }, { id: 'ord-2' }]);
+
+      await expect(repository.findExpiredHolds()).resolves.toEqual([
+        { id: 'ord-1' },
+        { id: 'ord-2' },
+      ]);
+      expect(prisma.order.findMany.mock.calls[0][0].where.id).toEqual({ in: ['ord-1', 'ord-2'] });
+    });
+
     it('does not query orders at all when nothing has expired', async () => {
-      prisma.stockReservation.findMany.mockResolvedValue([]);
+      prisma.$queryRaw.mockResolvedValue([]);
 
       await expect(repository.findExpiredHolds()).resolves.toEqual([]);
       expect(prisma.order.findMany).not.toHaveBeenCalled();
     });
 
-    it('collapses many holds on one order into a single order lookup', async () => {
-      prisma.stockReservation.findMany.mockResolvedValue([{ referenceId: 'ord-1' }]);
-      prisma.order.findMany.mockResolvedValue([]);
-
-      await repository.findExpiredHolds();
-
-      expect(prisma.stockReservation.findMany.mock.calls[0][0].distinct).toEqual(['referenceId']);
-    });
-
     it('returns null rather than an empty list when the read fails', async () => {
-      prisma.stockReservation.findMany.mockRejectedValue(new Error('connection reset'));
+      prisma.$queryRaw.mockRejectedValue(new Error('connection reset'));
 
       await expect(repository.findExpiredHolds()).resolves.toBeNull();
       expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('holdActive', () => {
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-10-17T10:00:00.000Z') });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("counts only the order's unreleased holds that run past now", async () => {
+      prisma.stockReservation.count.mockResolvedValue(2);
+
+      await expect(repository.holdActive('ord-1')).resolves.toBe(true);
+      expect(prisma.stockReservation.count).toHaveBeenCalledWith({
+        where: {
+          referenceType: 'Order',
+          referenceId: 'ord-1',
+          releasedAt: null,
+          expiresAt: { gt: new Date('2026-10-17T10:00:00.000Z') },
+        },
+      });
+    });
+
+    it('answers false when every hold has lapsed or been released', async () => {
+      prisma.stockReservation.count.mockResolvedValue(0);
+
+      await expect(repository.holdActive('ord-1')).resolves.toBe(false);
+    });
+
+    it('answers null rather than false when the read fails', async () => {
+      prisma.stockReservation.count.mockRejectedValue(new Error('connection reset'));
+
+      await expect(repository.holdActive('ord-1')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.anything(),
+        'Exception occurred in OrderRepository.holdActive',
+      );
+    });
+  });
+
+  describe('switchToCod', () => {
+    const holdUntil = new Date('2026-10-24T10:00:00.000Z');
+
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-10-17T10:00:00.000Z') });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('swaps the method only while the order is still a PLACED bKash order', async () => {
+      await repository.switchToCod('ord-1', holdUntil);
+
+      expect(tx.order.updateMany).toHaveBeenCalledWith({
+        where: { id: 'ord-1', status: OrderStatus.PLACED, paymentMethod: PaymentMethod.BKASH },
+        data: { paymentMethod: PaymentMethod.CASH_ON_DELIVERY },
+      });
+    });
+
+    it('answers stale and writes nothing else when the swap matched no row', async () => {
+      tx.order.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(repository.switchToCod('ord-1', holdUntil)).resolves.toBe('stale');
+      expect(tx.stockReservation.updateMany).not.toHaveBeenCalled();
+      expect(tx.orderEvent.create).not.toHaveBeenCalled();
+      expect(tx.order.findUniqueOrThrow).not.toHaveBeenCalled();
+    });
+
+    it("extends the order's unreleased holds forwards to the new deadline", async () => {
+      await repository.switchToCod('ord-1', holdUntil);
+
+      expect(tx.stockReservation.updateMany).toHaveBeenCalledWith({
+        where: {
+          referenceType: 'Order',
+          referenceId: 'ord-1',
+          releasedAt: null,
+          expiresAt: { lt: holdUntil },
+        },
+        data: { expiresAt: holdUntil },
+      });
+    });
+
+    it('records the switch as an event that keeps the status PLACED', async () => {
+      await repository.switchToCod('ord-1', holdUntil);
+
+      expect(tx.orderEvent.create).toHaveBeenCalledWith({
+        data: {
+          orderId: 'ord-1',
+          fromStatus: OrderStatus.PLACED,
+          toStatus: OrderStatus.PLACED,
+          actorId: null,
+          note: 'Customer switched to cash on delivery.',
+        },
+      });
+    });
+
+    it('returns the order with its lines and history, read after the event is written', async () => {
+      const switched = { id: 'ord-1', paymentMethod: PaymentMethod.CASH_ON_DELIVERY };
+      tx.order.findUniqueOrThrow.mockResolvedValue(switched);
+
+      await expect(repository.switchToCod('ord-1', holdUntil)).resolves.toBe(switched);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(tx.order.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 'ord-1' },
+        include: { items: true, events: { orderBy: { createdAt: 'asc' } } },
+      });
+      expect(tx.orderEvent.create.mock.invocationCallOrder[0]).toBeLessThan(
+        tx.order.findUniqueOrThrow.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('never writes a payment attempt row', async () => {
+      await repository.switchToCod('ord-1', holdUntil);
+
+      expect(tx.paymentTransaction.create).not.toHaveBeenCalled();
+      expect(tx.paymentTransaction.update).not.toHaveBeenCalled();
+      expect(tx.paymentTransaction.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('answers null and logs when the transaction fails', async () => {
+      tx.stockReservation.updateMany.mockRejectedValue(new Error('connection reset'));
+
+      await expect(repository.switchToCod('ord-1', holdUntil)).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: 'ord-1' }),
+        'Exception occurred in OrderRepository.switchToCod',
+      );
+    });
+  });
+
+  describe('hasCapturedCharge', () => {
+    it('looks for a CAPTURED bKash charge on the order', async () => {
+      prisma.paymentTransaction.count.mockResolvedValue(1);
+
+      await expect(repository.hasCapturedCharge('ord-1')).resolves.toBe(true);
+      expect(prisma.paymentTransaction.count).toHaveBeenCalledWith({
+        where: {
+          orderId: 'ord-1',
+          method: PaymentMethod.BKASH,
+          direction: 'CHARGE',
+          status: 'CAPTURED',
+        },
+      });
+    });
+
+    it('answers false when none exists', async () => {
+      prisma.paymentTransaction.count.mockResolvedValue(0);
+
+      await expect(repository.hasCapturedCharge('ord-1')).resolves.toBe(false);
+    });
+
+    it('answers null rather than false when the read fails', async () => {
+      prisma.paymentTransaction.count.mockRejectedValue(new Error('connection reset'));
+
+      await expect(repository.hasCapturedCharge('ord-1')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: 'ord-1' }),
+        'Exception occurred in OrderRepository.hasCapturedCharge',
+      );
     });
   });
 });

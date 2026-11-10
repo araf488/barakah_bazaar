@@ -97,6 +97,10 @@ const baseEnvSchema = z.object({
   PAYMENT_API_URL: z.url().optional(),
   PAYMENT_APP_KEY: z.string().min(1).optional(),
   PAYMENT_APP_SECRET: z.string().min(1).optional(),
+  /** bKash merchant username, sent as a header on the token grant. */
+  PAYMENT_USERNAME: z.string().min(1).optional(),
+  /** bKash merchant password, sent as a header on the token grant. */
+  PAYMENT_PASSWORD: z.string().min(1).optional(),
 
   // ── SMS gateway ───────────────────────────────────────────────────────────
   SMS_PROVIDER: z.enum(['noop', 'alpha-sms', 'ssl-wireless']).default('noop'),
@@ -156,6 +160,12 @@ const baseEnvSchema = z.object({
   SESSION_TOUCH_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(5),
   /** Base for verification and reset links. NEVER derived from the request Host header. */
   APP_PUBLIC_BASE_URL: z.url().default('http://localhost:3000'),
+  /**
+   * Public origin of THIS API, used to build the URL a payment gateway sends the customer's
+   * browser back to. NEVER derived from the request Host header. Must be https in a deployed
+   * environment, but only once a real PAYMENT_PROVIDER is selected.
+   */
+  API_PUBLIC_BASE_URL: z.url().default('http://localhost:3000'),
 
   // ── API rate limiting ─────────────────────────────────────────────────────
   /**
@@ -202,11 +212,42 @@ const SMS_PROVIDER_REQUIRED_KEYS = [
   'SMS_API_KEY',
 ] as const satisfies readonly (keyof Env)[];
 
+/** Required once a real payment provider is selected; the noop default needs none of them. */
+const PAYMENT_PROVIDER_REQUIRED_KEYS = [
+  'PAYMENT_API_URL',
+  'PAYMENT_APP_KEY',
+  'PAYMENT_APP_SECRET',
+  'PAYMENT_USERNAME',
+  'PAYMENT_PASSWORD',
+] as const satisfies readonly (keyof Env)[];
+
 const isDeployedEnv = (nodeEnv: Env['NODE_ENV']): boolean =>
   (DEPLOYED_ENVS as readonly string[]).includes(nodeEnv);
 
 const addIssue = (ctx: z.RefinementCtx, path: keyof Env, message: string): void => {
   ctx.addIssue({ code: 'custom', path: [path], message });
+};
+
+/**
+ * Payment rules for a deployed environment with a real provider selected; the noop default
+ * needs none of this, so a host that never configured payments still boots.
+ */
+const enforcePaymentProviderRules = (env: Env, ctx: z.RefinementCtx): void => {
+  if (env.PAYMENT_PROVIDER === 'noop') {
+    return;
+  }
+
+  // Same reasoning as email and SMS: a bkash provider missing any credential would boot and
+  // then refuse every online payment at request time.
+  if (PAYMENT_PROVIDER_REQUIRED_KEYS.some((key) => env[key] === undefined)) {
+    addIssue(ctx, 'PAYMENT_API_URL', EnvValidationMessages.PaymentProviderNotConfigured);
+  }
+
+  // The gateway sends the customer's browser back to this origin with a payment id in the
+  // query string. Only the bKash callback is built from it, hence only checked here.
+  if (!env.API_PUBLIC_BASE_URL.startsWith(EnvConstants.HttpsScheme)) {
+    addIssue(ctx, 'API_PUBLIC_BASE_URL', EnvValidationMessages.ApiPublicBaseUrlNotHttps);
+  }
 };
 
 /**
@@ -247,6 +288,8 @@ const enforceDeployedEnvRules = (env: Env, ctx: z.RefinementCtx): void => {
   if (env.SMS_PROVIDER !== 'noop' && smsProviderMissingCredentials) {
     addIssue(ctx, 'SMS_API_URL', EnvValidationMessages.SmsProviderNotConfigured);
   }
+
+  enforcePaymentProviderRules(env, ctx);
 };
 
 /**
