@@ -473,6 +473,49 @@ describe('validateEnv', () => {
     });
   });
 
+  describe('web mount', () => {
+    it('defaults WEB_ENABLED to off, so the API runs alone exactly as before', () => {
+      expect(validateEnv({}).WEB_ENABLED).toBe(false);
+    });
+
+    it('parses WEB_ENABLED=true', () => {
+      expect(validateEnv({ WEB_ENABLED: 'true' }).WEB_ENABLED).toBe(true);
+    });
+
+    it('rejects a WEB_ENABLED value that is not true or false', () => {
+      expect(() => validateEnv({ WEB_ENABLED: 'yes' })).toThrow(/WEB_ENABLED/);
+    });
+
+    it('defaults the internal API base URL to the loopback address on the default port', () => {
+      expect(validateEnv({}).WEB_INTERNAL_API_BASE_URL).toBe('http://127.0.0.1:3000/api/v1');
+    });
+
+    it('builds the default internal API base URL from the configured port', () => {
+      expect(validateEnv({ PORT: '4100' }).WEB_INTERNAL_API_BASE_URL).toBe(
+        'http://127.0.0.1:4100/api/v1',
+      );
+    });
+
+    it('treats an empty internal API base URL as unset and falls back to the default', () => {
+      expect(validateEnv({ WEB_INTERNAL_API_BASE_URL: '' }).WEB_INTERNAL_API_BASE_URL).toBe(
+        'http://127.0.0.1:3000/api/v1',
+      );
+    });
+
+    it('keeps an explicit internal API base URL', () => {
+      expect(
+        validateEnv({ WEB_INTERNAL_API_BASE_URL: 'http://127.0.0.1:8080/backend/v9' })
+          .WEB_INTERNAL_API_BASE_URL,
+      ).toBe('http://127.0.0.1:8080/backend/v9');
+    });
+
+    it('rejects an internal API base URL that is not a URL', () => {
+      expect(() => validateEnv({ WEB_INTERNAL_API_BASE_URL: 'not a url' })).toThrow(
+        /WEB_INTERNAL_API_BASE_URL/,
+      );
+    });
+  });
+
   describe('phone verification limits', () => {
     it.each([
       ['PHONE_CODE_RESEND_COOLDOWN_SECONDS', 60],

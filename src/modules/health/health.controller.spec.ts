@@ -21,6 +21,7 @@ const reportWith = (database: 'up' | 'down'): HealthReport => ({
     email: 'disabled',
     payment: 'disabled',
     geocoding: 'up',
+    web: 'disabled',
   },
 });
 

@@ -1,0 +1,11 @@
+{
+  "extends": "@barakah/config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": false,
+    "declaration": false,
+    "plugins": [{ "name": "next" }]
+  },
+  "include": ["next-env.d.ts", "app", "vitest.config.ts", "vitest.setup.ts", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", ".next"]
+}

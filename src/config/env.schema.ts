@@ -176,15 +176,33 @@ const baseEnvSchema = z.object({
    * tighter bound names its own bucket instead; the `auth-ip`/`auth-account` pair already does.
    */
   WRITE_RATE_LIMIT: z.coerce.number().int().positive().default(60),
+
+  // ── Web surfaces (storefront + admin SPA) ────────────────────────────────
+  /**
+   * Mounts the built storefront (Next.js) and admin SPA in this process. Off by default, so
+   * the unit and e2e suites and `npm run start:dev` run the API alone, exactly as before. The
+   * Docker image turns it on; startup then fails if either build output is missing.
+   */
+  WEB_ENABLED: boolFlag('false'),
+  /**
+   * Base URL the storefront's server-side fetches use to reach this API. Absent, it is
+   * derived from PORT as `http://127.0.0.1:${PORT}/${API_PREFIX}/${API_VERSION}`.
+   */
+  WEB_INTERNAL_API_BASE_URL: z.url().optional(),
 });
 
-export type Env = z.infer<typeof baseEnvSchema>;
+type BaseEnv = z.infer<typeof baseEnvSchema>;
+
+/** The validated environment, with derived defaults resolved. */
+export type Env = Omit<BaseEnv, 'WEB_INTERNAL_API_BASE_URL'> & {
+  WEB_INTERNAL_API_BASE_URL: string;
+};
 
 /**
  * Environments that serve real traffic. Staging is included because QA and the
  * client hit it, so it gets production-grade configuration checks.
  */
-const DEPLOYED_ENVS = ['staging', 'production'] as const satisfies readonly Env['NODE_ENV'][];
+const DEPLOYED_ENVS = ['staging', 'production'] as const satisfies readonly BaseEnv['NODE_ENV'][];
 
 /** Values that must be present before the app may serve traffic in any deployed environment. */
 const DEPLOYED_ENV_REQUIRED_KEYS = [
@@ -196,7 +214,7 @@ const DEPLOYED_ENV_REQUIRED_KEYS = [
   'JWT_SECRET',
   // Absent, TOTP secrets cannot be decrypted, so no staff member with MFA enrolled can sign in.
   'TOTP_ENCRYPTION_KEY',
-] as const satisfies readonly (keyof Env)[];
+] as const satisfies readonly (keyof BaseEnv)[];
 
 /** Required once a real email provider is selected; the noop default needs none of them. */
 const EMAIL_PROVIDER_REQUIRED_KEYS = [
@@ -204,13 +222,13 @@ const EMAIL_PROVIDER_REQUIRED_KEYS = [
   'EMAIL_SMTP_HOST',
   'EMAIL_SMTP_USER',
   'EMAIL_SMTP_PASSWORD',
-] as const satisfies readonly (keyof Env)[];
+] as const satisfies readonly (keyof BaseEnv)[];
 
 /** Required once a real SMS provider is selected; the noop default needs neither. */
 const SMS_PROVIDER_REQUIRED_KEYS = [
   'SMS_API_URL',
   'SMS_API_KEY',
-] as const satisfies readonly (keyof Env)[];
+] as const satisfies readonly (keyof BaseEnv)[];
 
 /** Required once a real payment provider is selected; the noop default needs none of them. */
 const PAYMENT_PROVIDER_REQUIRED_KEYS = [
@@ -219,12 +237,12 @@ const PAYMENT_PROVIDER_REQUIRED_KEYS = [
   'PAYMENT_APP_SECRET',
   'PAYMENT_USERNAME',
   'PAYMENT_PASSWORD',
-] as const satisfies readonly (keyof Env)[];
+] as const satisfies readonly (keyof BaseEnv)[];
 
-const isDeployedEnv = (nodeEnv: Env['NODE_ENV']): boolean =>
+const isDeployedEnv = (nodeEnv: BaseEnv['NODE_ENV']): boolean =>
   (DEPLOYED_ENVS as readonly string[]).includes(nodeEnv);
 
-const addIssue = (ctx: z.RefinementCtx, path: keyof Env, message: string): void => {
+const addIssue = (ctx: z.RefinementCtx, path: keyof BaseEnv, message: string): void => {
   ctx.addIssue({ code: 'custom', path: [path], message });
 };
 
@@ -232,7 +250,7 @@ const addIssue = (ctx: z.RefinementCtx, path: keyof Env, message: string): void 
  * Payment rules for a deployed environment with a real provider selected; the noop default
  * needs none of this, so a host that never configured payments still boots.
  */
-const enforcePaymentProviderRules = (env: Env, ctx: z.RefinementCtx): void => {
+const enforcePaymentProviderRules = (env: BaseEnv, ctx: z.RefinementCtx): void => {
   if (env.PAYMENT_PROVIDER === 'noop') {
     return;
   }
@@ -254,7 +272,7 @@ const enforcePaymentProviderRules = (env: Env, ctx: z.RefinementCtx): void => {
  * Rules every deployed environment must satisfy, kept out of the base schema so
  * development and test stay cheap to run.
  */
-const enforceDeployedEnvRules = (env: Env, ctx: z.RefinementCtx): void => {
+const enforceDeployedEnvRules = (env: BaseEnv, ctx: z.RefinementCtx): void => {
   if (!isDeployedEnv(env.NODE_ENV)) {
     return;
   }
@@ -296,7 +314,7 @@ const enforceDeployedEnvRules = (env: Env, ctx: z.RefinementCtx): void => {
  * Production-only hardening. Staging deliberately keeps Swagger available so QA
  * and the client can read the API contract.
  */
-const enforceProductionOnlyRules = (env: Env, ctx: z.RefinementCtx): void => {
+const enforceProductionOnlyRules = (env: BaseEnv, ctx: z.RefinementCtx): void => {
   if (env.NODE_ENV !== 'production') {
     return;
   }
@@ -306,7 +324,18 @@ const enforceProductionOnlyRules = (env: Env, ctx: z.RefinementCtx): void => {
   }
 };
 
-export const envSchema = z.preprocess(emptyToUndefined, baseEnvSchema).superRefine((env, ctx) => {
-  enforceDeployedEnvRules(env, ctx);
-  enforceProductionOnlyRules(env, ctx);
+/** Fills defaults that depend on other values, which a per-field `.default()` cannot express. */
+const resolveDerivedDefaults = (env: BaseEnv): Env => ({
+  ...env,
+  WEB_INTERNAL_API_BASE_URL:
+    env.WEB_INTERNAL_API_BASE_URL ??
+    `${EnvConstants.LoopbackHttpOrigin}:${env.PORT}/${env.API_PREFIX}/${env.API_VERSION}`,
 });
+
+export const envSchema = z
+  .preprocess(emptyToUndefined, baseEnvSchema)
+  .superRefine((env, ctx) => {
+    enforceDeployedEnvRules(env, ctx);
+    enforceProductionOnlyRules(env, ctx);
+  })
+  .transform(resolveDerivedDefaults);

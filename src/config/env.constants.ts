@@ -7,6 +7,8 @@
 export const EnvConstants = {
   /** The only scheme a deployed public base URL may use: links in emails carry credentials. */
   HttpsScheme: 'https://',
+  /** Origin the storefront's server-side fetches reach this API on, inside the same host. */
+  LoopbackHttpOrigin: 'http://127.0.0.1',
 } as const;
 
 export const EnvValidationMessages = {

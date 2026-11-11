@@ -1,6 +1,7 @@
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
 import { createMockConfig, createMockLogger } from '../../../test/support/mocks';
+import { WebMountState } from '../../web/web-mount-state';
 import { HealthService } from './health.service';
 
 interface Dependencies {
@@ -9,12 +10,18 @@ interface Dependencies {
   storageConfigured?: boolean;
   queueEnabled?: boolean;
   pingThrows?: boolean;
+  webEnabled?: boolean;
+  webPrepared?: boolean;
 }
 
 const buildService = (options: Dependencies = {}): HealthService => {
   const ping = options.pingThrows
     ? jest.fn().mockRejectedValue(new Error('pool exhausted'))
     : jest.fn().mockResolvedValue(options.databaseUp ?? true);
+  const webMountState = new WebMountState();
+  if (options.webPrepared) {
+    webMountState.markPrepared();
+  }
 
   return new HealthService(
     { ping } as unknown as PrismaService,
@@ -23,8 +30,10 @@ const buildService = (options: Dependencies = {}): HealthService => {
       NODE_ENV: 'test',
       QUEUE_ENABLED: options.queueEnabled ?? false,
       JWT_SECRET: (options.jwtSecretConfigured ?? true) ? 'a'.repeat(32) : undefined,
+      WEB_ENABLED: options.webEnabled ?? false,
     }),
     createMockLogger(),
+    webMountState,
   );
 };
 
@@ -89,6 +98,36 @@ describe('HealthService', () => {
 
       expect(Number.isInteger(report.uptimeSeconds)).toBe(true);
       expect(() => new Date(report.timestamp).toISOString()).not.toThrow();
+    });
+
+    it('reports web as disabled when WEB_ENABLED is off', async () => {
+      const report = await buildService({ webEnabled: false }).check();
+
+      expect(report.checks.web).toBe('disabled');
+    });
+
+    it('reports web as up once the web mount has been prepared', async () => {
+      const report = await buildService({ webEnabled: true, webPrepared: true }).check();
+
+      expect(report.checks.web).toBe('up');
+    });
+
+    it('reports web as down while WEB_ENABLED is on but the mount is not prepared', async () => {
+      const report = await buildService({ webEnabled: true, webPrepared: false }).check();
+
+      expect(report.checks.web).toBe('down');
+    });
+
+    it('does not degrade the overall status while web is down, since the API still serves', async () => {
+      const report = await buildService({ webEnabled: true, webPrepared: false }).check();
+
+      expect(report.status).toBe('ok');
+    });
+
+    it('reports web as down when the probe itself fails', async () => {
+      const report = await buildService({ pingThrows: true, webEnabled: true }).check();
+
+      expect(report.checks.web).toBe('down');
     });
 
     it('degrades instead of throwing when the probe itself fails', async () => {

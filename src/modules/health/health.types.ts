@@ -18,5 +18,7 @@ export interface HealthReport {
     email: ComponentStatus;
     payment: ComponentStatus;
     geocoding: ComponentStatus;
+    /** Storefront + admin mount: `disabled` when WEB_ENABLED is off, `up` once prepared. */
+    web: ComponentStatus;
   };
 }

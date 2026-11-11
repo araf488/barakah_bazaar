@@ -2,12 +2,24 @@ node_modules
 dist
 coverage
 .git
-.env
-.env.*
-!.env.example
+# env files at any depth (e.g. web/apps/*/.env.local): next build / vite build would
+# inline their NEXT_PUBLIC_* / VITE_* values, and the file would sit in a builder layer
+**/.env
+**/.env.*
+!**/.env.example
 *.log
 test
 docs
 
 # ad-hoc SQL scratch — gitignored, and must not reach a published image either
 prisma/sql/local
+
+# web workspace build output and installs are produced inside the image
+web/**/node_modules
+web/**/.next
+web/**/dist
+**/coverage
+**/playwright-report
+**/test-results
+**/.superpowers
+.superpowers

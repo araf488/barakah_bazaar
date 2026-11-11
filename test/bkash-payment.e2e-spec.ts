@@ -543,38 +543,65 @@ describe('bKash payment (end to end)', () => {
       expect(confirmedMessagesFor(order.orderNumber)).toBe(0);
     });
 
+    // Ruling R19: a mismatched completion is still money bKash took. The attempt is captured at
+    // the amount bKash reported and that amount is refunded at once; the order is never confirmed.
     it.each([
-      ['amount', (total: bigint, number: string) => completedOutcome('TRX-7A', total + 1n, number)],
+      [
+        'amount',
+        'TRX-7A',
+        1n,
+        (total: bigint, number: string) => completedOutcome('TRX-7A', total + 1n, number),
+      ],
       [
         'currency',
+        'TRX-7B',
+        0n,
         (total: bigint, number: string) => completedOutcome('TRX-7B', total, number, 'USD'),
       ],
       [
         'order number',
+        'TRX-7C',
+        0n,
         (total: bigint, number: string) => completedOutcome('TRX-7C', total, `${number}-X`),
       ],
     ])(
-      'closes the attempt FAILED, without confirming or refunding, when bKash completes a different %s',
-      async (_label, outcomeFor) => {
+      'captures what bKash took and refunds it at once, never confirming the order, when bKash completes a different %s',
+      async (_label, transactionId, extraPoysha, outcomeFor) => {
         const order = await placeOrder();
+        const total = BigInt(order.totalPoysha);
+        const taken = total + extraPoysha;
         const paymentId = await openAttempt(order.id);
-        gateway.scriptExecute(paymentId, outcomeFor(BigInt(order.totalPoysha), order.orderNumber));
+        gateway.scriptExecute(paymentId, outcomeFor(total, order.orderNumber));
 
         const landed = await callback(paymentId);
 
+        expect(landed.status).toBe(302);
         expect(landed.headers.location).toBe(resultUrl(order.orderNumber, 'failed'));
         expect(await orderRow(order.id)).toMatchObject({
           status: OrderStatus.PLACED,
           paymentStatus: PaymentStatus.PENDING,
         });
         const rows = await ledger(order.id);
-        expect(rows).toHaveLength(1);
-        expect(rows[0]).toMatchObject({
-          status: PaymentTransactionStatus.FAILED,
+        expect(rows).toHaveLength(2);
+        const [charge, refund] = rows;
+        expect(charge).toMatchObject({
+          direction: PaymentDirection.CHARGE,
+          status: PaymentTransactionStatus.CAPTURED,
+          gatewayTransactionId: transactionId,
+          amountPoysha: taken,
           failureReason: 'bKash completed a different amount or order.',
-          gatewayTransactionId: null,
         });
-        expect(gateway.refundCalls).toEqual([]);
+        expect(refund).toMatchObject({
+          direction: PaymentDirection.REFUND,
+          status: PaymentTransactionStatus.CAPTURED,
+          gatewayReference: `refund:${transactionId}`,
+          gatewayTransactionId: 'REFUND-1',
+          amountPoysha: taken,
+        });
+        expect(gateway.refundCalls).toEqual([
+          { amountPoysha: taken, originalReference: paymentId, transactionId },
+        ]);
+        expect(await confirmedEvents(order.id)).toBe(0);
         expect(confirmedMessagesFor(order.orderNumber)).toBe(0);
       },
     );

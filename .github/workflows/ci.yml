@@ -28,7 +28,7 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     # No `environment:` here, deliberately and permanently. On a public repo this
     # job runs untrusted fork code; granting it an environment would expose that
     # environment's secrets. Everything below must run without secrets.
@@ -87,10 +87,43 @@ jobs:
       - name: Build
         run: npm run build
 
-      # The Dockerfile had never been built anywhere. Building it here means a
-      # broken Dockerfile fails in review instead of after merge.
+      # Web gates run after the backend ones, sequentially: the full e2e suite is
+      # slow enough that overlapping it with other work risks timeouts.
+      - name: Web lint
+        run: npm run web:lint
+
+      - name: Web typecheck
+        run: npm run web:typecheck
+
+      - name: Web unit tests
+        run: npm run web:test
+
+      - name: Web build
+        run: npm run web:build
+
+      # Building the image here means a broken Dockerfile fails in review, before
+      # the image job publishes anything.
+      # Same pinned actions and default GHA cache scope as the image job, so layers
+      # built here can be reused when the image is published. `load: true` puts the
+      # image in the local daemon for the smoke test; nothing is pushed.
+      # `ignore-error=true` on the cache export: a cache write that fails (a fork
+      # pull request's token, a throttled cache service) must never fail verify.
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
       - name: Build the container image (no push)
-        run: docker build --tag barakah-bazaar-api:verify .
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: barakah-bazaar-api:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # Runs the one image (API + storefront + admin) on host port 3000, which is
+      # free here: the e2e Postgres service publishes 5433 only.
+      - name: Smoke test the container image
+        run: bash scripts/smoke-web.sh barakah-bazaar-api:verify
 
   image:
     name: Publish image
@@ -144,7 +177,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Resolves the branch's environment, which is what makes GitHub inject that
-    # environment's secrets and apply its approval rule (prod requires review).
+    # environment's secrets and apply its protection rules. Those rules are repository
+    # settings, not this file: `prod` must be created with required reviewers before
+    # the first push to main, or the first push auto-creates it with no rules at all
+    # and this job migrates and deploys unreviewed. The same holds for `stage` and stg.
     # Single line deliberately: a YAML folded scalar (>-) preserves newlines on
     # more-indented continuation lines, which would embed literal newlines in the
     # expression that selects which environment's secrets are injected.
@@ -196,10 +232,36 @@ jobs:
         if: steps.dbcheck.outputs.configured == 'false'
         run: echo "No DIRECT_URL configured for this environment — skipping migrations and RLS."
 
-      # SEAM: the application host is deliberately unchosen (spec §9). Because
-      # the image is portable and already published, adopting a host is a change
-      # to this step alone, not a pipeline rewrite.
+      # Secrets cannot be tested in `if:` directly, so presence is resolved into a
+      # step output first (same pattern as the database check above). The URL is
+      # only ever read from the environment and is never printed.
+      - name: Check for a deploy hook
+        id: hookcheck
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$DEPLOY_HOOK_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Host-agnostic: whichever host is adopted exposes a deploy URL that pulls
+      # the image just published. Adopting one is setting this environment's
+      # DEPLOY_HOOK_URL secret, not a pipeline change.
+      - name: Trigger the deploy hook
+        if: steps.hookcheck.outputs.configured == 'true'
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+        run: |
+          curl --fail --silent --show-error --max-time 30 -o /dev/null -X POST "$DEPLOY_HOOK_URL"
+          echo "deploy hook triggered"
+
+      # Runs only while this environment has no DEPLOY_HOOK_URL secret: the image is
+      # published, but nothing pulls it. Setting the secret replaces this step with
+      # the hook above; see the README's Deployment section.
       - name: Report the image awaiting deployment
+        if: steps.hookcheck.outputs.configured == 'false'
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -210,4 +272,4 @@ jobs:
             *)    environment_name="dev" ;;
           esac
           echo "Environment: ${environment_name}"
-          echo "No application host is configured yet — see spec section 9."
+          echo "No DEPLOY_HOOK_URL secret is set for this environment, so nothing was deployed — see the README's Deployment section."

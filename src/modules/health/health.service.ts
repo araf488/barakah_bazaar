@@ -6,6 +6,7 @@ import { SERVICE_VERSION } from '../../common/service-version';
 import { AppConfigService } from '../../config';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { SupabaseAdminService } from '../../infra/supabase/supabase-admin.service';
+import { WebMountState } from '../../web/web-mount-state';
 import { ComponentStatus, HealthReport } from './health.types';
 
 const SECONDS_PER_MILLISECOND = 1000;
@@ -24,6 +25,7 @@ export class HealthService {
     private readonly supabase: SupabaseAdminService,
     @Inject(ConfigService) private readonly config: AppConfigService,
     @InjectPinoLogger(HealthService.name) private readonly logger: PinoLogger,
+    private readonly webMountState: WebMountState,
   ) {}
 
   async check(): Promise<HealthReport> {
@@ -59,6 +61,7 @@ export class HealthService {
           geocoding: HealthService.providerStatus(
             this.config.get('GEOCODING_PROVIDER', { infer: true }),
           ),
+          web: this.webStatus(),
         },
       };
     } catch (error) {
@@ -77,6 +80,17 @@ export class HealthService {
    */
   private static providerStatus(provider: string): ComponentStatus {
     return provider === 'noop' ? 'disabled' : 'up';
+  }
+
+  /**
+   * 'disabled' when WEB_ENABLED is off; 'up' once main.ts has prepared the mount; 'down' while
+   * it is on but not prepared. Not part of the overall status: the API still serves without it.
+   */
+  private webStatus(): ComponentStatus {
+    if (!this.config.get('WEB_ENABLED', { infer: true })) {
+      return 'disabled';
+    }
+    return this.webMountState.isPrepared ? 'up' : 'down';
   }
 
   /** True when this instance can serve requests that touch the database. */
@@ -106,6 +120,7 @@ export class HealthService {
         email: 'down',
         payment: 'down',
         geocoding: 'down',
+        web: 'down',
       },
     };
   }

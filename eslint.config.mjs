@@ -10,7 +10,18 @@ import tseslint from 'typescript-eslint';
  * instead of in review.
  */
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'src/generated/**'] },
+  {
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      'src/generated/**',
+      'web/**',
+      // Local, gitignored planning and orchestration artefacts (snapshots hold ~1000 .ts files)
+      '.superpowers/**',
+      'docs/**',
+    ],
+  },
 
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
@@ -47,10 +58,7 @@ export default tseslint.config(
       // eight of them. Tightening to `in-try-catch` is this one word plus an `--fix` sweep.
       '@typescript-eslint/return-await': ['error', 'error-handling-correctness-only'],
       '@typescript-eslint/no-explicit-any': 'error',
-      '@typescript-eslint/explicit-member-accessibility': [
-        'error',
-        { accessibility: 'no-public' },
-      ],
+      '@typescript-eslint/explicit-member-accessibility': ['error', { accessibility: 'no-public' }],
 
       // Nest's decorator metadata legitimately needs empty classes and
       // parameter properties, which these two rules would otherwise flag.

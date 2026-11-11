@@ -3,13 +3,15 @@
 **Halal. Wholesome. Home-delivered.**
 
 The backend for Barakah Bazaar, Bangladesh's halal-first multi-category commerce
-platform. This one API serves all three clients:
+platform. This one repository holds the API and the two web apps, and one process
+serves them (see [One process, three surfaces](#one-process-three-surfaces)). The
+same API also serves the mobile app:
 
-| Client                              | Repo     | Talks to                      |
-| ----------------------------------- | -------- | ----------------------------- |
-| Public storefront (Next.js)         | separate | this API + Supabase Realtime  |
-| Admin portal (React + Vite)         | separate | this API + Supabase Storage   |
-| Mobile app (Flutter, Android + iOS) | separate | this API + `supabase_flutter` |
+| Client                              | Where                                | Talks to                      |
+| ----------------------------------- | ------------------------------------ | ----------------------------- |
+| Public storefront (Next.js)         | `web/apps/storefront`, in this repo  | this API + Supabase Realtime  |
+| Admin portal (React + Vite)         | `web/apps/admin`, in this repo       | this API + Supabase Storage   |
+| Mobile app (Flutter, Android + iOS) | separate repo (`barakah_bazaar_app`) | this API + `supabase_flutter` |
 
 Every client signs in against **this API** — see [Authentication](#authentication).
 The Supabase SDK is used only for Realtime subscriptions, Storage and direct
@@ -25,18 +27,19 @@ Prisma 7 · Redis/BullMQ · pino
 
 ## Status
 
-This is a **walking skeleton**: the cross-cutting machinery is built and tested,
-and one feature module (Catalog) is implemented end to end as the pattern every
-other module copies.
+The API is built module by module on one shared pattern (Catalog is the reference
+slice). The cross-cutting machinery, the auth, user, catalog, geo, admin,
+inventory, cart, order and payment modules exist; Delivery, Promotion,
+Notification, Review, Search and Storage are folders with a README stating
+their responsibility, owned tables and phase. The two web apps in `web/` are
+placeholders: one page each, enough to prove routing, SSR and the build.
 
-| Built                                                                                                                                                                                                                                                                                                                                   | Planned                                                                                                                                                                                 |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Config + fail-fast env validation, structured logging, correlation ids, global error contract, CORS policy, Supabase JWT auth guard, role guard, Prisma + driver adapter, RLS policies, health/readiness probes, money (poysha) primitives, Swagger, **Catalog** read API, **Geo** reference geography, **User** profile + address book | Inventory, Cart, Order, Payment, Delivery, Promotion, Notification, Review, Admin, Search, Storage — each has a folder with a README stating its responsibility, owned tables and phase |
-
-909 tests pass (879 unit across 53 suites + 30 end-to-end). The end-to-end suite boots the whole
-app with **no** Supabase project, **no** database and **no** Redis, and asserts
-it still serves probes, keeps public routes public and protected routes
-protected — so `git clone && npm install && npm start` works on day one.
+As of this writing, 3355 unit tests pass and the end-to-end suite passes 288 of
+291; the 3 failures are known (see [Known follow-ups](#known-follow-ups)). The
+end-to-end suite boots the whole app against a throwaway Postgres on port 5433
+(`docker compose up -d postgres-test`) and needs no Supabase project and no
+Redis. With no credentials configured, `git clone && npm install && npm start`
+still boots and reports itself degraded.
 
 ---
 
@@ -74,6 +77,28 @@ protected — so `git clone && npm install && npm start` works on day one.
                   └────────────────────────────────────────────────────┘
 ```
 
+### One process, three surfaces
+
+With `WEB_ENABLED=true`, one Node process on one port serves the API, the SSR
+storefront and the admin SPA. Resolution order is fixed, and the mount is plain
+Express middleware registered in `src/main.ts` before `listen`, so web traffic
+never reaches a Nest guard, pipe or interceptor:
+
+1. `/api/**` (the `API_PREFIX`, so `/api/v1/**`) goes to Nest, as always. An
+   unknown API path stays a Nest JSON 404, never a Next page.
+2. `/admin` and `/admin/**` serve the admin SPA build (`web/apps/admin/dist`).
+   Extension-less paths fall back to `index.html`; hashed `assets/` get a
+   one-year immutable cache and `index.html` is `no-cache`. A path with an
+   extension and no file is a plain 404.
+3. Everything else goes to the Next.js handler (`web/apps/storefront/.next`,
+   prepared in production mode at startup).
+
+If either build output is missing, startup fails naming the missing path. With
+`WEB_ENABLED=false` (the default) nothing is mounted and the API behaves as
+API-only; `/` is then a Nest 404. The Docker image sets `WEB_ENABLED=true`.
+Everything is one origin, so the web clients never trigger CORS. `/api/v1/health`
+reports `web: up` once the Next app is prepared.
+
 ### What Supabase owns vs. what this API owns
 
 The central rule: **Supabase may make a client write possible; that does not
@@ -100,14 +125,39 @@ all — absence of a policy is a denial.
 
 ## Quick start
 
-**Prerequisites:** Node 20.11+ (developed on 26), npm 10+. Docker only if you
-want local Redis. A Supabase project is _not_ required to boot.
+**Prerequisites:** Node `>=22.22.2` (`nvm use` reads the root `.nvmrc`), npm 10+.
+Docker only if you want local Redis or the e2e database. A Supabase project is
+_not_ required to boot.
 
 ```bash
 git clone <this-repo> && cd barakah_bazaar
-npm install                 # postinstall runs `prisma generate`
+nvm use                     # Node 22.22.2
+npm install                 # one install for the API and every web workspace; runs `prisma generate`
 cp .env.example .env         # works as-is; fill in Supabase when you have it
 npm run start:dev
+```
+
+That starts the API alone (`WEB_ENABLED` unset). Local full-stack development
+runs three processes. The web dev servers are not mounted in Nest, so the ports
+are chosen here to match the `CORS_ALLOWED_ORIGINS` value in `.env.example` (the
+schema itself defaults it to empty; `next dev` would otherwise take 3000, the
+API's port):
+
+```bash
+npm run start:dev                               # API, http://localhost:3000
+npm run dev -w @barakah/storefront -- -p 3001   # storefront, http://localhost:3001
+npm run dev -w @barakah/admin -- --port 3002    # admin, http://localhost:3002/admin/
+```
+
+The admin dev server proxies `/api` to `http://localhost:3000`. The storefront
+dev server has no proxy; its server-side fetches use `WEB_INTERNAL_API_BASE_URL`,
+which defaults to the API on `127.0.0.1:${PORT}`.
+
+To run the real one-process build locally (the same thing the image does):
+
+```bash
+npm run build:all                      # API to dist/, then the storefront and admin builds
+WEB_ENABLED=true npm run start:prod    # http://localhost:3000/ , /admin/ , /api/v1/health
 ```
 
 Then:
@@ -148,25 +198,27 @@ table. See [prisma/rls/001_enable_rls.sql](prisma/rls/001_enable_rls.sql).
 Full annotated list in [.env.example](.env.example). Validation runs at boot and
 fails with every problem at once, so a bad deploy is diagnosed in one pass.
 
-| Variable                        | Required                    | Notes                                                                               |
-| ------------------------------- | --------------------------- | ----------------------------------------------------------------------------------- |
-| `NODE_ENV`                      | no                          | `development` \| `test` \| `staging` \| `production`                                |
-| `PORT`                          | no                          | Default `3000`                                                                      |
-| `API_PREFIX` / `API_VERSION`    | no                          | Routes mount at `/{prefix}/{version}` → `/api/v1`                                   |
-| `LOG_LEVEL`                     | no                          | pino level; `silent` in tests                                                       |
-| `CORS_ALLOWED_ORIGINS`          | **in staging & production** | Comma-separated. Empty = no cross-origin browser call allowed                       |
-| `SWAGGER_ENABLED`               | no                          | Rejected in production                                                              |
-| `DATABASE_URL`                  | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container      |
-| `DIRECT_URL`                    | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable         |
-| `SUPABASE_URL`                  | **in staging & production** | Storage only — signing upload URLs                                                  |
-| `SUPABASE_SERVICE_ROLE_KEY`     | **in staging & production** | **Bypasses RLS. Server-side only — never in a client bundle**                       |
-| `JWT_SECRET`                    | **in staging & production** | HS256, ≥32 chars. Unset, each process signs with its own random key                 |
-| `TOTP_ENCRYPTION_KEY`           | **in staging & production** | base64, 32 bytes. Unset, no staff member with MFA can sign in                       |
-| `APP_PUBLIC_BASE_URL`           | **https in staging & prod** | Base for verification and reset links, which carry a credential                     |
-| `API_PUBLIC_BASE_URL`           | **https when `bkash`**      | This API's own origin; the payment callback URL is built from it. Unused for `noop` |
-| `PAYMENT_PROVIDER`, `PAYMENT_*` | no                          | `noop` by default. `bkash` needs all five `PAYMENT_*` credentials in staging & prod |
-| `QUEUE_ENABLED`, `REDIS_*`      | no                          | BullMQ is off unless enabled                                                        |
-| `SMS_PROVIDER`, `SMS_*`         | no                          | `noop` by default, so tests spend no SMS credits                                    |
+| Variable                        | Required                    | Notes                                                                                                                           |
+| ------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                      | no                          | `development` \| `test` \| `staging` \| `production`                                                                            |
+| `PORT`                          | no                          | Default `3000`                                                                                                                  |
+| `API_PREFIX` / `API_VERSION`    | no                          | Routes mount at `/{prefix}/{version}` → `/api/v1`                                                                               |
+| `LOG_LEVEL`                     | no                          | pino level; `silent` in tests                                                                                                   |
+| `CORS_ALLOWED_ORIGINS`          | **in staging & production** | Comma-separated. Empty = no cross-origin browser call allowed                                                                   |
+| `SWAGGER_ENABLED`               | no                          | Rejected in production                                                                                                          |
+| `WEB_ENABLED`                   | no                          | Default `false`. `true` mounts the storefront and admin SPA; startup fails if either build is missing. The Docker image sets it |
+| `WEB_INTERNAL_API_BASE_URL`     | no                          | URL the storefront's server-side fetches use to reach this API. Default `http://127.0.0.1:${PORT}/${API_PREFIX}/${API_VERSION}` |
+| `DATABASE_URL`                  | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container                                                  |
+| `DIRECT_URL`                    | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable                                                     |
+| `SUPABASE_URL`                  | **in staging & production** | Storage only — signing upload URLs                                                                                              |
+| `SUPABASE_SERVICE_ROLE_KEY`     | **in staging & production** | **Bypasses RLS. Server-side only — never in a client bundle**                                                                   |
+| `JWT_SECRET`                    | **in staging & production** | HS256, ≥32 chars. Unset, each process signs with its own random key                                                             |
+| `TOTP_ENCRYPTION_KEY`           | **in staging & production** | base64, 32 bytes. Unset, no staff member with MFA can sign in                                                                   |
+| `APP_PUBLIC_BASE_URL`           | **https in staging & prod** | Base for verification and reset links, which carry a credential                                                                 |
+| `API_PUBLIC_BASE_URL`           | **https when `bkash`**      | This API's own origin; the payment callback URL is built from it. Unused for `noop`                                             |
+| `PAYMENT_PROVIDER`, `PAYMENT_*` | no                          | `noop` by default. `bkash` needs all five `PAYMENT_*` credentials in staging & prod                                             |
+| `QUEUE_ENABLED`, `REDIS_*`      | no                          | BullMQ is off unless enabled                                                                                                    |
+| `SMS_PROVIDER`, `SMS_*`         | no                          | `noop` by default, so tests spend no SMS credits                                                                                |
 
 In any deployed environment (`staging` or `production`) the app additionally
 refuses to start if the CORS allowlist is empty or `APP_PUBLIC_BASE_URL` is not
@@ -179,17 +231,17 @@ defaults to `production`, so an unset `NODE_ENV` on the stage host makes the app
 boot with production rules and crash-loop on `SWAGGER_ENABLED` — loudly, by
 design, rather than serving QA under the wrong configuration.
 
-| Variable                             | dev (local)                                   | stage                            | prod                                  |
-| ------------------------------------ | --------------------------------------------- | -------------------------------- | ------------------------------------- |
-| `NODE_ENV`                           | `development`                                 | `staging`                        | `production`                          |
-| `LOG_LEVEL`                          | `debug`                                       | `debug`                          | `info`                                |
-| `SWAGGER_ENABLED`                    | `true`                                        | `true`                           | `false` (enforced)                    |
-| `CORS_ALLOWED_ORIGINS`               | `http://localhost:3001,http://localhost:3002` | stage storefront + admin origins | production storefront + admin origins |
-| `QUEUE_ENABLED`                      | `false`                                       | `false`                          | `false` until Phase 1                 |
-| `DATABASE_URL` / `DIRECT_URL`        | local Supabase                                | stage Supabase project           | production Supabase project           |
-| `SUPABASE_URL`                       | local                                         | stage project                    | production project                    |
-| `SUPABASE_SERVICE_ROLE_KEY`          | local                                         | stage project                    | production project                    |
-| `JWT_SECRET` / `TOTP_ENCRYPTION_KEY` | unset (per-boot key)                          | stage secrets                    | production secrets                    |
+| Variable                             | dev (local)                                   | stage                   | prod                         |
+| ------------------------------------ | --------------------------------------------- | ----------------------- | ---------------------------- |
+| `NODE_ENV`                           | `development`                                 | `staging`               | `production`                 |
+| `LOG_LEVEL`                          | `debug`                                       | `debug`                 | `info`                       |
+| `SWAGGER_ENABLED`                    | `true`                                        | `true`                  | `false` (enforced)           |
+| `CORS_ALLOWED_ORIGINS`               | `http://localhost:3001,http://localhost:3002` | the stage public origin | the production public origin |
+| `QUEUE_ENABLED`                      | `false`                                       | `false`                 | `false` until Phase 1        |
+| `DATABASE_URL` / `DIRECT_URL`        | local Supabase                                | stage Supabase project  | production Supabase project  |
+| `SUPABASE_URL`                       | local                                         | stage project           | production project           |
+| `SUPABASE_SERVICE_ROLE_KEY`          | local                                         | stage project           | production project           |
+| `JWT_SECRET` / `TOTP_ENCRYPTION_KEY` | unset (per-boot key)                          | stage secrets           | production secrets           |
 
 `staging` and `production` are both **deployed environments** and share the same
 required-key checks: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
@@ -205,25 +257,37 @@ environment-scoped entries, never repository-scoped: secrets are `DATABASE_URL`,
 variable. Every one of those five is a secret in every environment without
 exception — the two identity keys sign and decrypt live credentials.
 
+`DEPLOY_HOOK_URL` is a sixth environment secret, used only by the deploy job and
+never read by the app (so it is not in `.env.example`). It is the URL the host
+gives you to trigger a deploy. It is optional: with it unset, the deploy job
+runs migrations when `DIRECT_URL` is set, then prints the image reference and
+stops. See [Deployment](#deployment).
+
 ---
 
 ## Scripts
 
-| Command                     | Does                                                        |
-| --------------------------- | ----------------------------------------------------------- |
-| `npm run start:dev`         | Watch-mode dev server                                       |
-| `npm run build`             | Compile to `dist/` (entry `dist/main.js`)                   |
-| `npm run start:prod`        | Run the compiled build                                      |
-| `npm test`                  | Unit tests                                                  |
-| `npm run test:e2e`          | End-to-end (needs `docker compose up -d postgres-test`)     |
-| `npm run test:cov`          | Coverage                                                    |
-| `npm run lint` / `lint:fix` | ESLint (includes the quality gates below)                   |
-| `npm run format`            | Prettier                                                    |
-| `npm run prisma:generate`   | Regenerate the Prisma client                                |
-| `npm run db:migrate`        | `prisma migrate dev`                                        |
-| `npm run db:deploy`         | `prisma migrate deploy` (CI/production)                     |
-| `npm run db:rls`            | Apply RLS policies — run after every table-adding migration |
-| `npm run db:studio`         | Prisma Studio                                               |
+| Command                             | Does                                                        |
+| ----------------------------------- | ----------------------------------------------------------- |
+| `npm run start:dev`                 | Watch-mode dev server                                       |
+| `npm run build`                     | Compile to `dist/` (entry `dist/main.js`)                   |
+| `npm run start:prod`                | Run the compiled build                                      |
+| `npm test`                          | Unit tests                                                  |
+| `npm run test:e2e`                  | End-to-end (needs `docker compose up -d postgres-test`)     |
+| `npm run test:cov`                  | Coverage                                                    |
+| `npm run lint` / `lint:fix`         | ESLint (includes the quality gates below)                   |
+| `npm run format`                    | Prettier                                                    |
+| `npm run prisma:generate`           | Regenerate the Prisma client                                |
+| `npm run db:migrate`                | `prisma migrate dev`                                        |
+| `npm run db:deploy`                 | `prisma migrate deploy` (CI/production)                     |
+| `npm run db:rls`                    | Apply RLS policies — run after every table-adding migration |
+| `npm run db:studio`                 | Prisma Studio                                               |
+| `npm run web:lint`                  | ESLint over `web/` with `web/eslint.config.mjs`             |
+| `npm run web:typecheck`             | `tsc -p web/tsconfig.json --noEmit`                         |
+| `npm run web:test`                  | Vitest across the web workspaces                            |
+| `npm run web:build`                 | Build the storefront (`.next`), then the admin (`dist`)     |
+| `npm run build:all`                 | `build`, then `web:build`                                   |
+| `bash scripts/smoke-web.sh <image>` | Smoke-test a built image (needs Docker); CI runs it         |
 
 ---
 
@@ -231,7 +295,7 @@ exception — the two identity keys sign and decrypt live credentials.
 
 ```
 src/
-  main.ts                    bootstrap: pipes, CORS, Swagger, shutdown hooks
+  main.ts                    bootstrap: pipes, CORS, Swagger, web mount, shutdown hooks
   app.module.ts              modular-monolith root; global guards and filter
   swagger.ts                 OpenAPI document — the contract all 3 clients share
   config/                    env schema (zod), validation, logger params
@@ -244,6 +308,7 @@ src/
     guards/                  SessionAuthGuard, RolesGuard, throttler guards
     money/                   poysha integer arithmetic + BigInt JSON safety net
     types/                   AuthenticatedUser, ServiceResponse
+  web/                       the web mount: routes /admin and everything else away from Nest
   infra/
     prisma/                  PrismaService (pg driver adapter), generated-client barrel
     supabase/                service_role client — Storage signing only
@@ -269,7 +334,18 @@ prisma.config.ts             Prisma 7 CLI config (connection URLs live here)
 test/
   degraded-boot.e2e-spec.ts  proves a fresh clone runs
   support/                   shared mocks and fixtures
+web/                         npm workspaces (apps and shared packages), own ESLint/tsconfig
+  apps/storefront/           Next.js (App Router), mounted into Nest at runtime
+  apps/admin/                React + Vite SPA, built to static files Nest serves at /admin
+  packages/config|tokens|ui/ shared configuration, brand tokens, UI primitives
+scripts/smoke-web.sh         container smoke test used by CI
 ```
+
+The API is the root package; `web/apps/*` and `web/packages/*` are the npm
+workspaces of the same root `package.json` and share its single
+`package-lock.json`. The root ESLint config ignores `web/**`, and `web/` has its
+own, so one side is never linted with the other's rules. See
+[web/README.md](web/README.md).
 
 ### API surface today
 
@@ -559,36 +635,86 @@ Three things to know before an incident:
 
 ## Deployment
 
-Supabase hosts Postgres, Auth, Storage and Realtime. This API deploys separately
-as a container. CI publishes one portable image per push to
-`ghcr.io/araf488/barakah_bazaar`, tagged immutably as `sha-<short-sha>` plus a
-moving `dev` / `stg` / `prod` tag for convenience. Deployments reference the
-immutable tag only — a moving tag forfeits the ability to say what is running.
+Supabase hosts Postgres, Storage and Realtime. Everything else — the API, the
+SSR storefront and the admin SPA — is **one container image**, built from the
+root `Dockerfile` (stages: deps, build, runtime). The runtime stage carries
+production dependencies only, `dist/`, `prisma/` and the two web builds, runs as
+the non-root `nestjs` user on port 3000, sets `WEB_ENABLED=true`, and health-checks
+`/api/v1/health`.
 
-**No application host is chosen yet**, deliberately. Because the image is
-portable and already published, adopting one is a change to a single workflow
-step. While pre-launch: dev runs locally, stage runs on a free-tier service, and
-production is created at launch — with Fly.io the current recommendation for
-production, since its Singapore region is the closest low-latency option to
-Bangladesh.
+One workflow, `.github/workflows/ci.yml`, triggered by pull requests and pushes
+to `dev`, `stg` and `main`:
+
+| Job      | Runs on     | Does                                                                                                                                                                                                 |
+| -------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify` | PR and push | Backend lint, unit, e2e (throwaway Postgres service), build; then web lint, typecheck, test, build; then builds the image and runs `scripts/smoke-web.sh` against it. 30-minute timeout. No secrets. |
+| `image`  | push        | Publishes the one image to `ghcr.io/araf488/barakah_bazaar`, tagged immutably `sha-<short-sha>` plus a moving `dev` / `stg` / `prod` tag.                                                            |
+| `deploy` | push        | In the branch's GitHub Environment: `db:deploy` and `db:rls` when `DIRECT_URL` is set, then the deploy hook below.                                                                                   |
+
+The smoke script runs the image and asserts `/api/v1/health` is 200, `/` is
+HTML from Next, `/admin/` is HTML from the SPA, an unknown `/api/v1` path is a
+JSON 404, and `/api/v1/auth/me` without a token is a JSON 401.
+
+**The hook model.** No application host is chosen yet, deliberately. If the
+environment secret `DEPLOY_HOOK_URL` is set, the deploy job `POST`s to it (the
+deploy-hook mechanism Render, Railway, Koyeb and similar hosts provide); the host
+then pulls the image just published. With no hook set, the job prints the image
+reference and stops. Adopting a host is therefore a secret change, not a
+pipeline change. Deployments should reference the immutable `sha-` tag, since a
+moving tag forfeits the ability to say what is running. While pre-launch: dev
+runs locally, stage runs on a free-tier service, and production is created at
+launch.
 
 ```bash
 docker build -t barakah-bazaar-api .
-docker compose up -d redis          # local Redis only; Postgres lives in Supabase
+bash scripts/smoke-web.sh barakah-bazaar-api     # the same check CI runs
+docker compose up -d redis                       # local Redis only; Postgres lives in Supabase
 ```
 
-> The `Dockerfile` is built by the `verify` job on every pull request, so a
-> broken build fails in review. `docker-compose.yml` (local Redis) is still
-> unverified by CI.
+> The `Dockerfile` is built and smoke-tested by the `verify` job on every pull
+> request, so a broken build fails in review. `docker-compose.yml` (local Redis)
+> is still unverified by CI.
 
-Production checklist:
+### Owner steps
+
+These are deliberately not done by the merge itself:
+
+1. Commit and push the merge.
+2. Optionally import the frontend's history before or in place of the copied
+   files: `git subtree add --prefix=web <frontend-remote> dev`.
+3. Create the `stg` branch at origin (it does not exist yet; the workflow already
+   handles it).
+4. Pick a free-tier host. For each GitHub Environment (`dev`, `stage`, `prod`)
+   set the `DEPLOY_HOOK_URL` secret, and set the runtime env on the host itself.
+5. Retire the old `barakah_bazaar_frontend` repository: archive it (recommended,
+   reversible) or delete it (not reversible). Pointing its README here first is
+   kind.
+
+### Production checklist
 
 - `NODE_ENV=production`, `SWAGGER_ENABLED=false` (the app enforces this)
-- `CORS_ALLOWED_ORIGINS` listing the storefront and admin origins explicitly
+- `CORS_ALLOWED_ORIGINS` set to the environment's own public origin. The web apps
+  are same-origin with the API, but the app refuses to start in staging and
+  production with an empty list
 - Enable **Point-in-Time Recovery** on Supabase before launch; the free tier's
   retention is not enough for a live store
 - `npm run db:deploy && npm run db:rls` as an ordered CI step
 - Point the deployment gate at `/api/v1/health/ready`, not `/api/v1/health`
+
+---
+
+## Known follow-ups
+
+- **Image size.** The image is 1.26 GB. To shrink it, consider Next
+  `output: 'standalone'` and production-only modules for the Next server.
+- **Storefront auth.** `web/README.md` plans Supabase client auth, which
+  conflicts with this API's own device-bound sessions. Decide at the first
+  storefront auth task.
+- **CORS and `X-Device-Id`.** The CORS `allowedHeaders` lack `X-Device-Id`. This
+  matters only for a future cross-origin client; the web clients are same-origin.
+- **Three failing e2e cases.** The bKash end-to-end suite has 3 failures (the
+  mismatch cases: different amount, currency and order number) that were already
+  failing from commit `cc4d494` and are untouched by the merge.
 
 ---
 
@@ -598,7 +724,7 @@ Production checklist:
 | ------ | ------------------------------------------------------------------------------------------------ | ------------- |
 | 0      | Foundation: repo, CI, Supabase project, core schema                                              | this scaffold |
 | 1      | Auth, User, Catalog, Inventory, Cart, Order, first payment (bKash + COD)                         | next          |
-| 2 / 2B | Storefront and Admin portal (separate repos)                                                     |               |
+| 2 / 2B | Storefront and Admin portal (`web/` in this repo)                                                |               |
 | 3      | Flutter app                                                                                      |               |
 | 4      | Perishable logistics: slot cutoffs, cold chain, hub radius, own-fleet dispatch                   |               |
 | 5      | Remaining gateways (Nagad, Rocket, SSLCommerz), couriers (Pathao/RedX/Steadfast), SMS end to end |               |
@@ -627,6 +753,7 @@ Before opening a PR:
 
 ```bash
 npm run lint && npm test && npm run test:e2e && npm run build
+npm run web:lint && npm run web:typecheck && npm run web:test && npm run web:build
 ```
 
 New module? Copy `src/modules/catalog` and read the target module's README
