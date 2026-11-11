@@ -29,6 +29,11 @@ const AUTH_LIMIT = 3;
 const AUTH_ACCOUNT_LIMIT = 5;
 const WRITE_LIMIT = 4;
 const GEOCODING_LIMIT = 2;
+/**
+ * Set *above* AUTH_LIMIT so the callback's 429 can only come from its own bucket: under the
+ * auth-ip bucket it used to share, the fourth callback would already have been refused.
+ */
+const PAYMENT_CALLBACK_LIMIT = 6;
 
 /**
  * Jest may run several spec files in one worker process, and `process.env` is shared across
@@ -40,12 +45,14 @@ const originalLimits = {
   AUTH_ACCOUNT_RATE_LIMIT: process.env.AUTH_ACCOUNT_RATE_LIMIT,
   WRITE_RATE_LIMIT: process.env.WRITE_RATE_LIMIT,
   GEOCODING_RATE_LIMIT: process.env.GEOCODING_RATE_LIMIT,
+  PAYMENT_CALLBACK_RATE_LIMIT: process.env.PAYMENT_CALLBACK_RATE_LIMIT,
 };
 
 process.env.AUTH_RATE_LIMIT = String(AUTH_LIMIT);
 process.env.AUTH_ACCOUNT_RATE_LIMIT = String(AUTH_ACCOUNT_LIMIT);
 process.env.WRITE_RATE_LIMIT = String(WRITE_LIMIT);
 process.env.GEOCODING_RATE_LIMIT = String(GEOCODING_LIMIT);
+process.env.PAYMENT_CALLBACK_RATE_LIMIT = String(PAYMENT_CALLBACK_LIMIT);
 
 const HEALTH = '/api/v1/health';
 const CART_ITEMS = '/api/v1/cart/items';
@@ -57,6 +64,7 @@ const RESEND_VERIFICATION = '/api/v1/auth/resend-verification';
 const ACCEPT_INVITATION = '/api/v1/staff/invitations/accept';
 const GEO_SEARCH = '/api/v1/geo/search';
 const GEO_DIVISIONS = '/api/v1/geo/divisions';
+const BKASH_CALLBACK = '/api/v1/payments/bkash/callback';
 
 /** A stand-in caller IP used whenever a test does not care which IP it is, so requests do
  *  not depend on whatever address the local socket happens to report. */
@@ -90,7 +98,8 @@ describe('Rate limiting (HTTP)', () => {
     app = moduleRef.createNestApplication();
     // Test-only: lets X-Forwarded-For stand in for distinct caller IPs below, so the
     // per-IP and per-account buckets can be told apart without real distributed callers.
-    // Never mirrored in main.ts — this suite never runs behind a real proxy to spoof.
+    // main.ts never trusts every hop like this: it sets an exact count from TRUST_PROXY_HOPS,
+    // and only when that is positive — this suite never runs behind a real proxy to spoof.
     const expressInstance = app.getHttpAdapter().getInstance() as {
       set: (key: string, value: unknown) => void;
     };
@@ -338,6 +347,46 @@ describe('Rate limiting (HTTP)', () => {
       const other = await postAcceptInvitation('198.51.100.2');
 
       expect(other.status).not.toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+  });
+
+  describe('the payment-callback bucket (E14)', () => {
+    // No database in this suite, so an unknown paymentID cannot be looked up; the callback
+    // still answers its 302 to the storefront, which is all that matters to the count.
+    const getCallback = (ip: string = DEFAULT_IP) =>
+      request(app.getHttpServer())
+        .get(BKASH_CALLBACK)
+        .set('X-Forwarded-For', ip)
+        .query({ paymentID: 'PAYID-RATE-LIMIT', status: 'success' });
+
+    it('holds the callback to its own limit, past where the old auth-ip bucket would have refused it', async () => {
+      const statuses = await fire(PAYMENT_CALLBACK_LIMIT + 1, () => getCallback());
+
+      expect(statuses.slice(0, PAYMENT_CALLBACK_LIMIT)).toEqual(
+        Array.from({ length: PAYMENT_CALLBACK_LIMIT }, () => HttpStatus.FOUND),
+      );
+      expect(statuses[PAYMENT_CALLBACK_LIMIT]).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    });
+
+    it('answers the request over the limit with the standard 429 contract', async () => {
+      await fire(PAYMENT_CALLBACK_LIMIT, () => getCallback());
+      const response = await getCallback();
+      const body = response.body as ErrorResponseBody;
+
+      expect(response.status).toBe(HttpStatus.TOO_MANY_REQUESTS);
+      // The error contract echoes the request URL, query string included.
+      expect(body.path).toBe(`${BKASH_CALLBACK}?paymentID=PAYID-RATE-LIMIT&status=success`);
+      expect(body.method).toBe('GET');
+      expect(body.message).toBe('Too many requests. Please wait a moment and try again.');
+      expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
+    });
+
+    it('counts per IP, so one shared address does not throttle another caller', async () => {
+      await fire(PAYMENT_CALLBACK_LIMIT + 1, () => getCallback());
+
+      const other = await getCallback('198.51.100.9');
+
+      expect(other.status).toBe(HttpStatus.FOUND);
     });
   });
 

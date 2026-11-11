@@ -13,6 +13,7 @@ export type ThrottlerEnv = Pick<
   | 'AUTH_ACCOUNT_RATE_LIMIT'
   | 'AUTH_PHONE_RATE_LIMIT'
   | 'WRITE_RATE_LIMIT'
+  | 'PAYMENT_CALLBACK_RATE_LIMIT'
 >;
 
 /** Every named bucket below shares one window. */
@@ -46,6 +47,13 @@ export const ThrottleBuckets = {
   AuthPhone: 'auth-phone',
   /** The outbound map-search proxies. */
   Geocoding: 'geocoding',
+  /**
+   * The bKash callback, keyed by the caller's IP. Its own looser bucket rather than `AuthIp`:
+   * the route is a browser redirect, many subscribers share one carrier NAT address, and a
+   * 429 here means a payment that is never executed. A forged callback costs nothing — an
+   * unknown `paymentID` never reaches bKash.
+   */
+  PaymentCallback: 'payment-callback',
   /** Baseline for every state-changing request; the one bucket no route has to ask for. */
   Writes: 'writes',
 } as const;
@@ -168,8 +176,8 @@ const writeBaselineBucket = (limit: number): ThrottlerOptions => ({
 
 /**
  * Named rate-limit buckets, registered for the globally applied guard (see
- * `AuthThrottlerGuard`). `geocoding`, `auth-ip`, `auth-account` and `auth-phone` apply only
- * to the routes carrying `@RateLimit` for them; `writes` applies to every state-changing
+ * `AuthThrottlerGuard`). `geocoding`, `auth-ip`, `auth-account`, `auth-phone` and
+ * `payment-callback` apply only to the routes carrying `@RateLimit` for them; `writes` applies to every state-changing
  * request.
  *
  * A `@RateLimit('x')` decorator does nothing unless a bucket named `x` is registered here —
@@ -185,6 +193,7 @@ export const buildThrottlerOptions = (env: ThrottlerEnv): ThrottlerModuleOptions
     optInBucket(ThrottleBuckets.AuthIp, env.AUTH_RATE_LIMIT),
     optInAccountBucket(ThrottleBuckets.AuthAccount, env.AUTH_ACCOUNT_RATE_LIMIT),
     optInPhoneBucket(ThrottleBuckets.AuthPhone, env.AUTH_PHONE_RATE_LIMIT),
+    optInBucket(ThrottleBuckets.PaymentCallback, env.PAYMENT_CALLBACK_RATE_LIMIT),
     writeBaselineBucket(env.WRITE_RATE_LIMIT),
   ],
   // The object form rather than a bare array purely so this is honoured: the library reads

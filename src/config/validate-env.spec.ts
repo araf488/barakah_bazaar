@@ -129,6 +129,38 @@ describe('validateEnv', () => {
     it('rejects a write rate limit of zero rather than silently blocking every write', () => {
       expect(() => validateEnv({ WRITE_RATE_LIMIT: '0' })).toThrow();
     });
+
+    it('defaults the payment callback rate limit to 60 per minute', () => {
+      expect(validateEnv({}).PAYMENT_CALLBACK_RATE_LIMIT).toBe(60);
+    });
+
+    it('reads a configured payment callback rate limit', () => {
+      expect(validateEnv({ PAYMENT_CALLBACK_RATE_LIMIT: '200' }).PAYMENT_CALLBACK_RATE_LIMIT).toBe(
+        200,
+      );
+    });
+
+    it.each(['0', '-1', '1.5', 'abc'])('rejects %p as a payment callback rate limit', (value) => {
+      expect(() => validateEnv({ PAYMENT_CALLBACK_RATE_LIMIT: value })).toThrow(
+        /PAYMENT_CALLBACK_RATE_LIMIT/,
+      );
+    });
+
+    it('defaults the trusted proxy hops to 0, leaving trust proxy off', () => {
+      expect(validateEnv({}).TRUST_PROXY_HOPS).toBe(0);
+    });
+
+    it.each([
+      ['0', 0],
+      ['1', 1],
+      ['3', 3],
+    ])('reads TRUST_PROXY_HOPS=%p as %d', (value, expected) => {
+      expect(validateEnv({ TRUST_PROXY_HOPS: value }).TRUST_PROXY_HOPS).toBe(expected);
+    });
+
+    it.each(['-1', '1.5', 'abc'])('rejects %p as a trusted proxy hop count', (value) => {
+      expect(() => validateEnv({ TRUST_PROXY_HOPS: value })).toThrow(/TRUST_PROXY_HOPS/);
+    });
   });
 
   describe('coercion', () => {

@@ -9,6 +9,7 @@ const LIMITS = {
   AUTH_ACCOUNT_RATE_LIMIT: 20,
   AUTH_PHONE_RATE_LIMIT: 5,
   WRITE_RATE_LIMIT: 60,
+  PAYMENT_CALLBACK_RATE_LIMIT: 60,
 };
 
 const WRITE_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
@@ -28,6 +29,9 @@ class Routes {
 
   @RateLimit('geocoding')
   search(): void {}
+
+  @RateLimit('payment-callback')
+  bkashCallback(): void {}
 
   browse(): void {}
 
@@ -90,6 +94,15 @@ describe('buildThrottlerOptions', () => {
       );
     });
 
+    it('configures a bucket named "payment-callback" from PAYMENT_CALLBACK_RATE_LIMIT', () => {
+      expect(bucket('payment-callback')).toEqual(
+        expect.objectContaining({ name: 'payment-callback', ttl: 60_000, limit: 60 }),
+      );
+      expect(bucketsOf({ ...LIMITS, PAYMENT_CALLBACK_RATE_LIMIT: 11 })).toContainEqual(
+        expect.objectContaining({ name: 'payment-callback', limit: 11 }),
+      );
+    });
+
     it('configures the write baseline from WRITE_RATE_LIMIT', () => {
       const buckets = bucketsOf({ ...LIMITS, WRITE_RATE_LIMIT: 45 });
 
@@ -98,7 +111,7 @@ describe('buildThrottlerOptions', () => {
 
     it('gives every bucket the same one-minute window', () => {
       expect(bucketsOf().map((option) => option.ttl)).toEqual([
-        60_000, 60_000, 60_000, 60_000, 60_000,
+        60_000, 60_000, 60_000, 60_000, 60_000, 60_000,
       ]);
     });
 
@@ -108,6 +121,7 @@ describe('buildThrottlerOptions', () => {
         ThrottleBuckets.AuthIp,
         ThrottleBuckets.AuthAccount,
         ThrottleBuckets.AuthPhone,
+        ThrottleBuckets.PaymentCallback,
         ThrottleBuckets.Writes,
       ]);
     });
@@ -303,6 +317,28 @@ describe('buildThrottlerOptions', () => {
       expect(applies('auth-ip', Routes.prototype.login, 'POST')).toBe(true);
       expect(bucket('auth-ip')?.limit).toBeLessThan(bucket('writes')?.limit as number);
     });
+  });
+});
+
+describe('the payment-callback bucket', () => {
+  it('counts the route that asked for it', () => {
+    expect(applies('payment-callback', Routes.prototype.bkashCallback)).toBe(true);
+  });
+
+  it('is opt-in: a login and a plain read are not counted against it', () => {
+    expect(applies('payment-callback', Routes.prototype.login, 'POST')).toBe(false);
+    expect(applies('payment-callback', Routes.prototype.browse)).toBe(false);
+  });
+
+  it('leaves the callback out of the stricter auth-ip bucket it used to share', () => {
+    expect(applies('auth-ip', Routes.prototype.bkashCallback)).toBe(false);
+  });
+
+  it('tracks by the caller IP', () => {
+    const tracker = bucket('payment-callback')?.getTracker as (req: unknown) => string;
+
+    expect(tracker({ ip: '203.0.113.7' })).toBe('203.0.113.7');
+    expect(tracker({ ip: '203.0.113.7' })).not.toBe(tracker({ ip: '198.51.100.4' }));
   });
 });
 

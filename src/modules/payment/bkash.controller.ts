@@ -73,7 +73,7 @@ export class BkashController {
   }
 
   @Public()
-  @RateLimit(ThrottleBuckets.AuthIp)
+  @RateLimit(ThrottleBuckets.PaymentCallback)
   @Get(PaymentConstants.BkashCallbackRoute)
   @Redirect()
   @ApiOperation({ summary: "Where bKash sends the customer's browser back; always a 302" })

@@ -897,8 +897,14 @@ model Notification {
 /// alone cannot say when cash was handed over, who took it, or which gateway reference to
 /// quote in a dispute.
 ///
-/// Rows are append-only in practice. A failed attempt stays FAILED and a second attempt is a
-/// second row, so the history of a difficult payment survives instead of being overwritten.
+/// Rows are append-only with exactly two exceptions. A failed attempt stays FAILED and a second
+/// attempt is a second row, so the history of a difficult payment survives. The exceptions:
+///   1. A PENDING row moves to one terminal status exactly once, by a write conditional on
+///      PENDING: a bKash CHARGE attempt to CAPTURED, FAILED or CANCELLED; an automatic bKash
+///      REFUND claim to CAPTURED.
+///   2. A PENDING automatic REFUND claim is DELETED when bKash definitively refuses the refund
+///      (or a SUPER_ADMIN resolves it as not refunded), so a later sweep may claim it again. No
+///      other row is ever deleted; a CAPTURED row never changes.
 model PaymentTransaction {
   id                   String                   @id @default(uuid()) @db.Uuid
   orderId              String                   @map("order_id") @db.Uuid
@@ -907,11 +913,14 @@ model PaymentTransaction {
   status               PaymentTransactionStatus @default(PENDING)
   /// Always positive, in poysha. The direction says which way it went.
   amountPoysha         BigInt                   @map("amount_poysha")
-  /// The gateway's own id for this movement, or null for cash. Unique when present, so a
-  /// replayed webhook cannot record the same payment twice.
+  /// The gateway's own id for this movement (bKash's paymentID on a CHARGE), or null for cash.
+  /// An automatic bKash REFUND carries 'refund:' + the charge's trxID instead, which makes it the
+  /// claim that only one refund pass can hold. Unique when present, so a replayed callback cannot
+  /// record the same payment twice.
   gatewayReference     String?                  @unique @map("gateway_reference")
-  /// bKash's trxID, set when the charge is CAPTURED. A refund names it. Unique when present, so
-  /// one gateway transaction cannot back two ledger rows.
+  /// bKash's trxID. On a CHARGE it is set when the charge is CAPTURED, and a refund names it. On
+  /// an automatic REFUND it is bKash's refundTrxID (null while the claim is PENDING, or when bKash
+  /// gave none). Unique when present, so one gateway transaction cannot back two ledger rows.
   gatewayTransactionId String?                  @unique @map("gateway_transaction_id")
   /// Staff member who took the cash. Null for a gateway payment, which has no human.
   collectedBy          String?                  @map("collected_by") @db.Uuid

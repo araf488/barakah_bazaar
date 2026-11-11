@@ -18,6 +18,8 @@ export const ApplicationConstants = {
   DefaultLocale: 'en-BD',
   /** ISO 4217 code for Bangladeshi Taka. */
   CurrencyCode: 'BDT',
+  /** Express application setting that decides how far `req.ip` looks into X-Forwarded-For. */
+  TrustProxySetting: 'trust proxy',
 } as const;
 
 /** Reflector metadata keys. Kept together so no decorator invents its own. */

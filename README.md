@@ -217,6 +217,8 @@ fails with every problem at once, so a bad deploy is diagnosed in one pass.
 | `APP_PUBLIC_BASE_URL`           | **https in staging & prod** | Base for verification and reset links, which carry a credential                                                                 |
 | `API_PUBLIC_BASE_URL`           | **https when `bkash`**      | This API's own origin; the payment callback URL is built from it. Unused for `noop`                                             |
 | `PAYMENT_PROVIDER`, `PAYMENT_*` | no                          | `noop` by default. `bkash` needs all five `PAYMENT_*` credentials in staging & prod                                             |
+| `PAYMENT_CALLBACK_RATE_LIMIT`   | no                          | Default `60`. Requests per minute per IP on the bKash callback, its own bucket (`payment-callback`)                             |
+| `TRUST_PROXY_HOPS`              | no                          | Default `0` (off). Proxies in front of the API; sets Express `trust proxy` so per-IP limits see the client, not the proxy       |
 | `QUEUE_ENABLED`, `REDIS_*`      | no                          | BullMQ is off unless enabled                                                                                                    |
 | `SMS_PROVIDER`, `SMS_*`         | no                          | `noop` by default, so tests spend no SMS credits                                                                                |
 

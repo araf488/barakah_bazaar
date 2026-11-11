@@ -176,6 +176,22 @@ const baseEnvSchema = z.object({
    * tighter bound names its own bucket instead; the `auth-ip`/`auth-account` pair already does.
    */
   WRITE_RATE_LIMIT: z.coerce.number().int().positive().default(60),
+  /**
+   * Requests per minute, per caller IP, allowed against the bKash callback — the browser
+   * redirect that brings a customer back from paying. Looser than AUTH_RATE_LIMIT on purpose:
+   * many mobile subscribers share one carrier NAT address, a throttled callback is a payment
+   * never executed (a lost sale), and a forged callback is harmless because an unknown
+   * paymentID never reaches bKash.
+   */
+  PAYMENT_CALLBACK_RATE_LIMIT: z.coerce.number().int().positive().default(60),
+  /**
+   * Reverse-proxy hops in front of this process (load balancer, ingress). 0 — the default —
+   * leaves Express's `trust proxy` off, so `req.ip` is the socket peer. Behind N proxies set N,
+   * or every per-IP bucket counts the proxy's address and all callers share one limit. Never
+   * set it higher than the real hop count: each extra hop lets a client forge its IP with
+   * X-Forwarded-For.
+   */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
 
   // ── Web surfaces (storefront + admin SPA) ────────────────────────────────
   /**

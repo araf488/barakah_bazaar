@@ -84,9 +84,9 @@ describe('BkashController', () => {
       expect(metadata(MetadataKeys.IsPublic, BkashController.prototype.callback)).toBe(true);
     });
 
-    it('rate limits the callback per IP', () => {
+    it('rate limits the callback in its own payment-callback bucket, not the strict auth-ip one', () => {
       expect(metadata(MetadataKeys.RateLimitBuckets, BkashController.prototype.callback)).toEqual([
-        'auth-ip',
+        'payment-callback',
       ]);
     });
 

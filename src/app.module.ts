@@ -61,7 +61,8 @@ import { UserModule } from './modules/user/user.module';
     // outbound map-search proxies; 'auth-ip' and 'auth-account' together guard login and MFA
     // verification against brute force — one keyed by caller IP, the other by the submitted
     // email, so neither a distributed attempt on one account nor one IP working many accounts
-    // slips past — both only where a route asks with @RateLimit. 'writes' is the baseline
+    // slips past — both only where a route asks with @RateLimit. 'payment-callback' is the looser
+    // per-IP bucket on the bKash browser callback. 'writes' is the baseline
     // ceiling on every state-changing request, and reads are left unlimited at this layer.
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
@@ -72,6 +73,7 @@ import { UserModule } from './modules/user/user.module';
           AUTH_ACCOUNT_RATE_LIMIT: config.get('AUTH_ACCOUNT_RATE_LIMIT', { infer: true }),
           AUTH_PHONE_RATE_LIMIT: config.get('AUTH_PHONE_RATE_LIMIT', { infer: true }),
           WRITE_RATE_LIMIT: config.get('WRITE_RATE_LIMIT', { infer: true }),
+          PAYMENT_CALLBACK_RATE_LIMIT: config.get('PAYMENT_CALLBACK_RATE_LIMIT', { infer: true }),
         }),
     }),
 

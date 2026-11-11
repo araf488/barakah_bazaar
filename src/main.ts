@@ -8,6 +8,7 @@ import { ApplicationConstants } from './common/constants/app.constants';
 import { CorsPolicyConfigurator } from './common/cors/cors-policy.configurator';
 import { ConfigService } from '@nestjs/config';
 import { AppConfigService } from './config';
+import { applyTrustProxy } from './config/trust-proxy';
 import { AppModule } from './app.module';
 import { mountWeb, shouldMountWeb, webMountOptionsFrom } from './web/web-mount';
 import { WebMountState } from './web/web-mount-state';
@@ -27,6 +28,10 @@ async function bootstrap(): Promise<void> {
   const apiVersion = config.get('API_VERSION', { infer: true });
 
   app.setGlobalPrefix(`${apiPrefix}/${apiVersion}`);
+
+  // Behind a load balancer every per-IP rate-limit bucket would otherwise key on the
+  // balancer's address. Set before the web mount and listen, so no request predates it.
+  applyTrustProxy(app, config);
 
   app.useGlobalPipes(
     new ValidationPipe({

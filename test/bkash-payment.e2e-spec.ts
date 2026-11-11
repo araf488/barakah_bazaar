@@ -638,6 +638,49 @@ describe('bKash payment (end to end)', () => {
       expect(confirmedMessagesFor(order.orderNumber)).toBe(1);
     });
 
+    // Ruling R17: a paid bKash order the customer cancels keeps no money. The sweep refunds the
+    // whole charge on its own; nobody has to press refund.
+    it('refunds a paid order in full once the customer cancels it, and marks it REFUNDED', async () => {
+      const order = await placeOrder();
+      const total = BigInt(order.totalPoysha);
+      const paymentId = await openAttempt(order.id);
+      gateway.scriptExecute(paymentId, completedOutcome('TRX-8C', total, order.orderNumber));
+      await callback(paymentId);
+      expect(await orderRow(order.id)).toMatchObject({
+        status: OrderStatus.CONFIRMED,
+        paymentStatus: PaymentStatus.PAID,
+      });
+
+      const cancelled = await request(app.getHttpServer())
+        .patch(`/api/v1/orders/${order.id}/cancel`)
+        .set(headers())
+        .send({ reason: 'Changed my mind' });
+
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body).toMatchObject({ id: order.id, status: OrderStatus.CANCELLED });
+      expect(gateway.refundCalls).toEqual([]);
+
+      await reconciliationSweeper.sweep();
+
+      expect(gateway.refundCalls).toEqual([
+        { amountPoysha: total, originalReference: paymentId, transactionId: 'TRX-8C' },
+      ]);
+      expect(await orderRow(order.id)).toMatchObject({
+        status: OrderStatus.CANCELLED,
+        paymentStatus: PaymentStatus.REFUNDED,
+      });
+      const rows = await ledger(order.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toMatchObject({
+        direction: PaymentDirection.REFUND,
+        method: PaymentMethod.BKASH,
+        status: PaymentTransactionStatus.CAPTURED,
+        gatewayReference: 'refund:TRX-8C',
+        gatewayTransactionId: 'REFUND-1',
+        amountPoysha: total,
+      });
+    });
+
     it('never cancels a PAID order whose hold has run out', async () => {
       const order = await placeOrder();
       const paymentId = await openAttempt(order.id);
