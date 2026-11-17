@@ -62,6 +62,8 @@ export class FakeBkashGateway implements PaymentGateway {
   private readonly queryAnswers = new Map<string, CheckoutOutcome>();
   private readonly refundAnswers: GatewayRefundResult[] = [];
   private readonly createAnswers: GatewayCheckoutResult[] = [];
+  private heldRefund: Promise<void> | null = null;
+  private releaseHeld: () => void = () => undefined;
   private issued = 0;
 
   /** Clears every recorded call and every scripted answer. Call between tests. */
@@ -74,7 +76,23 @@ export class FakeBkashGateway implements PaymentGateway {
     this.queryAnswers.clear();
     this.refundAnswers.length = 0;
     this.createAnswers.length = 0;
+    // A refund a failed test left waiting finishes now, rather than dangling into the next test.
+    this.releaseHeld();
+    this.heldRefund = null;
     this.issued = 0;
+  }
+
+  /**
+   * The next `refund` call is recorded at once but answers only when the returned function is
+   * called, so a test can look at what happened while bKash is still working on it.
+   */
+  holdNextRefund(): () => void {
+    let release: () => void = () => undefined;
+    this.heldRefund = new Promise((resolve) => {
+      release = resolve;
+    });
+    this.releaseHeld = release;
+    return () => release();
   }
 
   /** The next `createCheckout` answers this, once. Later ones issue a fresh `PAYID-n`. */
@@ -133,11 +151,18 @@ export class FakeBkashGateway implements PaymentGateway {
     return Promise.resolve(this.queryAnswers.get(paymentId) ?? UNSCRIPTED_QUERY);
   }
 
-  refund(request: GatewayRefundRequest): Promise<GatewayRefundResult> {
+  async refund(request: GatewayRefundRequest): Promise<GatewayRefundResult> {
     this.refundCalls.push(request);
-    return Promise.resolve(
-      this.refundAnswers.shift() ?? refundAccepted(`REFUND-${this.refundCalls.length}`),
-    );
+    const answer =
+      this.refundAnswers.shift() ?? refundAccepted(`REFUND-${this.refundCalls.length}`);
+    const held = this.heldRefund;
+    this.heldRefund = null;
+
+    if (held) {
+      await held;
+    }
+
+    return answer;
   }
 
   /** The card-style charge is not part of bKash Tokenized Checkout; any call is a test bug. */

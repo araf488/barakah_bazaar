@@ -11,6 +11,7 @@ import {
   PaymentTransactionStatus,
   UserRole,
 } from '../../infra/prisma/prisma-client';
+import { AuthService } from '../auth/auth.service';
 import { NotificationService } from '../notification/notification.service';
 import { OrderRepository } from '../order/order.repository';
 import { BkashCheckoutService } from './bkash-checkout.service';
@@ -95,15 +96,19 @@ describe('BkashCheckoutService', () => {
     completeRefund: jest.Mock;
     releaseRefundClaim: jest.Mock;
     findRefundOwedForOrder: jest.Mock;
+    countRecentAttempts: jest.Mock;
   };
   /** Refund claims held, by `gateway_reference`: the unique index the repository relies on. */
   let claims: Map<string, PaymentTransaction>;
   let orders: { findForUser: jest.Mock; findById: jest.Mock; holdActive: jest.Mock };
   let gateway: jest.Mocked<PaymentGateway>;
   let notifications: { notifyOrderStatus: jest.Mock };
+  let authService: { resolveActiveUserId: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let provider: string;
   let apiBase: string;
+  let apiPrefix: string;
+  let apiVersion: string;
   let service: BkashCheckoutService;
 
   const build = (): BkashCheckoutService =>
@@ -112,9 +117,12 @@ describe('BkashCheckoutService', () => {
       orders as unknown as OrderRepository,
       gateway,
       notifications as unknown as NotificationService,
+      authService as unknown as AuthService,
       createMockConfig({
         PAYMENT_PROVIDER: provider,
         API_PUBLIC_BASE_URL: apiBase,
+        API_PREFIX: apiPrefix,
+        API_VERSION: apiVersion,
       }),
       logger,
     );
@@ -156,6 +164,7 @@ describe('BkashCheckoutService', () => {
         return Promise.resolve(held !== undefined);
       }),
       findRefundOwedForOrder: jest.fn().mockResolvedValue(owed()),
+      countRecentAttempts: jest.fn().mockResolvedValue(0),
     };
     claims = new Map();
     orders = {
@@ -181,9 +190,16 @@ describe('BkashCheckoutService', () => {
       queryCheckout: jest.fn(),
     };
     notifications = { notifyOrderStatus: jest.fn().mockResolvedValue(undefined) };
+    authService = {
+      resolveActiveUserId: jest.fn((user: AuthenticatedUser) =>
+        Promise.resolve({ ok: true, data: user.userId }),
+      ),
+    };
     logger = createMockLogger();
     provider = 'bkash';
     apiBase = 'https://api.barakahbazaar.com.bd';
+    apiPrefix = 'api';
+    apiVersion = 'v1';
     service = build();
   });
 
@@ -207,6 +223,31 @@ describe('BkashCheckoutService', () => {
 
       expect(orders.findForUser).toHaveBeenCalledWith('user-1', 'ord-1');
       expect(orders.holdActive).toHaveBeenCalledWith('ord-1');
+    });
+
+    it('resolves the caller as an active user first, like every other order route', async () => {
+      authService.resolveActiveUserId.mockResolvedValue({ ok: true, data: 'user-9' });
+
+      await service.start(customer, 'ord-1');
+
+      expect(authService.resolveActiveUserId).toHaveBeenCalledWith(customer);
+      expect(orders.findForUser).toHaveBeenCalledWith('user-9', 'ord-1');
+    });
+
+    it('answers what the active-user check answers for a disabled user, and reads nothing', async () => {
+      authService.resolveActiveUserId.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.FORBIDDEN,
+        message: 'This account has been disabled.',
+      });
+
+      await expect(service.start(customer, 'ord-1')).resolves.toEqual({
+        ok: false,
+        status: HttpStatus.FORBIDDEN,
+        message: 'This account has been disabled.',
+      });
+      expect(orders.findForUser).not.toHaveBeenCalled();
+      expect(gateway.createCheckout).not.toHaveBeenCalled();
     });
 
     it('asks bKash for the order total, the order number and the API callback', async () => {
@@ -236,6 +277,18 @@ describe('BkashCheckoutService', () => {
       expect(gateway.createCheckout.mock.calls[0][0].callbackUrl).toBe(callbackUrl);
     });
 
+    it('builds the callback from API_PREFIX and API_VERSION, so it follows the global prefix', async () => {
+      apiPrefix = 'shop-api';
+      apiVersion = 'v2';
+      service = build();
+
+      await service.start(customer, 'ord-1');
+
+      expect(gateway.createCheckout.mock.calls[0][0].callbackUrl).toBe(
+        'https://api.barakahbazaar.com.bd/shop-api/v2/payments/bkash/callback',
+      );
+    });
+
     it('opens the attempt with a hold running exactly 15 minutes from now', async () => {
       await service.start(customer, 'ord-1');
 
@@ -262,13 +315,78 @@ describe('BkashCheckoutService', () => {
       });
     });
 
-    it("answers 404 for an order that is missing or someone else's", async () => {
+    it("answers 404 for an order that is missing or someone else's, worded like the order routes", async () => {
       orders.findForUser.mockResolvedValue(undefined);
 
       await expect(service.start(customer, 'ord-1')).resolves.toEqual({
         ok: false,
         status: HttpStatus.NOT_FOUND,
-        message: 'Order not found.',
+        message: 'Order was not found.',
+      });
+    });
+
+    describe('the per-order attempt cap', () => {
+      it('counts the attempts opened for this order before asking bKash for another', async () => {
+        await service.start(customer, 'ord-1');
+
+        expect(payments.countRecentAttempts).toHaveBeenCalledWith('ord-1');
+        expect(payments.countRecentAttempts.mock.invocationCallOrder[0]).toBeLessThan(
+          gateway.createCheckout.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('still opens the fifth attempt', async () => {
+        payments.countRecentAttempts.mockResolvedValue(4);
+
+        await expect(service.start(customer, 'ord-1')).resolves.toMatchObject({ ok: true });
+        expect(gateway.createCheckout).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([5, 9])(
+        'answers 409 to a sixth attempt (%i already opened) without calling bKash',
+        async (opened) => {
+          payments.countRecentAttempts.mockResolvedValue(opened);
+
+          await expect(service.start(customer, 'ord-1')).resolves.toEqual({
+            ok: false,
+            status: HttpStatus.CONFLICT,
+            message:
+              'This order has reached its limit of bKash payment attempts. Try again later, or switch it to cash on delivery.',
+          });
+          expect(gateway.createCheckout).not.toHaveBeenCalled();
+          expect(payments.createAttempt).not.toHaveBeenCalled();
+        },
+      );
+
+      it('answers 503 when the attempts cannot be counted, without calling bKash', async () => {
+        payments.countRecentAttempts.mockResolvedValue(null);
+
+        await expect(service.start(customer, 'ord-1')).resolves.toEqual({
+          ok: false,
+          status: HttpStatus.SERVICE_UNAVAILABLE,
+          message: 'Could not process the payment. Please try again.',
+        });
+        expect(gateway.createCheckout).not.toHaveBeenCalled();
+      });
+
+      it('answers 409 when a concurrent start filled the cap before this attempt was written', async () => {
+        payments.createAttempt.mockResolvedValue('attempt-limit');
+
+        await expect(service.start(customer, 'ord-1')).resolves.toEqual({
+          ok: false,
+          status: HttpStatus.CONFLICT,
+          message:
+            'This order has reached its limit of bKash payment attempts. Try again later, or switch it to cash on delivery.',
+        });
+      });
+
+      it('reports the noop provider before counting attempts', async () => {
+        provider = 'noop';
+        service = build();
+
+        await service.start(customer, 'ord-1');
+
+        expect(payments.countRecentAttempts).not.toHaveBeenCalled();
       });
     });
 
@@ -791,6 +909,77 @@ describe('BkashCheckoutService', () => {
       await expect(service.handleCallback('PAYID-1', 'success')).resolves.toEqual({
         outcome: 'failed',
         orderNumber: ORDER_NUMBER,
+      });
+    });
+
+    describe('a refund the callback starts (M-8)', () => {
+      /** A bKash refund call that stays in flight until the test lets it finish. */
+      const holdRefund = (): (() => void) => {
+        let finish: () => void = () => undefined;
+        gateway.refund.mockReturnValue(
+          new Promise((resolve) => {
+            finish = () =>
+              resolve({
+                ok: true,
+                reference: 'RFD-1',
+                pending: false,
+                failureReason: null,
+                ambiguous: false,
+              });
+          }),
+        );
+        return () => finish();
+      };
+
+      /** Lets every already-queued promise step run, without moving the fake clock. */
+      const drain = async (): Promise<void> => {
+        for (let step = 0; step < 50; step += 1) {
+          await Promise.resolve();
+        }
+      };
+
+      it.each([
+        ['a capture the order cannot keep', () => completed()],
+        ['a completion that does not match its attempt', () => completed({ amountPoysha: 1n })],
+      ])('answers failed for %s while the refund is still with bKash', async (_case, outcome) => {
+        gateway.executeCheckout.mockResolvedValue(outcome());
+        orders.findById.mockResolvedValue(order({ status: OrderStatus.CANCELLED }));
+        payments.captureAttempt.mockResolvedValue({ kind: 'refund-due', orderId: 'ord-1' });
+        payments.captureMismatched.mockResolvedValue(true);
+        const finishRefund = holdRefund();
+
+        let answered: unknown;
+        void service.handleCallback('PAYID-1', 'success').then((result) => {
+          answered = result;
+        });
+        await drain();
+
+        expect(answered).toEqual({ outcome: 'failed', orderNumber: ORDER_NUMBER });
+        expect(gateway.refund).toHaveBeenCalledTimes(1);
+        expect(payments.completeRefund).not.toHaveBeenCalled();
+
+        finishRefund();
+        await drain();
+
+        expect(payments.completeRefund).toHaveBeenCalledWith('claim-1', 'RFD-1', true);
+      });
+
+      it('logs a refund that throws after the callback answered, and never rejects', async () => {
+        gateway.executeCheckout.mockResolvedValue(completed());
+        orders.findById.mockResolvedValue(order({ status: OrderStatus.CANCELLED }));
+        payments.captureAttempt.mockResolvedValue({ kind: 'refund-due', orderId: 'ord-1' });
+        payments.findRefundOwedForOrder.mockRejectedValue(new Error('pool closed'));
+
+        await expect(service.handleCallback('PAYID-1', 'success')).resolves.toEqual({
+          outcome: 'failed',
+          orderNumber: ORDER_NUMBER,
+        });
+        await drain();
+
+        expect(logger.error).toHaveBeenCalledWith(
+          expect.objectContaining({ orderId: 'ord-1' }),
+          'Exception occurred in BkashCheckoutService while refunding after the callback',
+        );
       });
     });
 

@@ -665,6 +665,25 @@ describe('PaymentService', () => {
       expect(repository.completeRefund.mock.calls[0][2]).toBe(false);
     });
 
+    it('does not mark the order REFUNDED while another refund claim on it is still pending (M-9)', async () => {
+      // This claim plus another one still in flight.
+      repository.sumPendingRefundClaims.mockResolvedValue(500000n);
+
+      const result = await service.resolveRefundClaim(admin, 'claim-1', { outcome: 'refunded' });
+
+      expect(repository.sumPendingRefundClaims).toHaveBeenCalledWith('ord-1');
+      expect(repository.completeRefund.mock.calls[0][2]).toBe(false);
+      expect(result).toMatchObject({ ok: true, data: { orderRefunded: false } });
+    });
+
+    it('marks the order REFUNDED when this is the only pending claim on it', async () => {
+      repository.sumPendingRefundClaims.mockResolvedValue(250000n);
+
+      await service.resolveRefundClaim(admin, 'claim-1', { outcome: 'refunded' });
+
+      expect(repository.completeRefund.mock.calls[0][2]).toBe(true);
+    });
+
     it('never marks an order that is not cancelled REFUNDED', async () => {
       repository.findOwedForOrder.mockResolvedValue({ cancelled: false, owedPoysha: 0n });
 
@@ -791,6 +810,11 @@ describe('PaymentService', () => {
       [
         'what the order is owed cannot be read',
         () => repository.findOwedForOrder.mockResolvedValue(null),
+        'refunded',
+      ],
+      [
+        'the pending claims cannot be summed',
+        () => repository.sumPendingRefundClaims.mockResolvedValue(null),
         'refunded',
       ],
       [

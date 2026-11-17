@@ -61,6 +61,9 @@ export const PAYMENT_DUPLICATE = 'duplicate' as const;
 /** What `claimRefund` answers when another pass already holds the refund for that charge. */
 export const REFUND_CLAIMED = 'claimed' as const;
 
+/** What `createAttempt` answers when the order already opened its cap of bKash attempts. */
+export const ATTEMPT_LIMIT = 'attempt-limit' as const;
+
 /**
  * How a completed bKash payment landed.
  *
@@ -111,6 +114,10 @@ export const refundClearsOrder = (
 interface LockedOrderRow {
   status: string;
   payment_method: string;
+}
+
+interface AttemptCountRow {
+  attempt_count: number;
 }
 
 interface OrderOwedRow {
@@ -318,18 +325,49 @@ export class PaymentRepository {
   }
 
   /**
+   * How many bKash attempts the order opened within the cap window, on the database clock. Read
+   * before bKash is asked for a checkout, so a capped order never costs a call to bKash.
+   */
+  async countRecentAttempts(orderId: string): Promise<number | null> {
+    try {
+      const rows = await this.prisma.$queryRaw<AttemptCountRow[]>(
+        PaymentRepository.recentAttemptsQuery(orderId),
+      );
+      return rows[0]?.attempt_count ?? 0;
+    } catch (error) {
+      this.logger.error(
+        { err: error, orderId },
+        'Exception occurred in PaymentRepository.countRecentAttempts',
+      );
+      return null;
+    }
+  }
+
+  /**
    * Opens a bKash attempt and stretches the order's stock hold to cover it, in one transaction.
    *
-   * Only live holds that would lapse before `holdUntil` move, and only forwards: a hold that
-   * already runs longer is left alone. A `paymentID` already recorded answers
-   * {@link PAYMENT_DUPLICATE}.
+   * The attempt cap is enforced here too, under a per-order advisory lock, so two starts racing
+   * past the service's early count cannot both be recorded: at the cap it answers
+   * {@link ATTEMPT_LIMIT} and writes nothing. Only live holds that would lapse before `holdUntil`
+   * move, and only forwards: a hold that already runs longer is left alone. A `paymentID` already
+   * recorded answers {@link PAYMENT_DUPLICATE}.
    */
   async createAttempt(
     data: BkashAttemptData,
     holdUntil: Date,
-  ): Promise<PaymentTransaction | typeof PAYMENT_DUPLICATE | null> {
+  ): Promise<PaymentTransaction | typeof PAYMENT_DUPLICATE | typeof ATTEMPT_LIMIT | null> {
     try {
       return await this.prisma.$transaction(async (tx) => {
+        // $executeRaw, not $queryRaw: the function returns void, which adapter-pg cannot deserialise.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${data.orderId}, 0))`;
+        const [counted] = await tx.$queryRaw<AttemptCountRow[]>(
+          PaymentRepository.recentAttemptsQuery(data.orderId),
+        );
+
+        if ((counted?.attempt_count ?? 0) >= PaymentConstants.MaxBkashAttemptsPerOrder) {
+          return ATTEMPT_LIMIT;
+        }
+
         const attempt = await tx.paymentTransaction.create({
           data: {
             orderId: data.orderId,
@@ -482,9 +520,13 @@ export class PaymentRepository {
       });
     } catch (error) {
       // The trxID is unique: a second row claiming it means this payment was already recorded.
-      // bKash does not reuse a trxID across payments, so that is worth a look.
+      // bKash does not reuse a trxID across payments, so money may have been taken that this
+      // attempt can never capture: error level, and the sweep reports the attempt as stuck (M-6).
       if (PaymentRepository.isUniqueViolation(error)) {
-        this.logger.warn({ attemptId: id }, 'bKash transaction already recorded on another row');
+        this.logger.error(
+          { err: error, attemptId: id },
+          'bKash transaction already recorded on another row; the attempt stays pending until a person reconciles it',
+        );
         return { kind: 'already-settled' };
       }
 
@@ -594,6 +636,11 @@ export class PaymentRepository {
    * bKash's refund trxID (null when bKash gave none) and, when `markRefunded`, the order's payment
    * becomes REFUNDED, in one transaction. `false` means the claim was no longer PENDING.
    *
+   * The order is marked only once no other refund claim on it is still PENDING (M-9): with two
+   * charges, the refund that clears the owed sum must not call the order REFUNDED while the other
+   * charge's refund is unresolved. The mark then falls to whichever claim finishes last, so that
+   * one marks it when the order is cancelled and owes nothing, whatever it was told when claimed.
+   *
    * `audit`, when a person resolved the claim (ruling R18), is appended in the same transaction,
    * so the claim never changes without its record. A refund trxID already on another row answers
    * {@link PAYMENT_DUPLICATE}.
@@ -623,8 +670,9 @@ export class PaymentRepository {
           return false;
         }
 
-        if (markRefunded) {
-          const claim = await tx.paymentTransaction.findUniqueOrThrow({ where: { id: claimId } });
+        const claim = await tx.paymentTransaction.findUniqueOrThrow({ where: { id: claimId } });
+
+        if (await PaymentRepository.refundsOrder(tx, claim, markRefunded)) {
           await tx.order.update({
             where: { id: claim.orderId },
             data: { paymentStatus: PaymentStatus.REFUNDED },
@@ -833,6 +881,43 @@ export class PaymentRepository {
     };
   }
 
+  /**
+   * Whether completing `claim` marks its order REFUNDED. The order row is locked first, so two
+   * claims completing at once take turns and the second sees the first one committed: neither can
+   * leave the mark to the other. Only with no other PENDING claim left does it mark; then either
+   * this refund was the clearing one, or a clearing one finished before it and deferred.
+   */
+  private static async refundsOrder(
+    tx: Prisma.TransactionClient,
+    claim: PaymentTransaction,
+    markRefunded: boolean,
+  ): Promise<boolean> {
+    await tx.$queryRaw`SELECT id FROM orders WHERE id = ${claim.orderId}::uuid FOR UPDATE`;
+
+    const othersPending = await tx.paymentTransaction.count({
+      where: {
+        orderId: claim.orderId,
+        method: PaymentMethod.BKASH,
+        direction: PaymentDirection.REFUND,
+        status: PaymentTransactionStatus.PENDING,
+        id: { not: claim.id },
+      },
+    });
+
+    if (othersPending > 0) {
+      return false;
+    }
+
+    if (markRefunded) {
+      return true;
+    }
+
+    const [owed] = await tx.$queryRaw<OrderOwedRow[]>(
+      PaymentRepository.orderOwedQuery(claim.orderId),
+    );
+    return owed?.cancelled === true && BigInt(owed.owed_poysha) <= 0n;
+  }
+
   /** A refund row must name its charge's trxID and stay within the charge. */
   private static isRefundableFrom(charge: PaymentTransaction, amountPoysha: bigint): boolean {
     return (
@@ -946,6 +1031,19 @@ export class PaymentRepository {
       WHERE w.owed_poysha > 0 ${onlyOrder}
       ORDER BY newest.captured_at ASC, w.order_id
       LIMIT ${take}`;
+  }
+
+  /**
+   * The order's bKash charges opened within the cap window. `now()` is the database clock, so
+   * every replica counts the same window whatever its own clock says.
+   */
+  private static recentAttemptsQuery(orderId: string): Prisma.Sql {
+    return Prisma.sql`
+      SELECT count(*)::int AS attempt_count FROM payment_transactions
+      WHERE order_id = ${orderId}::uuid
+        AND method::text = ${PaymentMethod.BKASH}
+        AND direction::text = ${PaymentDirection.CHARGE}
+        AND created_at > now() - make_interval(hours => ${PaymentConstants.BkashAttemptCapWindowHours})`;
   }
 
   /** The owed amount of one order, owed or not, by the same CTE as the batch query. */

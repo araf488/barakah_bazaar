@@ -26,6 +26,7 @@ describe('Money', () => {
 
     it('rejects a non-finite amount', () => {
       expect(() => Money.fromTaka(Number.NaN)).toThrow(TypeError);
+      expect(() => Money.fromTaka(Number.NaN)).toThrow('Taka amount must be a finite number.');
       expect(() => Money.fromTaka(Number.POSITIVE_INFINITY)).toThrow(TypeError);
     });
   });
@@ -51,6 +52,7 @@ describe('Money', () => {
 
     it('rejects a negative quantity', () => {
       expect(() => Money.multiply(100n, -1)).toThrow(TypeError);
+      expect(() => Money.multiply(100n, -1)).toThrow('Quantity must be a non-negative integer.');
     });
   });
 
@@ -92,6 +94,9 @@ describe('Money', () => {
 
     it('rejects a negative weight', () => {
       expect(() => Money.forWeight(80000n, -250)).toThrow(TypeError);
+      expect(() => Money.forWeight(80000n, -250)).toThrow(
+        'Weight in grams must be a non-negative integer.',
+      );
     });
   });
 
@@ -131,6 +136,7 @@ describe('Money', () => {
 
     it('rejects a negative amount rather than printing a malformed string', () => {
       expect(() => Money.toDecimalString(-5n)).toThrow(RangeError);
+      expect(() => Money.toDecimalString(-5n)).toThrow('Poysha amount must not be negative.');
     });
 
     it('stays exact beyond the float-safe range', () => {

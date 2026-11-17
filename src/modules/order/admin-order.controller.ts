@@ -62,7 +62,10 @@ export class AdminOrderController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Advance an order to its next status' })
   @ApiResponse({ status: HttpStatus.OK, type: OrderDto })
-  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'Illegal transition' })
+  @ApiResponse({
+    status: HttpStatus.CONFLICT,
+    description: 'Illegal transition, or confirming a bKash order that is not paid',
+  })
   async transition(
     @CurrentUser() user: AuthenticatedUser | undefined,
     @Param('id', ParseUUIDPipe) id: string,

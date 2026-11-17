@@ -18,6 +18,14 @@ const ORDER_ID = '7f2c1f0e-3f6a-4b2e-9d5a-0c1f6d1a2b3c';
 const ORDER_NUMBER = 'BB-20261017-000042';
 const RESULT = 'https://shop.example.com/checkout/payment-result';
 
+/** The statuses Swagger documents for a route handler, ascending. */
+const documentedStatuses = (handler: object): number[] =>
+  Object.keys(
+    (Reflect.getMetadata('swagger/apiResponse', handler) ?? {}) as Record<string, unknown>,
+  )
+    .map(Number)
+    .sort((a, b) => a - b);
+
 describe('BkashController', () => {
   let checkout: { start: jest.Mock; handleCallback: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
@@ -34,6 +42,14 @@ describe('BkashController', () => {
     checkout = { start: jest.fn(), handleCallback: jest.fn() };
     logger = createMockLogger();
     controller = build();
+  });
+
+  describe('swagger contract (M-11)', () => {
+    it('documents 401 and 429 on start beside its other statuses', () => {
+      expect(documentedStatuses(BkashController.prototype.start)).toEqual([
+        201, 401, 404, 409, 429, 502, 503,
+      ]);
+    });
   });
 
   describe('start', () => {

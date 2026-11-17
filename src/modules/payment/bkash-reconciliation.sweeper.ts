@@ -15,8 +15,11 @@ const RECONCILE_AFTER_MS = PaymentConstants.ReconcileAfterMinutes * MS_PER_MINUT
 const REFUND_COOLDOWN_MS = PaymentConstants.RefundRetryCooldownMinutes * MS_PER_MINUTE;
 const ATTEMPT_COOLDOWN_MS = PaymentConstants.ReconcileRetryCooldownMinutes * MS_PER_MINUTE;
 
-/** How one attempt ended up in a pass. `open` means bKash has not decided yet. */
-type AttemptVerdict = 'settled' | 'open' | 'failed';
+/**
+ * How one attempt ended up in a pass. `open` means bKash has not decided yet; `stuck` means bKash
+ * says it completed but the ledger could not capture it, which only a person can resolve.
+ */
+type AttemptVerdict = 'settled' | 'open' | 'stuck' | 'failed';
 
 /** Running counts for one pass, logged when it finishes. */
 interface SweepTally {
@@ -62,6 +65,14 @@ export class BkashReconciliationSweeper implements OnModuleInit, OnModuleDestroy
    */
   private readonly undecidedAttempts = new Map<string, number>();
 
+  /**
+   * True while a pass runs on this instance. A pass can outlast the interval (fifty bKash queries,
+   * then fifty refunds), and an overlapping one only doubles the calls to bKash, so the next tick
+   * is skipped instead. Per instance: replicas still overlap, which claims and conditional writes
+   * keep safe.
+   */
+  private passRunning = false;
+
   constructor(
     private readonly payments: PaymentRepository,
     private readonly checkout: BkashCheckoutService,
@@ -88,6 +99,14 @@ export class BkashReconciliationSweeper implements OnModuleInit, OnModuleDestroy
 
   /** One pass. Public so the suite and any future queue worker can drive it directly. */
   async sweep(): Promise<void> {
+    // Checked before the try, so a skipped tick never reaches the `finally` that would clear the
+    // flag of the pass still running.
+    if (this.passRunning) {
+      this.logger.warn('bKash reconciliation is still running; skipping this tick');
+      return;
+    }
+
+    this.passRunning = true;
     try {
       if (this.config.get('PAYMENT_PROVIDER', { infer: true }) === PaymentConstants.NoopProvider) {
         return;
@@ -96,9 +115,9 @@ export class BkashReconciliationSweeper implements OnModuleInit, OnModuleDestroy
       const now = Date.now();
       const tally: SweepTally = { examined: 0, settled: 0, refunded: 0, failed: 0 };
 
-      await this.reconcileAttempts(now, tally);
+      const stuckAttemptIds = await this.reconcileAttempts(now, tally);
       await this.refundOwed(now, tally);
-      await this.reportStuckClaims(now);
+      await this.reportStuck(now, stuckAttemptIds);
 
       if (tally.examined > 0) {
         this.logger.info(tally, 'bKash reconciliation finished');
@@ -107,11 +126,16 @@ export class BkashReconciliationSweeper implements OnModuleInit, OnModuleDestroy
       // Never rethrow. An unhandled rejection from a timer callback takes the process down,
       // and a failed sweep costs nothing that the next tick cannot recover.
       this.logger.error({ err: error }, 'Exception occurred in BkashReconciliationSweeper.sweep');
+    } finally {
+      this.passRunning = false;
     }
   }
 
-  /** Pass one: ask bKash about each attempt still PENDING after the grace period. */
-  private async reconcileAttempts(now: number, tally: SweepTally): Promise<void> {
+  /**
+   * Pass one: ask bKash about each attempt still PENDING after the grace period. Answers the ids
+   * of attempts bKash completed but the ledger could not capture, for the stuck report.
+   */
+  private async reconcileAttempts(now: number, tally: SweepTally): Promise<string[]> {
     BkashReconciliationSweeper.forgetExpired(this.undecidedAttempts, now, ATTEMPT_COOLDOWN_MS);
 
     // Ask for one extra row per set-aside attempt, so they cannot eat into the batch.
@@ -122,23 +146,30 @@ export class BkashReconciliationSweeper implements OnModuleInit, OnModuleDestroy
 
     if (attempts === null) {
       this.logger.warn('bKash reconciliation could not read pending attempts; will retry');
-      return;
+      return [];
     }
 
     const ready = attempts
       .filter((attempt) => !this.undecidedAttempts.has(attempt.id))
       .slice(0, PaymentConstants.ReconcileBatchSize);
+    const stuck: string[] = [];
 
     for (const attempt of ready) {
       tally.examined += 1;
       const verdict = await this.reconcileAttempt(attempt, now);
 
-      if (verdict === 'open') {
+      if (verdict === 'stuck') {
+        stuck.push(attempt.id);
+      }
+
+      if (verdict === 'open' || verdict === 'stuck') {
         this.undecidedAttempts.set(attempt.id, now);
       } else {
         tally[verdict] += 1;
       }
     }
+
+    return stuck;
   }
 
   /** One attempt. A fault stays with this attempt, so the rest of the batch still runs. */
@@ -166,6 +197,12 @@ export class BkashReconciliationSweeper implements OnModuleInit, OnModuleDestroy
 
       if (result !== SettleResults.Pending) {
         return 'settled';
+      }
+
+      // Completed at bKash yet still PENDING here: the capture could not be written (a trxID
+      // already on another row), and asking again will not change that.
+      if (outcome.kind === 'completed') {
+        return 'stuck';
       }
 
       this.reportUnreadable(attempt, outcome, now);
@@ -273,8 +310,18 @@ export class BkashReconciliationSweeper implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  /** Pass three: surface claims left PENDING. Only ever read and logged, never touched. */
-  private async reportStuckClaims(now: number): Promise<void> {
+  /**
+   * Pass three: surface what only a person can finish: attempts bKash completed that this pass
+   * could not capture, and refund claims left PENDING. Only ever read and logged, never touched.
+   */
+  private async reportStuck(now: number, stuckAttemptIds: string[]): Promise<void> {
+    if (stuckAttemptIds.length > 0) {
+      this.logger.error(
+        { count: stuckAttemptIds.length, attemptIds: stuckAttemptIds },
+        'bKash attempts completed at bKash are stuck pending and need a person to reconcile them',
+      );
+    }
+
     const claims = await this.payments.findStaleRefundClaims(
       new Date(now - RECONCILE_AFTER_MS),
       PaymentConstants.ReconcileBatchSize,

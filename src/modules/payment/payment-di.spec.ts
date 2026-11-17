@@ -83,6 +83,12 @@ describe('payment providers dependency injection', () => {
           useValue: { findForUser, holdActive: jest.fn().mockResolvedValue(true) },
         },
         { provide: NotificationService, useValue: {} },
+        {
+          provide: AuthService,
+          useValue: {
+            resolveActiveUserId: jest.fn().mockResolvedValue({ ok: true, data: 'user-1' }),
+          },
+        },
         { provide: ConfigService, useValue: config },
         { provide: PaymentTokens.PaymentGateway, useValue: {} },
         { provide: getLoggerToken(BkashCheckoutService.name), useValue: { error: jest.fn() } },

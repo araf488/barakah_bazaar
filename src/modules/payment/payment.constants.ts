@@ -13,6 +13,13 @@ export const PaymentConstants = {
   MaxFailureLength: 500,
   /** How long a bKash attempt may stay open before the customer must start a new one. */
   BkashAttemptWindowMinutes: 15,
+  /**
+   * Most bKash attempts one order may open within {@link BkashAttemptCapWindowHours}. Every start
+   * calls bKash's create API, so a scripted client could otherwise burn the merchant's quota.
+   */
+  MaxBkashAttemptsPerOrder: 5,
+  /** Rolling window, in hours on the database clock, over which the attempt cap counts. */
+  BkashAttemptCapWindowHours: 24,
   /** Unit conversions for the attempt window. */
   SecondsPerMinute: 60,
   MillisecondsPerSecond: 1_000,
@@ -44,8 +51,6 @@ export const PaymentConstants = {
   BkashRequestTimeoutMs: 15_000,
   /** A cached bKash token is refreshed this many seconds before it expires. */
   BkashTokenRefreshMarginSeconds: 300,
-  /** Path, under the API prefix, that bKash sends the customer's browser back to. */
-  CallbackPath: 'api/v1/payments/bkash/callback',
   /**
    * Route, under the admin base, where a SUPER_ADMIN settles a stuck automatic refund claim.
    * `:id` is the claim's ledger row.
@@ -141,6 +146,12 @@ export const PaymentMessages = {
   PaymentWindowClosed: 'The time to pay for this order has passed.',
   /** bKash is not the configured gateway, so it cannot be offered. */
   BkashUnavailable: 'bKash payment is not available right now.',
+  /**
+   * Returned (409) when an order already opened `MaxBkashAttemptsPerOrder` bKash attempts within
+   * the cap window, so no further one is started.
+   */
+  TooManyAttempts:
+    'This order has reached its limit of bKash payment attempts. Try again later, or switch it to cash on delivery.',
   /** bKash refused or failed to create the payment. */
   GatewayUnavailable: 'bKash could not start the payment. Please try again.',
   /** Returned (404) for a resolve on an id that is not an automatic bKash refund claim. */

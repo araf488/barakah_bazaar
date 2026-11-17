@@ -156,11 +156,14 @@ export class OrderController {
     summary: 'Switch my bKash order to cash on delivery, while it can still be paid',
   })
   @ApiResponse({ status: HttpStatus.OK, type: OrderDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Payment method other than COD' })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Not signed in' })
   @ApiResponse({
     status: HttpStatus.CONFLICT,
     description: 'Not a bKash order, no longer open, already paid, or past its payment window',
   })
   @ApiResponse({ status: HttpStatus.NOT_FOUND })
+  @ApiResponse({ status: HttpStatus.SERVICE_UNAVAILABLE, description: 'Order could not be read' })
   async switchPaymentMethod(
     @CurrentUser() user: AuthenticatedUser | undefined,
     @Param('id', ParseUUIDPipe) id: string,

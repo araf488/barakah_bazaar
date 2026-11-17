@@ -518,6 +518,90 @@ describe('BkashReconciliationSweeper', () => {
     });
   });
 
+  describe('attempts bKash completed but the ledger could not capture (M-6)', () => {
+    it('reports them at error with the ids, beside the stuck claims', async () => {
+      payments.findPendingAttempts.mockResolvedValue([young('a'), young('b')]);
+      gateway.queryCheckout
+        .mockResolvedValueOnce(completed)
+        .mockResolvedValueOnce({ kind: 'pending' });
+      checkout.settle.mockResolvedValue('pending');
+
+      await sweeper.sweep();
+
+      expect(logger.error).toHaveBeenCalledWith(
+        { count: 1, attemptIds: ['a'] },
+        'bKash attempts completed at bKash are stuck pending and need a person to reconcile them',
+      );
+    });
+
+    it('sets a stuck attempt aside like any undecided one, so it is not asked about every tick', async () => {
+      payments.findPendingAttempts.mockResolvedValue([young('a')]);
+      checkout.settle.mockResolvedValue('pending');
+
+      await sweeper.sweep();
+      jest.advanceTimersByTime(5 * MINUTE);
+      await sweeper.sweep();
+
+      expect(gateway.queryCheckout).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports nothing when the completed attempt settled', async () => {
+      payments.findPendingAttempts.mockResolvedValue([young('a')]);
+
+      await sweeper.sweep();
+
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('overlapping passes (M-7)', () => {
+    /** A pending-attempts read that stays in flight until the test lets it finish. */
+    const holdRead = (): (() => void) => {
+      let finish: () => void = () => undefined;
+      payments.findPendingAttempts.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = () => resolve([]);
+        }),
+      );
+      return () => finish();
+    };
+
+    it('skips a tick while the previous pass is still running', async () => {
+      const finish = holdRead();
+
+      const first = sweeper.sweep();
+      await expect(sweeper.sweep()).resolves.toBeUndefined();
+
+      expect(payments.findPendingAttempts).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'bKash reconciliation is still running; skipping this tick',
+      );
+
+      finish();
+      await first;
+    });
+
+    it('sweeps again once the previous pass has finished', async () => {
+      const finish = holdRead();
+      const first = sweeper.sweep();
+      finish();
+      await first;
+
+      await sweeper.sweep();
+
+      expect(payments.findPendingAttempts).toHaveBeenCalledTimes(2);
+    });
+
+    it('sweeps again after a pass that threw', async () => {
+      payments.findPendingAttempts.mockRejectedValueOnce(new Error('boom'));
+      await sweeper.sweep();
+
+      await sweeper.sweep();
+
+      expect(payments.findPendingAttempts).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('summary and failure handling', () => {
     it('logs how many were examined, settled, refunded and failed', async () => {
       payments.findPendingAttempts.mockResolvedValue([young('a'), young('b'), young('c')]);

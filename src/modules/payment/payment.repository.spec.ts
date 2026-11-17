@@ -78,6 +78,7 @@ describe('PaymentRepository', () => {
     orderEvent: { create: jest.Mock };
     stockReservation: { updateMany: jest.Mock };
     $queryRaw: jest.Mock;
+    $executeRaw: jest.Mock;
   };
   let prisma: {
     $transaction: jest.Mock;
@@ -115,6 +116,7 @@ describe('PaymentRepository', () => {
       orderEvent: { create: jest.fn() },
       stockReservation: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
       $queryRaw: jest.fn().mockResolvedValue([{ status: 'PLACED', payment_method: 'BKASH' }]),
+      $executeRaw: jest.fn().mockResolvedValue(0),
     };
     prisma = {
       $transaction: jest.fn((arg: unknown) =>
@@ -394,6 +396,78 @@ describe('PaymentRepository', () => {
         'Exception occurred in PaymentRepository.createAttempt',
       );
     });
+
+    describe('the per-order attempt cap', () => {
+      beforeEach(() => {
+        tx.$queryRaw.mockResolvedValue([{ attempt_count: 4 }]);
+      });
+
+      it("takes the order's advisory lock before counting, so two starts cannot both pass", async () => {
+        await repository.createAttempt(attempt, holdUntil);
+
+        expect(taggedSql(tx.$executeRaw.mock.calls[0] as unknown[])).toBe(
+          'SELECT pg_advisory_xact_lock(hashtextextended(?, 0))',
+        );
+        expect(tx.$executeRaw.mock.calls[0][1]).toBe('ord-1');
+        expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+          tx.$queryRaw.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('counts bKash charges of the order in the last 24 hours on the database clock', async () => {
+        await repository.createAttempt(attempt, holdUntil);
+
+        const query = tx.$queryRaw.mock.calls[0][0] as Prisma.Sql;
+        expect(query.sql.replace(/\s+/g, ' ')).toContain(
+          'created_at > now() - make_interval(hours => ?)',
+        );
+        expect(query.values).toEqual(['ord-1', 'BKASH', 'CHARGE', 24]);
+      });
+
+      it('opens the fifth attempt', async () => {
+        await expect(repository.createAttempt(attempt, holdUntil)).resolves.toEqual({
+          id: 'pay-1',
+        });
+      });
+
+      it('answers attempt-limit at five, writing nothing', async () => {
+        tx.$queryRaw.mockResolvedValue([{ attempt_count: 5 }]);
+
+        await expect(repository.createAttempt(attempt, holdUntil)).resolves.toBe('attempt-limit');
+        expect(tx.paymentTransaction.create).not.toHaveBeenCalled();
+        expect(tx.stockReservation.updateMany).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('countRecentAttempts', () => {
+    it("counts the order's bKash charges in the last 24 hours on the database clock", async () => {
+      prisma.$queryRaw.mockResolvedValue([{ attempt_count: 3 }]);
+
+      await expect(repository.countRecentAttempts('ord-1')).resolves.toBe(3);
+
+      const query = prisma.$queryRaw.mock.calls[0][0] as Prisma.Sql;
+      expect(query.sql.replace(/\s+/g, ' ').trim()).toBe(
+        'SELECT count(*)::int AS attempt_count FROM payment_transactions WHERE order_id = ?::uuid AND method::text = ? AND direction::text = ? AND created_at > now() - make_interval(hours => ?)',
+      );
+      expect(query.values).toEqual(['ord-1', 'BKASH', 'CHARGE', 24]);
+    });
+
+    it('answers zero for an order with no attempts', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await expect(repository.countRecentAttempts('ord-1')).resolves.toBe(0);
+    });
+
+    it('answers null and logs when the count fails', async () => {
+      prisma.$queryRaw.mockRejectedValue(new Error('connection reset'));
+
+      await expect(repository.countRecentAttempts('ord-1')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: 'ord-1' }),
+        'Exception occurred in PaymentRepository.countRecentAttempts',
+      );
+    });
   });
 
   describe('findAttemptByPaymentId', () => {
@@ -620,10 +694,10 @@ describe('PaymentRepository', () => {
       await expect(repository.captureAttempt('pay-1', 'TRX1')).resolves.toEqual({
         kind: 'already-settled',
       });
-      expect(logger.error).not.toHaveBeenCalled();
-      expect(logger.warn).toHaveBeenCalledWith(
-        { attemptId: 'pay-1' },
-        'bKash transaction already recorded on another row',
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Prisma.PrismaClientKnownRequestError), attemptId: 'pay-1' },
+        'bKash transaction already recorded on another row; the attempt stays pending until a person reconciles it',
       );
     });
 
@@ -814,6 +888,77 @@ describe('PaymentRepository', () => {
 
       await expect(repository.completeRefund('claim-1', 'RFD1', true)).resolves.toBe(false);
       expect(tx.order.update).not.toHaveBeenCalled();
+    });
+
+    describe('another refund claim on the same order (M-9)', () => {
+      /** The SQL text of each raw query the transaction ran, whitespace collapsed. */
+      const rawQueries = (): string[] =>
+        tx.$queryRaw.mock.calls.map((call) =>
+          Array.isArray(call[0])
+            ? taggedSql(call as unknown[])
+            : (call[0] as Prisma.Sql).sql.replace(/\s+/g, ' '),
+        );
+
+      beforeEach(() => {
+        // The owed read: a cancelled order still owed money, unless a case says otherwise.
+        tx.$queryRaw.mockResolvedValue([{ cancelled: true, owed_poysha: 100000n }]);
+      });
+
+      it('does not mark the order REFUNDED while another claim on it is still PENDING', async () => {
+        tx.paymentTransaction.count.mockResolvedValue(1);
+
+        await expect(repository.completeRefund('claim-1', 'RFD1', true)).resolves.toBe(true);
+
+        expect(tx.paymentTransaction.count).toHaveBeenCalledWith({
+          where: {
+            orderId: 'ord-9',
+            method: PaymentMethod.BKASH,
+            direction: PaymentDirection.REFUND,
+            status: PaymentTransactionStatus.PENDING,
+            id: { not: 'claim-1' },
+          },
+        });
+        expect(tx.order.update).not.toHaveBeenCalled();
+      });
+
+      it('locks the order row before counting the other claims, so two completions serialise', async () => {
+        await repository.completeRefund('claim-1', 'RFD1', true);
+
+        expect(rawQueries()[0]).toBe('SELECT id FROM orders WHERE id = ?::uuid FOR UPDATE');
+        expect(tx.$queryRaw.mock.calls[0][1]).toBe('ord-9');
+        expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+          tx.paymentTransaction.count.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('marks it REFUNDED from the last claim to finish when the clearing one deferred to it', async () => {
+        tx.$queryRaw
+          .mockResolvedValueOnce([{ id: 'ord-9' }])
+          .mockResolvedValueOnce([{ cancelled: true, owed_poysha: 0n }]);
+
+        await repository.completeRefund('claim-1', 'RFD1', false);
+
+        expect(rawQueries()[1]).toContain('FROM owing w WHERE w.order_id = ?::uuid');
+        expect(tx.order.update).toHaveBeenCalledWith({
+          where: { id: 'ord-9' },
+          data: { paymentStatus: PaymentStatus.REFUNDED },
+        });
+      });
+
+      it.each([
+        ['still owed', [{ cancelled: true, owed_poysha: 100000n }]],
+        ['not cancelled', [{ cancelled: false, owed_poysha: 0n }]],
+        ['without bKash money', []],
+      ])(
+        'leaves an order that is %s alone when the refund was not the clearing one',
+        async (_case, owedRows) => {
+          tx.$queryRaw.mockResolvedValueOnce([{ id: 'ord-9' }]).mockResolvedValueOnce(owedRows);
+
+          await repository.completeRefund('claim-1', 'RFD1', false);
+
+          expect(tx.order.update).not.toHaveBeenCalled();
+        },
+      );
     });
 
     it('appends the audit row in the same transaction when one is given', async () => {

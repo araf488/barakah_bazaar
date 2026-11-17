@@ -24,6 +24,11 @@ export const EnvValidationMessages = {
   /** Raised when a deployed environment with a real payment provider would build its callback URL over plain http. */
   ApiPublicBaseUrlNotHttps:
     'API_PUBLIC_BASE_URL must begin with https:// in a deployed environment',
+  /**
+   * Raised when a deployed environment with a real payment provider would reach the gateway over
+   * plain http: the token grant sends the app secret and the merchant password as headers.
+   */
+  PaymentApiUrlNotHttps: 'PAYMENT_API_URL must begin with https:// in a deployed environment',
   /** Raised when a deployed environment selects a real payment provider with no credentials. */
   PaymentProviderNotConfigured: 'PAYMENT_PROVIDER is set but its credentials are not.',
   /** Raised when Swagger is left enabled in production. Staging may enable it. */

@@ -24,6 +24,8 @@ export const OrderConstants = {
    * This is a backstop against an order nobody ever actions, not a payment timeout.
    */
   CodHoldHours: 168,
+  /** Unit conversion for the COD hold window. */
+  MillisecondsPerHour: 3_600_000,
   /**
    * Order event note when the customer moves an order from bKash to cash on delivery. Owned
    * here, not by the payment module: the switch is an order write, and the payment module
@@ -100,6 +102,13 @@ export const OrderMessages = {
    * a captured bKash charge.
    */
   CannotSwitchToCod: 'This order can no longer switch to cash on delivery.',
+  /**
+   * Returned (409) when staff try to move a bKash order PLACED → CONFIRMED before it is paid. The
+   * payment confirms it; a hand-confirmed unpaid order could neither be paid nor switched, and a
+   * late payment would only be refunded.
+   */
+  UnpaidBkashOrderCannotBeConfirmed:
+    'A bKash order is confirmed when its payment arrives. Wait for the payment, or have the customer switch it to cash on delivery.',
   /** A customer tried to cancel an order that has already left. */
   TooLateToCancel:
     'This order has already been dispatched and can no longer be cancelled. Contact support.',

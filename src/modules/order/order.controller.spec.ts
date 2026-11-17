@@ -32,6 +32,14 @@ const occurrence = (overrides = {}) => ({
   ...overrides,
 });
 
+/** The statuses Swagger documents for a route handler, ascending. */
+const documentedStatuses = (handler: object): number[] =>
+  Object.keys(
+    (Reflect.getMetadata('swagger/apiResponse', handler) ?? {}) as Record<string, unknown>,
+  )
+    .map(Number)
+    .sort((a, b) => a - b);
+
 describe('OrderController', () => {
   let orderService: Record<string, jest.Mock>;
   let logger: jest.Mocked<PinoLogger>;
@@ -155,6 +163,12 @@ describe('OrderController', () => {
   });
 
   describe('switching to cash on delivery', () => {
+    it('documents 400, 401 and 503 beside its other statuses (M-11)', () => {
+      expect(documentedStatuses(OrderController.prototype.switchPaymentMethod)).toEqual([
+        200, 400, 401, 404, 409, 503,
+      ]);
+    });
+
     it('hands the caller and the order id to the service and returns the order', async () => {
       orderService.switchToCod.mockResolvedValue({ ok: true, data: { id: 'order-1' } });
 

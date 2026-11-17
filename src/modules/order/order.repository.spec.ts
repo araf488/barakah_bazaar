@@ -394,9 +394,10 @@ describe('OrderRepository', () => {
 
       await repository.findExpiredHolds();
 
-      const expiry = prisma.$queryRaw.mock.calls[0][1] as Date;
+      const expiry = prisma.$queryRaw.mock.calls[0][2] as Date;
 
-      expect(holdSql()).toContain("r.reference_type = 'Order'");
+      expect(holdSql()).toContain('r.reference_type = ?');
+      expect(prisma.$queryRaw.mock.calls[0][1]).toBe('Order');
       expect(holdSql()).toContain('r.released_at IS NULL');
       expect(holdSql()).toContain('r.expires_at < ?');
       expect(expiry.getTime()).toBeLessThanOrEqual(Date.now());
@@ -410,8 +411,21 @@ describe('OrderRepository', () => {
       expect(holdSql()).toContain(
         'FROM stock_reservations r JOIN orders o ON o.id::text = r.reference_id',
       );
-      expect(holdSql()).toContain("o.status IN ('PLACED', 'CONFIRMED')");
-      expect(holdSql()).toContain("o.payment_status <> 'PAID'");
+      expect(holdSql()).toContain('o.status::text IN (?, ?)');
+      expect(holdSql()).toContain('o.payment_status::text <> ?');
+    });
+
+    it('binds every enum and reference type as a parameter, never inline SQL text (M-2)', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await repository.findExpiredHolds();
+
+      expect(holdSql()).not.toMatch(/'[A-Za-z]+'/);
+      expect((prisma.$queryRaw.mock.calls[0] as unknown[]).slice(3, 6)).toEqual([
+        'PLACED',
+        'CONFIRMED',
+        'PAID',
+      ]);
     });
 
     it('takes the oldest holds first and caps the batch at 100', async () => {
@@ -420,7 +434,7 @@ describe('OrderRepository', () => {
       await repository.findExpiredHolds();
 
       expect(holdSql()).toContain('GROUP BY o.id ORDER BY MIN(r.expires_at), o.id LIMIT ?');
-      expect(prisma.$queryRaw.mock.calls[0][2]).toBe(100);
+      expect(prisma.$queryRaw.mock.calls[0][6]).toBe(100);
     });
 
     it('returns only orders still open, so a picked or dispatched order keeps its stock', async () => {

@@ -336,16 +336,19 @@ export class PaymentService {
   /**
    * Whether completing this claim clears what its cancelled order is owed: the rule the sweep
    * applies when it refunds. The owed read nets this PENDING claim as already given back, so the
-   * order was owed the claim's amount more before it.
+   * order was owed the claim's amount more before it. While another claim on the order is still
+   * PENDING it never does (M-9): that refund is unresolved, and the repository would not mark it.
    */
   private async claimClearsOrder(claim: PaymentTransaction): Promise<boolean | null> {
     const owed = await this.repository.findOwedForOrder(claim.orderId);
+    const pending = await this.repository.sumPendingRefundClaims(claim.orderId);
 
-    if (owed === null) {
+    if (owed === null || pending === null) {
       return null;
     }
 
-    if (owed === undefined) {
+    // The sum includes this claim, so anything above its own amount is another claim in flight.
+    if (owed === undefined || pending > claim.amountPoysha) {
       return false;
     }
 

@@ -78,22 +78,31 @@ The customer pays on bKash's own page. Three routes take part.
 
 ### `POST /orders/:id/payments/bkash` — start a payment (customer)
 
-Owner-scoped: someone else's order, or no order, answers 404 `'Order not found.'`. Refusals, in
+The caller is first resolved with `AuthService.resolveActiveUserId`, like every other order route
+(M-4), so a disabled user gets the same answer here as elsewhere. Owner-scoped: someone else's
+order, or no order, answers 404 `'Order was not found.'`, the same words as the order routes. Refusals, in
 this order:
 
 1. not a bKash order → 409 `PaymentMessages.NotBkashOrder`;
 2. not `PLACED` → 409 `OrderNotPayable`;
 3. already `PAID` → 409 `AlreadyPaid`;
 4. the stock hold cannot be read → 503 `Unavailable`; it has lapsed → 409 `PaymentWindowClosed`;
-5. `PAYMENT_PROVIDER=noop` → 503 `BkashUnavailable`.
+5. `PAYMENT_PROVIDER=noop` → 503 `BkashUnavailable`;
+6. **attempt cap (M-10, R21)**: the order already opened `MaxBkashAttemptsPerOrder` (5) bKash
+   attempts within `BkashAttemptCapWindowHours` (a rolling 24 hours on the **database clock**) →
+   409 `TooManyAttempts`; the count cannot be read → 503 `Unavailable`. Counted before bKash is
+   called, because every start costs a bKash create call.
 
 Then bKash creates the checkout (a refusal or fault → 502 `GatewayUnavailable`), and one
-transaction opens the PENDING attempt row and pushes the order's live stock hold forward to
+transaction takes a per-order advisory lock, counts the attempts again (two starts that raced past
+the early count cannot both be recorded: the loser → 409 `TooManyAttempts`), opens the PENDING
+attempt row and pushes the order's live stock hold forward to
 15 minutes from now (`BkashAttemptWindowMinutes`; forwards only, never shortened). A repeated
 `paymentID` → 502; a failed write → 503. The answer is only `{ redirectUrl, expiresInSeconds: 900 }`.
 
 Never trusted from the client: the amount (always the order total), the callback URL (built from
-`API_PUBLIC_BASE_URL` + `PaymentConstants.CallbackPath`, trailing slashes trimmed, R10), and the
+`API_PUBLIC_BASE_URL` + `API_PREFIX`/`API_VERSION` + `PaymentConstants.BkashCallbackRoute`, the
+same global prefix `main.ts` mounts (M-3), trailing slashes trimmed, R10), and the
 payer reference (the order number, never a phone number).
 
 ### `GET /payments/bkash/callback` — where bKash sends the browser back (public)
@@ -114,6 +123,11 @@ the URL.
   reads `paid` when the winner captured.
 - Words: `paid`, `failed`, `cancelled`, `pending`. A capture the order could not keep (settle
   result `refunded`) is shown as `failed`.
+- **The refund runs after the redirect (M-8, R21).** A capture the order could not keep is decided
+  and committed inside the request, but its refund (claim, bKash refund call, completion: up to
+  about 45 s) is started detached, with its own catch, so the browser is never held on bKash
+  refund calls. Claim-before-call (R9) still guarantees one refund, and a refund that never ran is
+  still owed, so the next sweep finishes it.
 
 **Throttle (R20).** The callback is in its own bucket, `ThrottleBuckets.PaymentCallback`
 (`payment-callback`), at `PAYMENT_CALLBACK_RATE_LIMIT` per minute per IP (default 60), not the
@@ -125,7 +139,8 @@ limit it answers the standard JSON 429.
 balancer's address unless Express trusts the forwarding header, so `main.ts` calls
 `applyTrustProxy` (`src/config/trust-proxy.ts`), which sets `trust proxy` to `TRUST_PROXY_HOPS`
 **only when it is above 0** (default 0: off), before the web mount and `listen`. Set it to the
-exact number of proxies in front of the API; a higher number lets a client forge its IP.
+exact number of proxies in front of the API — never more than the real number of proxy hops: an
+over-count lets a client spoof its IP past every per-IP limit.
 
 ### `PATCH /orders/:id/payment-method` — switch to cash on delivery (customer)
 
@@ -139,7 +154,13 @@ a bKash order.
 
 ## Settling what bKash says (`BkashCheckoutService.settle`)
 
-The single path an outcome takes, from the callback or the sweep.
+The single path an outcome takes, from the callback or the sweep. The callback passes
+`detachRefund = true` (M-8); the sweep waits for its refunds.
+
+Payment's own capture is the only way a bKash order reaches `CONFIRMED` while unpaid orders wait:
+staff `PATCH /admin/orders/:id/status` from `PLACED` to `CONFIRMED` on a bKash order that is not
+`PAID` answers 409 `OrderMessages.UnpaidBkashOrderCannotBeConfirmed` (M-13, R21). Cash on delivery
+orders are unaffected; staff may still cancel an unpaid bKash order.
 
 | bKash outcome                                        | What happens                                                                                                                                                                                                                                                                                                                                               |
 | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -165,12 +186,12 @@ that is ≤ 0 or larger than the charge.
 
 ### Definitive vs ambiguous (R12)
 
-| bKash answer                                                                                                                               | Claim                                                                                                               | Log                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `Completed` (a `refundTrxID` is optional)                                                                                                  | `completeRefund`: PENDING → CAPTURED with the refund trxID; order `payment_status` → `REFUNDED` when `markRefunded` | —                                                                    |
-| Completed but the write failed                                                                                                             | **kept** PENDING — the money went back                                                                              | error: `bKash refund succeeded but could not be recorded`            |
-| Positive refusal: an `errorCode`, a non-`'0000'` `statusCode`, a 4xx with a body, or `transactionStatus Failed`; or the request never left | **deleted** (`releaseRefundClaim`), so a later pass retries                                                         | error: `bKash automatic refund failed`                               |
-| Anything else: a lost answer, a timeout, a 5xx, any other 2xx shape                                                                        | **kept** PENDING                                                                                                    | error: `bKash refund outcome unknown; claim left for reconciliation` |
+| bKash answer                                                                                                                               | Claim                                                                                                                                                                | Log                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `Completed` (a `refundTrxID` is optional)                                                                                                  | `completeRefund`: PENDING → CAPTURED with the refund trxID; order `payment_status` → `REFUNDED` when `markRefunded` and no other claim on the order is PENDING (M-9) | —                                                                    |
+| Completed but the write failed                                                                                                             | **kept** PENDING — the money went back                                                                                                                               | error: `bKash refund succeeded but could not be recorded`            |
+| Positive refusal: an `errorCode`, a non-`'0000'` `statusCode`, a 4xx with a body, or `transactionStatus Failed`; or the request never left | **deleted** (`releaseRefundClaim`), so a later pass retries                                                                                                          | error: `bKash automatic refund failed`                               |
+| Anything else: a lost answer, a timeout, a 5xx, any other 2xx shape                                                                        | **kept** PENDING                                                                                                                                                     | error: `bKash refund outcome unknown; claim left for reconciliation` |
 
 A refund is definitive only on a positive refusal. Anything that might have moved money keeps the
 claim, because releasing it could pay out twice.
@@ -188,6 +209,13 @@ refund is in flight, the next charge would look owed too. The candidate is the n
 bKash charge with a trxID and no `'refund:' + trxID` row of any status. The refund amount is
 `min(owed, charge)` (R8), so a partial staff refund taken earlier is never paid out again.
 `markRefunded` = the order is `CANCELLED` and the amount ≥ owed.
+
+**Two claims on one order (M-9).** `completeRefund` locks the order row and marks it `REFUNDED`
+only when no **other** refund claim on the order is still PENDING: with two charges, the refund
+that clears the owed sum must not report the order refunded while the other refund is unresolved.
+The mark then falls to whichever claim completes last, which marks the order when it is
+`CANCELLED` and owes nothing, whatever `markRefunded` it was claimed with. A staff resolve applies
+the same rule (another PENDING claim → `orderRefunded: false`).
 
 Note that an order in status `REFUNDED` with `payment_status = PAID` counts as _keeping_ its
 money: the order status alone never refunds anything. Staff give that money back by hand.
@@ -244,7 +272,11 @@ ledger DTO also shows every row's `gatewayTransactionId`.
 
 ## The reconciliation sweeper (`BkashReconciliationSweeper`)
 
-Every 5 minutes, per instance, never rethrowing. It **returns at once under `noop`**, so open
+Every 5 minutes, per instance, never rethrowing. **One pass at a time per instance (M-7):** a pass
+can outlast the interval (50 queries, then 50 refunds), so a tick that finds the previous pass still
+running logs a warn (`bKash reconciliation is still running; skipping this tick`) and skips; an
+in-instance flag, reset in `finally`. Replicas can still overlap, which claims and conditional
+writes keep safe. It **returns at once under `noop`**, so open
 attempts and owed refunds freeze while the provider is `noop`. Never switch `PAYMENT_PROVIDER`
 back to `noop` while attempts are open or refunds are owed.
 
@@ -256,7 +288,11 @@ back to `noop` while attempts are open or refunds are owed.
    query over-fetches by the set-aside count so those cannot starve the batch (R15).
 2. **Refunds owed**, 50 a pass, through `refundNow`. A charge whose refund did not complete is set
    aside for 30 minutes (`RefundRetryCooldownMinutes`), with the same over-fetch.
-3. **Stuck claims**: PENDING REFUND claims older than 2 minutes are logged at error
+3. **Stuck work**: attempts bKash answered `completed` that are still PENDING after `settle` (the
+   capture could not be written: a trxID already on another row, logged at error by
+   `captureAttempt`, M-6) are logged at error with their ids (`bKash attempts completed at bKash
+are stuck pending and need a person to reconcile them`) and set aside like undecided attempts.
+   PENDING REFUND claims older than 2 minutes are logged at error
    (`bKash refund claims are stuck pending and need a person to reconcile them`) with their ids.
    Only reported, never released.
 
@@ -287,6 +323,8 @@ apply the `gateway_transaction_id` migration. The checklist must settle, among o
    a claim for money that may have gone back.
 
 `PAYMENT_API_URL` includes the version segment, e.g. `https://tokenized.sandbox.bka.sh/v1.2.0-beta`.
+In staging and production with `PAYMENT_PROVIDER=bkash` it must begin with `https://` (M-5): the
+token grant sends the app secret and the merchant password to it.
 
 ## The noop gateway refuses
 
@@ -325,7 +363,6 @@ through the order endpoints. The wire format withholds `collectedBy`.
 
 - bKash IPN (server-to-server notification) and agreement (saved-wallet) payments.
 - A report of mismatched captures beyond the error log (R19 refunds them automatically).
-- An error-level signal for a trxID already recorded on another row (logged at warn today).
 - Nagad, Rocket and SSLCommerz.
 
 ## Conventions this module follows

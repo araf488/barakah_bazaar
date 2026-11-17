@@ -303,6 +303,71 @@ describe('OrderService', () => {
       expect(repository.transition).toHaveBeenCalledWith('ord-1', from, to, 'user-1', null);
     });
 
+    describe('confirming a bKash order (M-13)', () => {
+      it.each(['PENDING', 'FAILED', 'REFUNDED'])(
+        'refuses PLACED → CONFIRMED on a bKash order whose payment is %s, moving nothing',
+        async (paymentStatus) => {
+          repository.findById.mockResolvedValue(
+            order({ paymentMethod: PaymentMethod.BKASH, paymentStatus }),
+          );
+
+          const result = await service.transitionOrder(staff, 'ord-1', {
+            status: OrderStatus.CONFIRMED,
+          });
+
+          expect(result).toEqual({
+            ok: false,
+            status: HttpStatus.CONFLICT,
+            message:
+              'A bKash order is confirmed when its payment arrives. Wait for the payment, or have the customer switch it to cash on delivery.',
+          });
+          expect(repository.transition).not.toHaveBeenCalled();
+          expect(notifications.notifyOrderStatus).not.toHaveBeenCalled();
+        },
+      );
+
+      it('lets staff confirm a paid bKash order', async () => {
+        repository.findById.mockResolvedValue(
+          order({ paymentMethod: PaymentMethod.BKASH, paymentStatus: 'PAID' }),
+        );
+
+        const result = await service.transitionOrder(staff, 'ord-1', {
+          status: OrderStatus.CONFIRMED,
+        });
+
+        expect(result.ok).toBe(true);
+        expect(repository.transition).toHaveBeenCalledWith(
+          'ord-1',
+          OrderStatus.PLACED,
+          OrderStatus.CONFIRMED,
+          'user-1',
+          null,
+        );
+      });
+
+      it('leaves a cash on delivery order unaffected', async () => {
+        repository.findById.mockResolvedValue(order({ paymentStatus: 'PENDING' }));
+
+        const result = await service.transitionOrder(staff, 'ord-1', {
+          status: OrderStatus.CONFIRMED,
+        });
+
+        expect(result.ok).toBe(true);
+      });
+
+      it('still lets staff cancel an unpaid bKash order', async () => {
+        repository.findById.mockResolvedValue(
+          order({ paymentMethod: PaymentMethod.BKASH, paymentStatus: 'PENDING' }),
+        );
+
+        const result = await service.transitionOrder(staff, 'ord-1', {
+          status: OrderStatus.CANCELLED,
+        });
+
+        expect(result.ok).toBe(true);
+      });
+    });
+
     it('refuses a jump that skips dispatch', async () => {
       // Skipping DISPATCHED means stock never leaves the shelf and nothing downstream notices.
       const result = await service.transitionOrder(staff, 'ord-1', {

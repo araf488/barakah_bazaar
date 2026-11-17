@@ -53,11 +53,14 @@ export class BkashController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Start a bKash payment for one of my orders' })
   @ApiResponse({ status: HttpStatus.CREATED, type: BkashCheckoutStartedDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Not signed in' })
   @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Not my order' })
   @ApiResponse({
     status: HttpStatus.CONFLICT,
-    description: 'Not a bKash order, not payable, already paid, or the payment window has closed',
+    description:
+      'Not a bKash order, not payable, already paid, the payment window has closed, or the order reached its bKash attempt limit',
   })
+  @ApiResponse({ status: HttpStatus.TOO_MANY_REQUESTS, description: 'Rate limit exceeded' })
   @ApiResponse({ status: HttpStatus.BAD_GATEWAY, description: 'bKash could not start the payment' })
   @ApiResponse({ status: HttpStatus.SERVICE_UNAVAILABLE, description: 'bKash is not available' })
   async start(

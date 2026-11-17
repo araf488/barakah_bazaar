@@ -441,6 +441,63 @@ describe('validateEnv', () => {
         validateEnv({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'bkash' }),
       ).not.toThrow();
     });
+
+    describe('PAYMENT_API_URL scheme', () => {
+      // The cleartext URL is the input under test: the assertion is that it is rejected.
+      // eslint-disable-next-line sonarjs/no-clear-text-protocols
+      const insecureGateway = 'http://tokenized.sandbox.bka.sh/v1.2.0-beta';
+
+      it('refuses an http gateway URL in production with bkash, since it carries the app secret', () => {
+        expect(() =>
+          validateEnv({
+            ...productionEnv,
+            ...bkashProductionEnv,
+            PAYMENT_API_URL: insecureGateway,
+          }),
+        ).toThrow(/PAYMENT_API_URL must begin with https/);
+      });
+
+      it('refuses an http gateway URL in staging with bkash', () => {
+        expect(() =>
+          validateEnv({ ...stagingEnv, ...bkashProductionEnv, PAYMENT_API_URL: insecureGateway }),
+        ).toThrow(/PAYMENT_API_URL must begin with https/);
+      });
+
+      it('reports the issue against PAYMENT_API_URL', () => {
+        const result = envSchema.safeParse({
+          ...productionEnv,
+          ...bkashProductionEnv,
+          PAYMENT_API_URL: insecureGateway,
+        });
+
+        expect(result.error?.issues).toEqual([
+          expect.objectContaining({
+            path: ['PAYMENT_API_URL'],
+            message: 'PAYMENT_API_URL must begin with https:// in a deployed environment',
+          }),
+        ]);
+      });
+
+      it('accepts an http gateway URL in development with bkash', () => {
+        expect(() =>
+          validateEnv({
+            NODE_ENV: 'development',
+            ...bkashCredentials,
+            PAYMENT_API_URL: insecureGateway,
+          }),
+        ).not.toThrow();
+      });
+
+      it('accepts an http gateway URL in production while the provider is noop', () => {
+        expect(() =>
+          validateEnv({
+            ...productionEnv,
+            PAYMENT_PROVIDER: 'noop',
+            PAYMENT_API_URL: insecureGateway,
+          }),
+        ).not.toThrow();
+      });
+    });
   });
 
   describe('API_PUBLIC_BASE_URL', () => {

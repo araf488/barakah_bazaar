@@ -2,7 +2,11 @@ import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { ApplicationConstants } from '../../common/constants/app.constants';
-import { ErrorMessages } from '../../common/constants/error-messages.constants';
+import {
+  ErrorMessageTemplates,
+  ErrorMessages,
+  formatMessage,
+} from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { ServiceResponse, serviceFail, serviceOk } from '../../common/types/service-response';
 import { AppConfigService } from '../../config';
@@ -13,7 +17,9 @@ import {
   PaymentTransaction,
   PaymentTransactionStatus,
 } from '../../infra/prisma/prisma-client';
+import { AuthService } from '../auth/auth.service';
 import { NotificationService } from '../notification/notification.service';
+import { OrderConstants } from '../order/order.constants';
 import { OrderRepository, OrderWithDetail } from '../order/order.repository';
 import { BkashCheckoutStartedDto } from './dto/bkash.dto';
 import {
@@ -26,6 +32,7 @@ import {
   SettleResults,
 } from './payment.constants';
 import {
+  ATTEMPT_LIMIT,
   ClosedAttemptStatus,
   PAYMENT_DUPLICATE,
   PaymentRepository,
@@ -69,13 +76,15 @@ export class BkashCheckoutService {
     private readonly orders: OrderRepository,
     @Inject(PaymentTokens.PaymentGateway) private readonly gateway: PaymentGateway,
     private readonly notifications: NotificationService,
+    private readonly authService: AuthService,
     @Inject(ConfigService) private readonly config: AppConfigService,
     @InjectPinoLogger(BkashCheckoutService.name) private readonly logger: PinoLogger,
   ) {}
 
   /**
-   * Starts a bKash payment for the customer's own order (spec §4): checks the order can still
-   * be paid, asks bKash for a hosted checkout, and opens the attempt with the stock hold
+   * Starts a bKash payment for the customer's own order (spec §4): resolves the caller as an
+   * active user like every other order route, checks the order can still be paid and has not hit
+   * its attempt cap, asks bKash for a hosted checkout, and opens the attempt with the stock hold
    * stretched to cover it. The response carries only where to go and for how long.
    */
   async start(
@@ -83,14 +92,23 @@ export class BkashCheckoutService {
     orderId: string,
   ): Promise<ServiceResponse<BkashCheckoutStartedDto>> {
     try {
-      const order = await this.orders.findForUser(user.userId, orderId);
+      const owner = await this.authService.resolveActiveUserId(user);
+      if (!owner.ok) {
+        return owner;
+      }
+
+      const order = await this.orders.findForUser(owner.data, orderId);
 
       if (order === null) {
         return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
       }
 
       if (order === undefined) {
-        return serviceFail(HttpStatus.NOT_FOUND, PaymentMessages.OrderNotFound);
+        // The same words the order routes use for the same resource.
+        return serviceFail(
+          HttpStatus.NOT_FOUND,
+          formatMessage(ErrorMessageTemplates.NotFound, OrderConstants.OrderResourceName),
+        );
       }
 
       const refusal = await this.refusalFor(order);
@@ -154,7 +172,8 @@ export class BkashCheckoutService {
       }
 
       const outcome = await this.askBkash(paymentId, status);
-      const result = await this.settle(attempt, outcome);
+      // The browser is waiting on this request: a refund is started, never awaited (M-8).
+      const result = await this.settle(attempt, outcome, true);
 
       return BkashCheckoutService.wordFor(
         result === SettleResults.Pending ? await this.reread(attempt) : result,
@@ -187,15 +206,21 @@ export class BkashCheckoutService {
   /**
    * Settles what bKash said about an attempt (spec §5) and answers how it ended. `null` means
    * nothing could be decided (a read or write failed), so the attempt is left for the sweep.
+   *
+   * `detachRefund` is for the browser callback: a capture the order cannot keep is still decided
+   * here, but its refund runs after the answer instead of holding the redirect for up to three
+   * bKash calls. The claim-before-call refund (R9) and the sweep still see it through. The sweep
+   * itself leaves it false and waits for the refund.
    */
   async settle(
     attempt: PaymentTransaction,
     outcome: CheckoutOutcome,
+    detachRefund = false,
   ): Promise<SettleResult | null> {
     try {
       switch (outcome.kind) {
         case 'completed':
-          return await this.settleCompleted(attempt, outcome);
+          return await this.settleCompleted(attempt, outcome, detachRefund);
         case 'failed':
         case 'expired':
           return await this.close(
@@ -327,7 +352,24 @@ export class BkashCheckoutService {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.BkashUnavailable);
     }
 
-    return null;
+    return await this.capRefusal(order.id);
+  }
+
+  /**
+   * Refuses a start once the order opened its cap of attempts in the window (M-10). Counted before
+   * bKash is called, since the call is what the cap protects; `createAttempt` checks again under a
+   * lock so two starts racing past this read cannot both be recorded.
+   */
+  private async capRefusal(orderId: string): Promise<ServiceResponse<never> | null> {
+    const opened = await this.payments.countRecentAttempts(orderId);
+
+    if (opened === null) {
+      return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
+    }
+
+    return opened >= PaymentConstants.MaxBkashAttemptsPerOrder
+      ? serviceFail(HttpStatus.CONFLICT, PaymentMessages.TooManyAttempts)
+      : null;
   }
 
   private static stateRefusal(order: PayableOrder): ServiceResponse<never> | null {
@@ -376,6 +418,10 @@ export class BkashCheckoutService {
       return serviceFail(HttpStatus.BAD_GATEWAY, PaymentMessages.GatewayUnavailable);
     }
 
+    if (attempt === ATTEMPT_LIMIT) {
+      return serviceFail(HttpStatus.CONFLICT, PaymentMessages.TooManyAttempts);
+    }
+
     if (attempt === null) {
       return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, PaymentMessages.Unavailable);
     }
@@ -386,11 +432,18 @@ export class BkashCheckoutService {
     });
   }
 
-  /** Trailing slashes on the base are dropped, so the callback never lands on a `//` path. */
+  /**
+   * The callback route under the same `API_PREFIX`/`API_VERSION` global prefix `main.ts` mounts,
+   * so a changed version never sends bKash to a 404. Trailing slashes on the base are dropped,
+   * so the callback never lands on a `//` path.
+   */
   private callbackUrl(): string {
+    const prefix = this.config.get('API_PREFIX', { infer: true });
+    const version = this.config.get('API_VERSION', { infer: true });
+
     return joinUrl(
       this.config.get('API_PUBLIC_BASE_URL', { infer: true }),
-      PaymentConstants.CallbackPath,
+      `${prefix}/${version}/${PaymentConstants.BkashCallbackRoute}`,
     );
   }
 
@@ -402,6 +455,7 @@ export class BkashCheckoutService {
   private async settleCompleted(
     attempt: PaymentTransaction,
     outcome: CompletedOutcome,
+    detachRefund: boolean,
   ): Promise<SettleResult | null> {
     const order = await this.orders.findById(attempt.orderId);
 
@@ -414,7 +468,7 @@ export class BkashCheckoutService {
         { attemptId: attempt.id, orderId: attempt.orderId, transactionId: outcome.transactionId },
         'bKash completed a payment that does not match its attempt',
       );
-      return await this.captureMismatch(attempt, outcome);
+      return await this.captureMismatch(attempt, outcome, detachRefund);
     }
 
     const capture = await this.payments.captureAttempt(attempt.id, outcome.transactionId);
@@ -428,7 +482,7 @@ export class BkashCheckoutService {
         await this.announce(capture.order);
         return SettleResults.Paid;
       case 'refund-due':
-        await this.refundCapture(capture.orderId);
+        await this.giveBack(capture.orderId, detachRefund);
         return SettleResults.Refunded;
       default:
         return await this.reread(attempt);
@@ -443,6 +497,7 @@ export class BkashCheckoutService {
   private async captureMismatch(
     attempt: PaymentTransaction,
     outcome: CompletedOutcome,
+    detachRefund: boolean,
   ): Promise<SettleResult | null> {
     const captured = await this.payments.captureMismatched(
       attempt.id,
@@ -458,8 +513,28 @@ export class BkashCheckoutService {
       return await this.reread(attempt);
     }
 
-    await this.refundCapture(attempt.orderId);
+    await this.giveBack(attempt.orderId, detachRefund);
     return SettleResults.Refunded;
+  }
+
+  /**
+   * Refunds a capture the order could not keep, now or detached. Detached, the outcome is already
+   * decided and committed, so nothing the refund does can change the answer; its own catch keeps a
+   * fault from becoming an unhandled rejection. The claim it takes first (R9) keeps a sweep pass
+   * running alongside from paying out twice, and a refund that never ran is still owed to the sweep.
+   */
+  private async giveBack(orderId: string, detach: boolean): Promise<void> {
+    if (!detach) {
+      await this.refundCapture(orderId);
+      return;
+    }
+
+    void this.refundCapture(orderId).catch((error: unknown) => {
+      this.logger.error(
+        { err: error, orderId },
+        'Exception occurred in BkashCheckoutService while refunding after the callback',
+      );
+    });
   }
 
   private static matches(

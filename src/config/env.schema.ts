@@ -282,6 +282,15 @@ const enforcePaymentProviderRules = (env: BaseEnv, ctx: z.RefinementCtx): void =
   if (!env.API_PUBLIC_BASE_URL.startsWith(EnvConstants.HttpsScheme)) {
     addIssue(ctx, 'API_PUBLIC_BASE_URL', EnvValidationMessages.ApiPublicBaseUrlNotHttps);
   }
+
+  // Every call to the gateway goes here, and the token grant carries the app secret and the
+  // merchant password as headers. A missing URL is already reported as missing credentials.
+  if (
+    env.PAYMENT_API_URL !== undefined &&
+    !env.PAYMENT_API_URL.startsWith(EnvConstants.HttpsScheme)
+  ) {
+    addIssue(ctx, 'PAYMENT_API_URL', EnvValidationMessages.PaymentApiUrlNotHttps);
+  }
 };
 
 /**

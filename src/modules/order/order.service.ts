@@ -45,9 +45,6 @@ import {
   TRANSITION_STALE,
 } from './order.repository';
 
-/** Milliseconds in an hour, for the COD hold window. */
-const MS_PER_HOUR = 3_600_000;
-
 /** Only the address fields the delivery-reach rules read. */
 interface DeliveryDestinationAddress {
   readonly district: string;
@@ -201,7 +198,9 @@ export class OrderService {
         return refusal;
       }
 
-      const holdUntil = new Date(Date.now() + OrderConstants.CodHoldHours * MS_PER_HOUR);
+      const holdUntil = new Date(
+        Date.now() + OrderConstants.CodHoldHours * OrderConstants.MillisecondsPerHour,
+      );
       const switched = await this.repository.switchToCod(order.id, holdUntil);
 
       if (switched === null) {
@@ -367,6 +366,11 @@ export class OrderService {
         return OrderService.single(order, false);
       }
 
+      const refusal = OrderService.staffMoveRefusal(order, dto.status);
+      if (refusal) {
+        return refusal;
+      }
+
       return await this.move(order, dto.status, actor.data, dto.note ?? null);
     } catch (error) {
       this.logger.error(
@@ -378,6 +382,26 @@ export class OrderService {
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
+
+  /**
+   * A move staff may not make although the state machine allows it: confirming a bKash order
+   * that is not paid (M-13). Payment confirms a bKash order itself, in the capture, never through
+   * here. Cash on delivery orders, and every other move, are unaffected.
+   */
+  private static staffMoveRefusal(
+    order: OrderWithDetail,
+    to: OrderStatus,
+  ): ServiceResponse<never> | null {
+    const confirmsUnpaidBkash =
+      order.status === OrderStatus.PLACED &&
+      to === OrderStatus.CONFIRMED &&
+      order.paymentMethod === PaymentMethod.BKASH &&
+      order.paymentStatus !== PaymentStatus.PAID;
+
+    return confirmsUnpaidBkash
+      ? serviceFail(HttpStatus.CONFLICT, OrderMessages.UnpaidBkashOrderCannotBeConfirmed)
+      : null;
+  }
 
   private async move(
     order: OrderWithDetail,

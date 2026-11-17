@@ -143,7 +143,7 @@ describe('bKash routes (end to end)', () => {
         .set(authHeaders(tokens.accessToken, DEVICE));
 
       expect(response.status).toBe(404);
-      expect(response.body.message).toBe('Order not found.');
+      expect(response.body.message).toBe('Order was not found.');
     });
   });
 });

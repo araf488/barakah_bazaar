@@ -551,16 +551,18 @@ export class OrderRepository {
       // The filters live in this query, not after it. `reference_id` is polymorphic text with no
       // foreign key, so the join needs the cast; and a paid CONFIRMED order keeps an expired,
       // unreleased hold until dispatch, so filtering after the limit would let those fill the
-      // window and starve the genuinely abandoned orders behind them.
+      // window and starve the genuinely abandoned orders behind them. Every enum and the reference
+      // type is a bound parameter (enums compared as text), so a rename cannot silently match
+      // nothing and stop the sweep.
       const holds = await this.prisma.$queryRaw<{ id: string }[]>`
         SELECT o.id
         FROM stock_reservations r
         JOIN orders o ON o.id::text = r.reference_id
-        WHERE r.reference_type = 'Order'
+        WHERE r.reference_type = ${OrderConstants.HoldReferenceType}
           AND r.released_at IS NULL
           AND r.expires_at < ${new Date()}
-          AND o.status IN ('PLACED', 'CONFIRMED')
-          AND o.payment_status <> 'PAID'
+          AND o.status::text IN (${OrderStatus.PLACED}, ${OrderStatus.CONFIRMED})
+          AND o.payment_status::text <> ${PaymentStatus.PAID}
         GROUP BY o.id
         ORDER BY MIN(r.expires_at), o.id
         LIMIT ${OrderConstants.ExpiredHoldBatchSize}`;

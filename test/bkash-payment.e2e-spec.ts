@@ -11,6 +11,7 @@ import {
   PaymentTransaction,
   PaymentTransactionStatus,
   PrismaClient,
+  UserRole,
 } from '../src/infra/prisma/prisma-client';
 import { AuthTokens } from '../src/modules/auth/auth.constants';
 import type { ReservationSweeper } from '../src/modules/order/reservation-sweeper.service';
@@ -82,7 +83,10 @@ const RESULT = 'http://localhost:3000/checkout/payment-result';
 const CALLBACK = '/api/v1/payments/bkash/callback';
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
+const REFUND_WAIT_MS = 5_000;
+const REFUND_POLL_MS = 25;
 const CUSTOMER_EMAIL = 'bkash-customer@barakahbazaar.com.bd';
+const STAFF_EMAIL = 'bkash-ops@barakahbazaar.com.bd';
 const STRANGER_EMAIL = 'bkash-stranger@barakahbazaar.com.bd';
 
 /** The CONFIRMED text the customer reads (the default language is Bangla). */
@@ -163,6 +167,43 @@ describe('bKash payment (end to end)', () => {
       where: { referenceType: 'Order', referenceId: orderId },
       data: { expiresAt: new Date(Date.now() + msFromNow) },
     });
+  };
+
+  /**
+   * The callback refunds detached (M-8), after the redirect is answered. Waits until bKash was
+   * asked for `calls` refunds and no refund claim on the order is still PENDING.
+   */
+  const refundsSettled = async (orderId: string, calls = 1): Promise<void> => {
+    const deadline = Date.now() + REFUND_WAIT_MS;
+
+    for (;;) {
+      const claims = await prisma.paymentTransaction.count({
+        where: {
+          orderId,
+          direction: PaymentDirection.REFUND,
+          status: PaymentTransactionStatus.PENDING,
+        },
+      });
+      if (gateway.refundCalls.length >= calls && claims === 0) {
+        return;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`The refund for order ${orderId} did not settle in ${REFUND_WAIT_MS} ms`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, REFUND_POLL_MS));
+    }
+  };
+
+  /** Waits until bKash was asked for `calls` refunds, however they were started. */
+  const bkashAskedForRefunds = async (calls: number): Promise<void> => {
+    const deadline = Date.now() + REFUND_WAIT_MS;
+
+    while (gateway.refundCalls.length < calls) {
+      if (Date.now() > deadline) {
+        throw new Error(`bKash was not asked for ${calls} refunds in ${REFUND_WAIT_MS} ms`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, REFUND_POLL_MS));
+    }
   };
 
   const holdEnd = async (orderId: string): Promise<Date> =>
@@ -441,6 +482,7 @@ describe('bKash payment (end to end)', () => {
 
       expect(landed.status).toBe(302);
       expect(landed.headers.location).toBe(resultUrl(order.orderNumber, 'failed'));
+      await refundsSettled(order.id);
       expect(await orderRow(order.id)).toMatchObject({
         status: OrderStatus.CANCELLED,
         paymentStatus: PaymentStatus.REFUNDED,
@@ -474,6 +516,7 @@ describe('bKash payment (end to end)', () => {
       gateway.nextRefund(refundRefused('bKash is busy'));
 
       await callback(paymentId);
+      await refundsSettled(order.id);
 
       expect(await orderRow(order.id)).toMatchObject({
         status: OrderStatus.CANCELLED,
@@ -523,6 +566,7 @@ describe('bKash payment (end to end)', () => {
       const landed = await callback(paymentId);
 
       expect(landed.headers.location).toBe(resultUrl(order.orderNumber, 'failed'));
+      await refundsSettled(order.id);
       expect(await orderRow(order.id)).toMatchObject({
         status: OrderStatus.PLACED,
         paymentMethod: PaymentMethod.CASH_ON_DELIVERY,
@@ -577,6 +621,7 @@ describe('bKash payment (end to end)', () => {
 
         expect(landed.status).toBe(302);
         expect(landed.headers.location).toBe(resultUrl(order.orderNumber, 'failed'));
+        await refundsSettled(order.id);
         expect(await orderRow(order.id)).toMatchObject({
           status: OrderStatus.PLACED,
           paymentStatus: PaymentStatus.PENDING,
@@ -605,6 +650,134 @@ describe('bKash payment (end to end)', () => {
         expect(confirmedMessagesFor(order.orderNumber)).toBe(0);
       },
     );
+  });
+
+  describe('a refund the callback starts runs after the redirect (M-8)', () => {
+    it('answers the redirect while bKash is still refunding, and the refund then completes', async () => {
+      const order = await placeOrder();
+      const total = BigInt(order.totalPoysha);
+      const paymentId = await openAttempt(order.id);
+      await setHoldEnd(order.id, -MINUTE_MS);
+      await reservationSweeper.sweep();
+      gateway.scriptExecute(paymentId, completedOutcome('TRX-M8', total, order.orderNumber));
+      const finishRefund = gateway.holdNextRefund();
+
+      const landed = await callback(paymentId);
+
+      expect(landed.status).toBe(302);
+      expect(landed.headers.location).toBe(resultUrl(order.orderNumber, 'failed'));
+      // The redirect is already answered; the detached refund claims, then reaches bKash.
+      await bkashAskedForRefunds(1);
+      const [, claim] = await ledger(order.id);
+      expect(claim).toMatchObject({
+        direction: PaymentDirection.REFUND,
+        status: PaymentTransactionStatus.PENDING,
+        gatewayReference: 'refund:TRX-M8',
+      });
+
+      finishRefund();
+      await refundsSettled(order.id);
+
+      expect(gateway.refundCalls).toHaveLength(1);
+      expect(await orderRow(order.id)).toMatchObject({
+        status: OrderStatus.CANCELLED,
+        paymentStatus: PaymentStatus.REFUNDED,
+      });
+    });
+  });
+
+  describe('the attempt cap (M-10)', () => {
+    it('opens five attempts on one order, then answers 409 to the sixth without calling bKash', async () => {
+      const order = await placeOrder();
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        expect((await startPayment(order.id)).status).toBe(201);
+      }
+      const sixth = await startPayment(order.id);
+
+      expect(sixth.status).toBe(409);
+      expect(sixth.body.message).toBe(
+        'This order has reached its limit of bKash payment attempts. Try again later, or switch it to cash on delivery.',
+      );
+      expect(gateway.createCalls).toHaveLength(5);
+      expect(await ledger(order.id)).toHaveLength(5);
+    });
+
+    it('counts only the last 24 hours on the database clock', async () => {
+      const order = await placeOrder();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await openAttempt(order.id);
+      }
+      await prisma.paymentTransaction.updateMany({
+        where: { orderId: order.id },
+        data: { createdAt: new Date(Date.now() - 25 * HOUR_MS) },
+      });
+
+      expect((await startPayment(order.id)).status).toBe(201);
+      expect(gateway.createCalls).toHaveLength(6);
+    });
+  });
+
+  describe('staff confirming a bKash order (M-13)', () => {
+    const transition = async (orderId: string, status: OrderStatus): Promise<request.Response> => {
+      const staff = await seedVerifiedUser(prisma, {
+        email: STAFF_EMAIL,
+        password: PASSWORD,
+        role: UserRole.OPS,
+      });
+      const tokens = await loginAs(app, staff.email, PASSWORD, DEVICE);
+
+      return request(app.getHttpServer())
+        .patch(`/api/v1/admin/orders/${orderId}/status`)
+        .set(authHeaders(tokens.accessToken, DEVICE))
+        .send({ status });
+    };
+
+    it('answers 409 to PLACED → CONFIRMED on an unpaid bKash order and moves nothing', async () => {
+      const order = await placeOrder();
+
+      const response = await transition(order.id, OrderStatus.CONFIRMED);
+
+      expect(response.status).toBe(409);
+      expect(response.body.message).toBe(
+        'A bKash order is confirmed when its payment arrives. Wait for the payment, or have the customer switch it to cash on delivery.',
+      );
+      expect(await orderRow(order.id)).toMatchObject({
+        status: OrderStatus.PLACED,
+        paymentStatus: PaymentStatus.PENDING,
+      });
+      expect(await confirmedEvents(order.id)).toBe(0);
+    });
+
+    it('still confirms it through the payment itself', async () => {
+      const order = await placeOrder();
+      const paymentId = await openAttempt(order.id);
+      gateway.scriptExecute(
+        paymentId,
+        completedOutcome('TRX-M13', BigInt(order.totalPoysha), order.orderNumber),
+      );
+
+      await callback(paymentId);
+
+      expect(await orderRow(order.id)).toMatchObject({
+        status: OrderStatus.CONFIRMED,
+        paymentStatus: PaymentStatus.PAID,
+      });
+    });
+
+    it('lets staff confirm a cash on delivery order as before', async () => {
+      const order = await placeOrder();
+      const switched = await request(app.getHttpServer())
+        .patch(`/api/v1/orders/${order.id}/payment-method`)
+        .set(headers())
+        .send({ paymentMethod: 'CASH_ON_DELIVERY' });
+      expect(switched.status).toBe(200);
+
+      const response = await transition(order.id, OrderStatus.CONFIRMED);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ id: order.id, status: OrderStatus.CONFIRMED });
+    });
   });
 
   describe('the sweepers', () => {
@@ -708,7 +881,7 @@ describe('bKash payment (end to end)', () => {
       const response = await startPayment(order.id, stranger);
 
       expect(response.status).toBe(404);
-      expect(response.body.message).toBe('Order not found.');
+      expect(response.body.message).toBe('Order was not found.');
       expect(gateway.createCalls).toEqual([]);
       expect(await ledger(order.id)).toEqual([]);
     });
