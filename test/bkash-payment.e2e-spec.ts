@@ -13,7 +13,7 @@ import {
   PrismaClient,
   UserRole,
 } from '../src/infra/prisma/prisma-client';
-import { AuthTokens } from '../src/modules/auth/auth.constants';
+import { AuthConstants, AuthTokens } from '../src/modules/auth/auth.constants';
 import type { ReservationSweeper } from '../src/modules/order/reservation-sweeper.service';
 import type { BkashReconciliationSweeper } from '../src/modules/payment/bkash-reconciliation.sweeper';
 import { NotificationTokens } from '../src/modules/notification/notification.constants';
@@ -112,6 +112,17 @@ describe('bKash payment (end to end)', () => {
   let session: Session;
   const gateway = new FakeBkashGateway();
   const sms = new RecordingSmsGateway();
+
+  /** Staff sign in straight to a session here; MFA enrolment belongs to the identity suite. */
+  const writeSettings = async (): Promise<void> => {
+    const data = { staffMfaRequired: false };
+
+    await prisma.authSettings.upsert({
+      where: { id: AuthConstants.AuthSettingsRowId },
+      create: { id: AuthConstants.AuthSettingsRowId, ...data },
+      update: data,
+    });
+  };
 
   const signIn = async (email: string): Promise<Session> => {
     await seedVerifiedUser(prisma, { email, password: PASSWORD });
@@ -272,6 +283,7 @@ describe('bKash payment (end to end)', () => {
 
   beforeEach(async () => {
     await resetDatabase(prisma);
+    await writeSettings();
     await clearStore(prisma);
     gateway.reset();
     sms.reset();
