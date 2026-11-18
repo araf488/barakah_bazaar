@@ -1,41 +1,65 @@
 #!/usr/bin/env bash
 # Smoke test for the one-container image: API + SSR storefront + admin SPA.
 # Usage: scripts/smoke-web.sh <image-tag>
-# Runs the image with throwaway, non-secret env (no Redis) and always removes it.
+# Runs the image once, in a deployed mode, with throwaway values, and always removes it.
 #
-# Database: none by default. Set SMOKE_DATABASE_URL to a migrated, THROWAWAY Postgres (the e2e
+# Mode: SMOKE_NODE_ENV, `production` (the image's own default) or `staging`. Both are the modes
+# that ship, so the smoke exercises the same config rules (env.schema.ts) and the same Next
+# runtime a host will. Staging also turns Swagger on, as the stage environment does for QA.
+# The values those modes require are generated per run and are never secrets: a random
+# JWT_SECRET and TOTP_ENCRYPTION_KEY, and the RFC 2606 `.invalid` origin for the public URLs,
+# the CORS allowlist and SUPABASE_URL (nothing is ever sent there during the smoke).
+#
+# Database: an unreachable placeholder by default, so the app boots degraded and the database
+# checks are skipped. Set SMOKE_DATABASE_URL to a migrated, THROWAWAY Postgres (the e2e
 # container, never a shared database) to also prove the image can query it: readiness runs
 # $queryRaw through @prisma/adapter-pg, and the public product list runs findMany/count through
 # the generated client's query compiler. Those are what scripts/prune-runtime-modules.sh could
 # break. A database on the host is reached as host.docker.internal, e.g.
 #   SMOKE_DATABASE_URL=postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public
-#
-# NODE_ENV=development, not production: staging/production demand a real DATABASE_URL,
-# Supabase keys, JWT/TOTP secrets, https public URLs and a CORS allowlist (env.schema.ts).
-# The image's own default is NODE_ENV=production; this script overrides it for the smoke only.
 set -euo pipefail
 
 IMAGE="${1:?usage: smoke-web.sh <image-tag>}"
+MODE="${SMOKE_NODE_ENV:-production}"
 PORT="${SMOKE_PORT:-3000}"
 CURL_OPTS=(--connect-timeout 3 --max-time 10)
 HEALTH_WAIT_SECONDS=60
 NAME="barakah-smoke-$$"
 BASE="${SMOKE_BASE_URL:-http://127.0.0.1:${PORT}}"
 FAILURES=0
+PLACEHOLDER_ORIGIN="https://smoke.invalid"
+# Port 1 inside the container: refused at once, so boot reports the database down without waiting.
+PLACEHOLDER_DATABASE_URL="postgresql://smoke:smoke@127.0.0.1:1/smoke"
 DATABASE_URL_FOR_SMOKE="${SMOKE_DATABASE_URL:-}"
-DB_ARGS=()
-if [ -n "$DATABASE_URL_FOR_SMOKE" ]; then
-  # host-gateway makes host.docker.internal resolve on Linux runners too (Docker Desktop and
-  # OrbStack already define it). The URL is passed via the environment and never printed.
-  DB_ARGS=(-e DATABASE_URL --add-host=host.docker.internal:host-gateway)
-fi
+
+case "$MODE" in
+  production) SWAGGER="false" ;;
+  staging) SWAGGER="true" ;;
+  *) echo "SMOKE_NODE_ENV must be production or staging (got: $MODE)"; exit 2 ;;
+esac
+command -v openssl >/dev/null || { echo "FAIL: openssl is required to generate throwaway keys"; exit 2; }
 
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1; }
 trap cleanup EXIT
 
-DATABASE_URL="$DATABASE_URL_FOR_SMOKE" docker run -d --name "$NAME" -p "${PORT}:3000" \
-  -e NODE_ENV=development -e PORT=3000 -e WEB_ENABLED=true -e LOG_LEVEL=warn \
-  ${DB_ARGS[@]+"${DB_ARGS[@]}"} \
+# Values travel through the environment (`-e NAME` with no value), never on docker's command
+# line, and are never printed. host-gateway makes host.docker.internal resolve on Linux runners
+# too (Docker Desktop and OrbStack already define it).
+if [ -n "$DATABASE_URL_FOR_SMOKE" ]; then DB_LABEL="provided"; else DB_LABEL="placeholder"; fi
+echo "smoke: NODE_ENV=$MODE, database $DB_LABEL"
+NODE_ENV="$MODE" \
+  SWAGGER_ENABLED="$SWAGGER" \
+  DATABASE_URL="${DATABASE_URL_FOR_SMOKE:-$PLACEHOLDER_DATABASE_URL}" \
+  JWT_SECRET="$(openssl rand -hex 32)" \
+  TOTP_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  APP_PUBLIC_BASE_URL="$PLACEHOLDER_ORIGIN" \
+  CORS_ALLOWED_ORIGINS="$PLACEHOLDER_ORIGIN" \
+  SUPABASE_URL="$PLACEHOLDER_ORIGIN" \
+  SUPABASE_SERVICE_ROLE_KEY="smoke-placeholder" \
+  docker run -d --name "$NAME" -p "${PORT}:3000" --add-host=host.docker.internal:host-gateway \
+  -e PORT=3000 -e WEB_ENABLED=true -e LOG_LEVEL=warn \
+  -e NODE_ENV -e SWAGGER_ENABLED -e DATABASE_URL -e JWT_SECRET -e TOTP_ENCRYPTION_KEY \
+  -e APP_PUBLIC_BASE_URL -e CORS_ALLOWED_ORIGINS -e SUPABASE_URL -e SUPABASE_SERVICE_ROLE_KEY \
   "$IMAGE" >/dev/null || { echo "FAIL: container did not start"; exit 1; }
 
 # Prints the last 100 container log lines; used on any failure.
@@ -72,11 +96,20 @@ check() {
   rm -f "$hdr" "$body"
 }
 
-check "health"            /api/v1/health          200 ""
+# The environment field proves the mode actually applied, not just that something booted.
+check "health"            /api/v1/health          200 application/json "\"environment\":\"$MODE\""
 check "storefront"        /                       200 text/html "<h1[^>]*>Barakah Bazaar</h1>"
 check "admin"             /admin/                 200 text/html "Barakah Bazaar Admin"
 check "unknown api path"  /api/v1/does-not-exist  404 application/json
 check "auth guard (R1)"   /api/v1/auth/me         401 application/json
+
+# /api/docs sits outside /api/v1, so these also prove the web mount hands the whole /api prefix
+# to Nest: in production Nest answers its JSON 404, never a Next page.
+if [ "$MODE" = "staging" ]; then
+  check "swagger (staging)"     /api/docs  200 text/html "<title>Swagger UI"
+else
+  check "no docs (production)"  /api/docs  404 application/json
+fi
 
 if [ -n "$DATABASE_URL_FOR_SMOKE" ]; then
   check "db readiness"    /api/v1/health/ready      200 application/json '"database":"up"'

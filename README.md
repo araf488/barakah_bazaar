@@ -233,6 +233,11 @@ defaults to `production`, so an unset `NODE_ENV` on the stage host makes the app
 boot with production rules and crash-loop on `SWAGGER_ENABLED` — loudly, by
 design, rather than serving QA under the wrong configuration.
 
+On stage, Next logs `You are using a non-standard "NODE_ENV" value` twice at
+boot. That is expected and harmless here: Next picks its development runtime
+only for `NODE_ENV=development`, so stage server-renders with the production
+runtime, the same as prod. CI smoke-tests the image in both modes.
+
 | Variable                             | dev (local)                                   | stage                   | prod                         |
 | ------------------------------------ | --------------------------------------------- | ----------------------- | ---------------------------- |
 | `NODE_ENV`                           | `development`                                 | `staging`               | `production`                 |
@@ -654,9 +659,16 @@ to `dev`, `stg` and `main`:
 | `image`  | push        | Publishes the one image to `ghcr.io/araf488/barakah_bazaar`, tagged immutably `sha-<short-sha>` plus a moving `dev` / `stg` / `prod` tag.                                                            |
 | `deploy` | push        | In the branch's GitHub Environment: `db:deploy` and `db:rls` when `DIRECT_URL` is set, then the deploy hook below.                                                                                   |
 
-The smoke script runs the image and asserts `/api/v1/health` is 200, `/` is
-HTML from Next, `/admin/` is HTML from the SPA, an unknown `/api/v1` path is a
-JSON 404, and `/api/v1/auth/me` without a token is a JSON 401. With
+The smoke script runs the image in a deployed mode, `SMOKE_NODE_ENV=production`
+(the default, and the image's own) or `staging`, so it meets the same config
+rules and the same Next runtime a host will. It generates the values those modes
+require per run (random `JWT_SECRET` and `TOTP_ENCRYPTION_KEY`, the `.invalid`
+origin for public URLs, CORS and `SUPABASE_URL`); none of them are secrets. CI
+runs it once per mode. It asserts `/api/v1/health` is 200 and reports the
+requested environment, `/` is HTML from Next, `/admin/` is HTML from the SPA, an
+unknown `/api/v1` path is a JSON 404, and `/api/v1/auth/me` without a token is a
+JSON 401. `/api/docs` is the Swagger page in staging and a JSON 404 in
+production. With
 `SMOKE_DATABASE_URL` set to a migrated, throwaway Postgres (CI points it at the e2e
 service), it also asserts `/api/v1/health/ready` reports the database `up` and
 `/api/v1/catalog/products` answers 200, which proves the image can still query.
@@ -680,7 +692,8 @@ launch.
 
 ```bash
 docker build -t barakah-bazaar-api .
-bash scripts/smoke-web.sh barakah-bazaar-api     # the same check CI runs, minus the database
+bash scripts/smoke-web.sh barakah-bazaar-api     # production mode, minus the database checks
+SMOKE_NODE_ENV=staging bash scripts/smoke-web.sh barakah-bazaar-api
 # with the database checks, against the e2e container once `npm run test:e2e` has migrated it:
 SMOKE_DATABASE_URL='postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public' \
   bash scripts/smoke-web.sh barakah-bazaar-api
@@ -721,16 +734,16 @@ These are deliberately not done by the merge itself:
 
 ## Known follow-ups
 
-- **Image size.** The image is 1.26 GB. To shrink it, consider Next
-  `output: 'standalone'` and production-only modules for the Next server.
+- **Image size.** The image is ~854 MB. Deleting the `@next/swc` native binary
+  saves ~120 MB more and passed the smoke, but the storefront has one page, so
+  `next/image` and `next/font` are untested without it; revisit once it has real
+  pages. Next `output: 'standalone'` is not recommended: it conflicts with the
+  in-process mount.
 - **Storefront auth.** `web/README.md` plans Supabase client auth, which
   conflicts with this API's own device-bound sessions. Decide at the first
   storefront auth task.
 - **CORS and `X-Device-Id`.** The CORS `allowedHeaders` lack `X-Device-Id`. This
   matters only for a future cross-origin client; the web clients are same-origin.
-- **Three failing e2e cases.** The bKash end-to-end suite has 3 failures (the
-  mismatch cases: different amount, currency and order number) that were already
-  failing from commit `cc4d494` and are untouched by the merge.
 
 ---
 

@@ -126,9 +126,18 @@ jobs:
       # migrated by the e2e step above, so the smoke also proves the image can query
       # Postgres after scripts/prune-runtime-modules.sh removed the Prisma CLI tree.
       # host.docker.internal is mapped to the runner by the script (host-gateway).
-      - name: Smoke test the container image
+      # Once per deployed mode: prod runs NODE_ENV=production, stage runs NODE_ENV=staging.
+      # The script generates the throwaway keys and placeholder origins those modes require.
+      - name: Smoke test the container image (production mode)
         run: bash scripts/smoke-web.sh barakah-bazaar-api:verify
         env:
+          SMOKE_NODE_ENV: production
+          SMOKE_DATABASE_URL: postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public
+
+      - name: Smoke test the container image (staging mode)
+        run: bash scripts/smoke-web.sh barakah-bazaar-api:verify
+        env:
+          SMOKE_NODE_ENV: staging
           SMOKE_DATABASE_URL: postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public
 
   image:
