@@ -21,10 +21,14 @@ FROM deps AS builder
 COPY tsconfig*.json nest-cli.json ./
 COPY src ./src
 COPY web ./web
+COPY scripts/prune-runtime-modules.sh ./scripts/prune-runtime-modules.sh
+# prune-runtime-modules.sh removes the Prisma CLI tree that `npm prune --omit=dev` keeps
+# (an optional peer of @prisma/client); see the script for the list and why. Saves ~400 MB.
 RUN npx prisma generate && npm run build && npm run web:build \
  && rm -rf web/apps/storefront/.next/cache \
  && find web/apps/storefront/.next -name '*.map' -delete \
- && npm prune --omit=dev
+ && npm prune --omit=dev \
+ && sh scripts/prune-runtime-modules.sh /app
 
 # ─── runtime stage ────────────────────────────────────────────────────────────
 FROM node:22-alpine AS runtime

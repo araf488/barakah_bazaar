@@ -122,8 +122,14 @@ jobs:
 
       # Runs the one image (API + storefront + admin) on host port 3000, which is
       # free here: the e2e Postgres service publishes 5433 only.
+      # SMOKE_DATABASE_URL points the container at that same throwaway service, already
+      # migrated by the e2e step above, so the smoke also proves the image can query
+      # Postgres after scripts/prune-runtime-modules.sh removed the Prisma CLI tree.
+      # host.docker.internal is mapped to the runner by the script (host-gateway).
       - name: Smoke test the container image
         run: bash scripts/smoke-web.sh barakah-bazaar-api:verify
+        env:
+          SMOKE_DATABASE_URL: postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public
 
   image:
     name: Publish image

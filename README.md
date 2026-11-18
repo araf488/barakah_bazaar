@@ -341,6 +341,7 @@ web/                         npm workspaces (apps and shared packages), own ESLi
   apps/admin/                React + Vite SPA, built to static files Nest serves at /admin
   packages/config|tokens|ui/ shared configuration, brand tokens, UI primitives
 scripts/smoke-web.sh         container smoke test used by CI
+scripts/prune-runtime-modules.sh  image build step: drops the Prisma CLI tree prune keeps
 ```
 
 The API is the root package; `web/apps/*` and `web/packages/*` are the npm
@@ -655,7 +656,17 @@ to `dev`, `stg` and `main`:
 
 The smoke script runs the image and asserts `/api/v1/health` is 200, `/` is
 HTML from Next, `/admin/` is HTML from the SPA, an unknown `/api/v1` path is a
-JSON 404, and `/api/v1/auth/me` without a token is a JSON 401.
+JSON 404, and `/api/v1/auth/me` without a token is a JSON 401. With
+`SMOKE_DATABASE_URL` set to a migrated, throwaway Postgres (CI points it at the e2e
+service), it also asserts `/api/v1/health/ready` reports the database `up` and
+`/api/v1/catalog/products` answers 200, which proves the image can still query.
+
+**Image size.** `npm prune --omit=dev` keeps the Prisma CLI, `typescript` and
+everything they pull in (~400 MB), because `@prisma/client` declares them as
+optional peers. The image never runs the CLI (migrations run in the deploy job),
+so `scripts/prune-runtime-modules.sh` deletes that tree by name in the build stage
+and fails the build if a module the runtime loads stops resolving. The image is
+~854 MB uncompressed (was 1.26 GB).
 
 **The hook model.** No application host is chosen yet, deliberately. If the
 environment secret `DEPLOY_HOOK_URL` is set, the deploy job `POST`s to it (the
@@ -669,7 +680,10 @@ launch.
 
 ```bash
 docker build -t barakah-bazaar-api .
-bash scripts/smoke-web.sh barakah-bazaar-api     # the same check CI runs
+bash scripts/smoke-web.sh barakah-bazaar-api     # the same check CI runs, minus the database
+# with the database checks, against the e2e container once `npm run test:e2e` has migrated it:
+SMOKE_DATABASE_URL='postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public' \
+  bash scripts/smoke-web.sh barakah-bazaar-api
 docker compose up -d redis                       # local Redis only; Postgres lives in Supabase
 ```
 

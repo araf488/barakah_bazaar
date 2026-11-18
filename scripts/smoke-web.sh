@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Smoke test for the one-container image: API + SSR storefront + admin SPA.
 # Usage: scripts/smoke-web.sh <image-tag>
-# Runs the image with throwaway, non-secret env (no database, no Redis) and always removes it.
+# Runs the image with throwaway, non-secret env (no Redis) and always removes it.
+#
+# Database: none by default. Set SMOKE_DATABASE_URL to a migrated, THROWAWAY Postgres (the e2e
+# container, never a shared database) to also prove the image can query it: readiness runs
+# $queryRaw through @prisma/adapter-pg, and the public product list runs findMany/count through
+# the generated client's query compiler. Those are what scripts/prune-runtime-modules.sh could
+# break. A database on the host is reached as host.docker.internal, e.g.
+#   SMOKE_DATABASE_URL=postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public
 #
 # NODE_ENV=development, not production: staging/production demand a real DATABASE_URL,
 # Supabase keys, JWT/TOTP secrets, https public URLs and a CORS allowlist (env.schema.ts).
@@ -15,12 +22,20 @@ HEALTH_WAIT_SECONDS=60
 NAME="barakah-smoke-$$"
 BASE="${SMOKE_BASE_URL:-http://127.0.0.1:${PORT}}"
 FAILURES=0
+DATABASE_URL_FOR_SMOKE="${SMOKE_DATABASE_URL:-}"
+DB_ARGS=()
+if [ -n "$DATABASE_URL_FOR_SMOKE" ]; then
+  # host-gateway makes host.docker.internal resolve on Linux runners too (Docker Desktop and
+  # OrbStack already define it). The URL is passed via the environment and never printed.
+  DB_ARGS=(-e DATABASE_URL --add-host=host.docker.internal:host-gateway)
+fi
 
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1; }
 trap cleanup EXIT
 
-docker run -d --name "$NAME" -p "${PORT}:3000" \
+DATABASE_URL="$DATABASE_URL_FOR_SMOKE" docker run -d --name "$NAME" -p "${PORT}:3000" \
   -e NODE_ENV=development -e PORT=3000 -e WEB_ENABLED=true -e LOG_LEVEL=warn \
+  ${DB_ARGS[@]+"${DB_ARGS[@]}"} \
   "$IMAGE" >/dev/null || { echo "FAIL: container did not start"; exit 1; }
 
 # Prints the last 100 container log lines; used on any failure.
@@ -62,6 +77,13 @@ check "storefront"        /                       200 text/html "<h1[^>]*>Baraka
 check "admin"             /admin/                 200 text/html "Barakah Bazaar Admin"
 check "unknown api path"  /api/v1/does-not-exist  404 application/json
 check "auth guard (R1)"   /api/v1/auth/me         401 application/json
+
+if [ -n "$DATABASE_URL_FOR_SMOKE" ]; then
+  check "db readiness"    /api/v1/health/ready      200 application/json '"database":"up"'
+  check "db query"        /api/v1/catalog/products  200 application/json '"items":\['
+else
+  echo "SKIP  database checks (SMOKE_DATABASE_URL not set)"
+fi
 
 if [ "$FAILURES" -ne 0 ]; then echo "smoke: $FAILURES check(s) failed"; dump_logs; exit 1; fi
 echo "smoke: all checks passed"
