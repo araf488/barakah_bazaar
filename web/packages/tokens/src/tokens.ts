@@ -80,7 +80,10 @@ export const fontSize = {
 export const motion = {
   duration: {
     fast: '240ms',
+    swap: '250ms',
+    pop: '300ms',
     base: '320ms',
+    drawer: '380ms',
     slow: '400ms',
     float: '3.5s',
     marquee: '28s',
@@ -94,7 +97,46 @@ export const motion = {
   },
 } as const;
 
-export const tokens = { color, font, space, radius, fontSize, motion } as const;
+/** How a named animation plays: one of the durations and curves above, and whether it loops. */
+export interface AnimationSpec {
+  readonly duration: string;
+  readonly easing: string;
+  /** `infinite` for the ambient loops; `forwards` keeps an entrance at its last frame. */
+  readonly repeat: 'infinite' | 'forwards';
+}
+
+/**
+ * The eleven animations the Figma file names, each composed from the motion ramp. The keyframes
+ * themselves are CSS geometry and live with the CSS emitter; these are the timings every
+ * platform shares.
+ */
+export const animation = {
+  marquee: { duration: motion.duration.marquee, easing: motion.easing.linear, repeat: 'infinite' },
+  float: { duration: motion.duration.float, easing: motion.easing.inOut, repeat: 'infinite' },
+  fadeIn: { duration: motion.duration.slow, easing: motion.easing.out, repeat: 'forwards' },
+  slideUp: { duration: motion.duration.slow, easing: motion.easing.decelerate, repeat: 'forwards' },
+  slideRight: {
+    duration: motion.duration.drawer,
+    easing: motion.easing.decelerate,
+    repeat: 'forwards',
+  },
+  slideLeft: {
+    duration: motion.duration.drawer,
+    easing: motion.easing.decelerate,
+    repeat: 'forwards',
+  },
+  slideDown: {
+    duration: motion.duration.base,
+    easing: motion.easing.decelerate,
+    repeat: 'forwards',
+  },
+  toastIn: { duration: motion.duration.base, easing: motion.easing.decelerate, repeat: 'forwards' },
+  toastOut: { duration: motion.duration.fast, easing: motion.easing.in, repeat: 'forwards' },
+  scaleIn: { duration: motion.duration.pop, easing: motion.easing.decelerate, repeat: 'forwards' },
+  imgSwap: { duration: motion.duration.swap, easing: motion.easing.out, repeat: 'forwards' },
+} as const satisfies Record<string, AnimationSpec>;
+
+export const tokens = { color, font, space, radius, fontSize, motion, animation } as const;
 
 export type Tokens = typeof tokens;
 export type ColorName = keyof typeof color;
@@ -102,3 +144,4 @@ export type FontRole = keyof typeof font;
 export type SpaceStep = keyof typeof space;
 export type RadiusStep = keyof typeof radius;
 export type FontSizeStep = keyof typeof fontSize;
+export type AnimationName = keyof typeof animation;

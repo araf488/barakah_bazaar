@@ -30,7 +30,7 @@ Shared packages:
 | Package                   | Responsibility                                                                                                                                                    |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `web/packages/tokens`     | Brand primitives — colour, type scale, spacing. Framework-free; emits CSS custom properties, a TS object and JSON so the Flutter app can consume the same values. |
-| `web/packages/ui`         | MUI theme built from the tokens, plus the handful of primitives that encode business rules (money, localized names, perishability, cutoff clock).                 |
+| `web/packages/ui`         | The handful of primitives that encode business rules (money, localized names, perishability, cutoff clock), styled with the tokens' Tailwind theme.               |
 | `web/packages/api-client` | Generated API client, TanStack Query hooks, MSW mock handlers, auth wiring (model to be decided, see Stack), error mapping.                                       |
 | `web/packages/config`     | Shared TypeScript, ESLint and Prettier configuration, including the import-boundary rules that keep the two apps separate.                                        |
 | `web/contracts/`          | The API's OpenAPI snapshot plus hand-authored fragments for endpoints the backend has not built yet.                                                              |
@@ -48,8 +48,17 @@ out later if it ever has to scale on its own.
 
 - **Storefront** — Next.js App Router, locale-prefixed routes (`/bn` default,
   `/en`), server-rendered catalog pages with ISR.
-- **Admin** — React + Vite SPA, MUI `DataGrid`, MFA (auth model to be decided, see Auth below).
-- **UI** — MUI (Material) in both apps, themed from `web/packages/tokens`.
+- **Admin** — React + Vite SPA, MFA (auth model to be decided, see Auth below).
+- **UI** — Tailwind CSS v4 in both apps, no component library. `web/packages/tokens`
+  emits `src/theme.css`, a Tailwind `@theme` block that uses the Figma file's own names
+  (`bg-brand`, `text-gold`, `font-display`, `animate-marquee`). Re-run
+  `npm run emit -w @barakah/tokens` after changing a token; a test fails until you do.
+- **Fonts** — Fraunces (display), Outfit (body) and Hind Siliguri (Bengali glyphs, including
+  the taka sign), self-hosted through `next/font` in the storefront.
+- **Locales** — every storefront URL is prefixed: `/bn` (default) or `/en`. `/` and the
+  backend's unprefixed email links redirect to `/bn`; the browser language is not used.
+  UI labels live in `apps/storefront/messages/{bn,en}.json`, nested JSON, and a test fails
+  when the two files' keys differ.
 - **Data** — TanStack Query over a generated client; MSW for endpoints the
   backend has not shipped.
 - **Auth** — _planned: Supabase (`supabase-js`) owns the session and the API
