@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { jsonResponse } from '../../../test/fixtures';
-import { authApi, sessionTokensOf } from '../api';
+import { authApi, callApiExplained, sessionTokensOf } from '../api';
 
 const CALLER = { deviceId: 'device-1', userAgent: 'Mozilla/5.0 test' };
 
@@ -63,6 +63,60 @@ describe('authApi', () => {
     await expect(authApi.logout({ ...CALLER, accessToken: 'at' })).resolves.toEqual({
       ok: true,
       data: undefined,
+    });
+  });
+});
+
+describe('callApiExplained', () => {
+  beforeEach(() => vi.stubEnv('WEB_INTERNAL_API_BASE_URL', 'http://api.internal/api/v1'));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('keeps the message of a refusal, for refusals that share a status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ message: 'Your basket is empty.' }, 409)),
+    );
+    await expect(callApiExplained('POST', '/orders', CALLER)).resolves.toEqual({
+      ok: false,
+      status: 409,
+      message: 'Your basket is empty.',
+    });
+  });
+
+  it('has no message when the refusal body carries none or is not JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 1 }, 400)));
+    await expect(callApiExplained('POST', '/orders', CALLER)).resolves.toEqual({
+      ok: false,
+      status: 400,
+      message: null,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('bad gateway', { status: 502 })));
+    await expect(callApiExplained('GET', '/orders', CALLER)).resolves.toEqual({
+      ok: false,
+      status: 502,
+      message: null,
+    });
+  });
+
+  it('reports an unreachable API as status 0 with no message', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+    await expect(callApiExplained('GET', '/orders', CALLER)).resolves.toEqual({
+      ok: false,
+      status: 0,
+      message: null,
+    });
+  });
+
+  it('returns the body of a success', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ id: 'o1' }, 201)));
+    await expect(callApiExplained('POST', '/orders', CALLER, {})).resolves.toEqual({
+      ok: true,
+      data: { id: 'o1' },
     });
   });
 });

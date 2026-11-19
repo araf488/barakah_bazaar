@@ -1,3 +1,4 @@
+import { MapPin } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { Link } from '../../i18n/navigation';
@@ -5,6 +6,7 @@ import type { CategoryNode } from '../../lib/api/catalog';
 import { signOutAction } from '../../lib/auth/actions';
 import type { AuthUser } from '../../lib/auth/api';
 import type { CartView } from '../../lib/cart/view';
+import type { DeliveryContext } from '../../lib/checkout/deliveryContext';
 import { CartDrawer } from '../cart/CartDrawer';
 import { LIVE_PAGES, ROUTES } from '../../lib/routes';
 import { BrandMark } from './BrandMark';
@@ -16,12 +18,29 @@ import { LocaleSwitcher } from './LocaleSwitcher';
 const firstNameOf = (user: AuthUser): string =>
   user.fullName?.trim().split(/\s+/)[0] || user.email.split('@')[0] || user.email;
 
+/** Where the default address is, linking to the address book; wide screens only, for room. */
+function DeliveryArea({ place }: { place: string }) {
+  const t = useTranslations('header');
+
+  return (
+    <Link
+      href={ROUTES.account}
+      aria-label={t('deliveringToLabel', { place })}
+      className="hidden min-h-11 max-w-48 items-center gap-1.5 rounded-full px-2 text-sm text-subtle transition-colors hover:text-brand xl:inline-flex"
+    >
+      <MapPin aria-hidden="true" size={16} className="shrink-0 text-brand" />
+      <span className="truncate">{t('deliveringTo', { place })}</span>
+    </Link>
+  );
+}
+
 /** Signed in: a greeting that opens the account page, and a sign-out button (a form, so it works without JavaScript). */
-function SignedIn({ user }: { user: AuthUser }) {
+function SignedIn({ user, delivery }: { user: AuthUser; delivery: DeliveryContext | null }) {
   const t = useTranslations('auth');
 
   return (
     <div className="hidden items-center gap-2 md:flex">
+      {delivery ? <DeliveryArea place={delivery.place} /> : null}
       <Link
         href={ROUTES.account}
         className="inline-flex min-h-11 max-w-40 items-center truncate px-2 text-sm font-medium text-ink underline-offset-4 transition-colors hover:text-brand hover:underline"
@@ -41,11 +60,17 @@ function SignedIn({ user }: { user: AuthUser }) {
 }
 
 /** Signed out: sign-in and registration, each shown once its page exists. */
-function AccountLinks({ user }: { user: AuthUser | null }) {
+function AccountLinks({
+  user,
+  delivery,
+}: {
+  user: AuthUser | null;
+  delivery: DeliveryContext | null;
+}) {
   const t = useTranslations('header');
 
   if (user) {
-    return <SignedIn user={user} />;
+    return <SignedIn user={user} delivery={delivery} />;
   }
 
   return (
@@ -79,10 +104,13 @@ export function SiteHeader({
   categories,
   user,
   cart,
+  delivery = null,
 }: {
   categories: CategoryNode[];
   user: AuthUser | null;
   cart: CartView;
+  /** The default address's area and the cart's delivery fee; `null` for guests. */
+  delivery?: DeliveryContext | null;
 }) {
   const shell = useTranslations('shell');
 
@@ -100,8 +128,8 @@ export function SiteHeader({
           <HeaderSearch />
           <div className="ml-auto flex shrink-0 items-center gap-2 sm:ml-0 lg:gap-4">
             <LocaleSwitcher />
-            <AccountLinks user={user} />
-            <CartDrawer cart={cart} />
+            <AccountLinks user={user} delivery={delivery} />
+            <CartDrawer cart={cart} delivery={delivery} />
           </div>
         </div>
         <CategoryNav categories={categories} />

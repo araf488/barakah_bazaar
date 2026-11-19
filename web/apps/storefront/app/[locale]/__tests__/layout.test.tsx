@@ -26,6 +26,9 @@ vi.mock('../../fonts', () => ({ fontVariables: 'face-display face-body face-beng
 vi.mock('../../../lib/api/catalog', () => ({ fetchTopCategories: vi.fn() }));
 vi.mock('../../../lib/auth/session', () => ({ getCurrentUser: vi.fn() }));
 vi.mock('../../../lib/cart/getCart', () => ({ getCart: vi.fn(async () => CART) }));
+vi.mock('../../../lib/checkout/deliveryContext', () => ({
+  getDeliveryContext: vi.fn(async () => DELIVERY),
+}));
 
 const { default: LocaleLayout, generateMetadata, generateStaticParams } = await import('../layout');
 const { setRequestLocale } = await import('next-intl/server');
@@ -61,6 +64,7 @@ const CART = {
   hasPriceChanges: false,
   hasStockIssues: false,
 };
+const DELIVERY = { place: 'Banani', feePoysha: 6000, isFree: false, shortfallPoysha: 0 };
 const USER = {
   id: 'u1',
   email: 'tahmina@example.test',
@@ -103,6 +107,7 @@ describe('locale layout', () => {
     expect(tree.find((el) => el.type === SiteHeader)?.props).toMatchObject({
       categories: CATEGORIES,
       user: USER,
+      delivery: DELIVERY,
     });
     expect(tree.find((el) => el.type === SiteFooter)?.props.categories).toBe(CATEGORIES);
     expect(tree.find((el) => el.type === BottomNav)?.props).toEqual({

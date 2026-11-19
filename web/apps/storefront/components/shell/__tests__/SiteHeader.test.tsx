@@ -97,4 +97,30 @@ describe('SiteHeader', () => {
     );
     expect(screen.getByText('Hi, karim')).toBeInTheDocument();
   });
+
+  it('shows where a signed-in customer delivers to, linking to the address book', () => {
+    renderWithIntl(
+      <SiteHeader
+        categories={[]}
+        user={{
+          id: 'u1',
+          email: 'tahmina@example.test',
+          fullName: 'Tahmina Rahman',
+          phoneVerified: false,
+          role: 'CUSTOMER',
+          createdAt: '2026-11-01',
+        }}
+        cart={GUEST_CART}
+        delivery={{ place: 'Banani', feePoysha: 6000, isFree: false, shortfallPoysha: 0 }}
+      />,
+    );
+    const area = screen.getByRole('link', { name: 'Delivering to Banani. Manage addresses' });
+    expect(area).toHaveAttribute('href', '/en/account');
+    expect(area).toHaveTextContent('Delivering to Banani');
+  });
+
+  it('shows no delivery area without a saved address', () => {
+    renderWithIntl(<SiteHeader categories={[]} user={null} cart={GUEST_CART} />);
+    expect(screen.queryByText(/Delivering to/)).not.toBeInTheDocument();
+  });
 });

@@ -67,27 +67,67 @@ describe('CartDrawer', () => {
     expect(drawer.queryByText(/৳80|free delivery/i)).not.toBeInTheDocument();
   });
 
-  it('asks a guest to sign in to check out, returning to this page', () => {
+  it('asks a guest to sign in to check out, returning to checkout', () => {
     navigationState.pathname = '/en/p/ajwa-dates';
     renderWithIntl(<CartDrawer cart={GUEST_WITH_LINE} />);
     openViaPill();
 
     expect(
       screen.getByRole('link', { name: 'Sign in to check out', hidden: true }),
-    ).toHaveAttribute('href', '/en/sign-in?next=%2Fp%2Fajwa-dates');
+    ).toHaveAttribute('href', '/en/sign-in?next=%2Fcheckout');
     expect(
       screen.getByText('Your cart moves to your account when you sign in.'),
     ).toBeInTheDocument();
   });
 
-  it('tells a signed-in customer checkout is next, without a dead button', () => {
+  it('sends a signed-in customer to checkout', () => {
     renderWithIntl(<CartDrawer cart={fromServerCart(serverCart())} />);
     openViaPill();
 
-    expect(screen.getByText('Checkout opens with the next update.')).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /checkout/i, hidden: true }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Check out', hidden: true })).toHaveAttribute(
+      'href',
+      '/en/checkout',
+    );
+  });
+
+  it('shows the default address fee and how much more makes delivery free', () => {
+    renderWithIntl(
+      <CartDrawer
+        cart={fromServerCart(serverCart())}
+        delivery={{ place: 'Banani', feePoysha: 6000, isFree: false, shortfallPoysha: 50000 }}
+      />,
+    );
+    openViaPill();
+    const drawer = within(dialog());
+
+    expect(drawer.getByText('৳60.00', { selector: 'dd' })).toBeInTheDocument();
+    expect(drawer.getByText('Add ৳500.00 more for free delivery to Banani.')).toBeInTheDocument();
+  });
+
+  it('says delivery is free once the cart qualifies', () => {
+    renderWithIntl(
+      <CartDrawer
+        cart={fromServerCart(serverCart())}
+        delivery={{ place: 'Banani', feePoysha: 0, isFree: true, shortfallPoysha: 0 }}
+      />,
+    );
+    openViaPill();
+    const drawer = within(dialog());
+
+    expect(drawer.getByText('Free', { selector: 'dd' })).toBeInTheDocument();
+    expect(drawer.getByText('Free delivery to Banani.')).toBeInTheDocument();
+  });
+
+  it('leaves delivery to checkout when the quote failed', () => {
+    renderWithIntl(
+      <CartDrawer
+        cart={fromServerCart(serverCart())}
+        delivery={{ place: 'Banani', feePoysha: null, isFree: false, shortfallPoysha: 0 }}
+      />,
+    );
+    openViaPill();
+
+    expect(within(dialog()).getByText('Calculated at checkout')).toBeInTheDocument();
   });
 
   it('warns about changed prices and short stock', () => {

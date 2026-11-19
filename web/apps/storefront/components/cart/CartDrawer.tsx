@@ -5,18 +5,57 @@ import { formatCount, formatPoysha } from '@barakah/ui';
 import { useLocale, useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef } from 'react';
 
-import { Link, usePathname } from '../../i18n/navigation';
+import { Link } from '../../i18n/navigation';
 import { OPEN_CART_EVENT } from '../../lib/cartEvents';
 import type { CartView } from '../../lib/cart/view';
+import type { DeliveryContext } from '../../lib/checkout/deliveryContext';
 import { homeFilterHref } from '../../lib/homeFilter';
 import { ROUTES } from '../../lib/routes';
 import { CartLine } from './CartLine';
 
-/** The cart's footer: subtotal, the delivery fee left to checkout, and the next step. */
-function CartSummary({ cart, onNavigate }: { cart: CartView; onNavigate: () => void }) {
+interface SummaryProps {
+  cart: CartView;
+  delivery: DeliveryContext | null;
+  onNavigate: () => void;
+}
+
+/** The delivery row: the default address's fee once known, else left to checkout. */
+function DeliveryFee({ delivery }: { delivery: DeliveryContext | null }) {
   const t = useTranslations('cart');
   const locale = useLocale();
-  const pathname = usePathname();
+  if (delivery?.isFree) return t('free');
+  if (delivery && delivery.feePoysha !== null) return formatPoysha(delivery.feePoysha, locale);
+  return t('deliveryAtCheckout');
+}
+
+/** How close the cart is to free delivery at the default address, when that is known. */
+function FreeDeliveryNudge({ delivery }: { delivery: DeliveryContext | null }) {
+  const t = useTranslations('cart');
+  const locale = useLocale();
+  if (delivery?.isFree) {
+    return (
+      <p className="rounded-xl bg-brand/5 px-3 py-2 text-xs text-ink">
+        {t('freeDelivery', { place: delivery.place })}
+      </p>
+    );
+  }
+  if (!delivery || delivery.shortfallPoysha <= 0) {
+    return null;
+  }
+  return (
+    <p className="rounded-xl bg-gold/10 px-3 py-2 text-xs text-ink">
+      {t('freeDeliveryShortfall', {
+        amount: formatPoysha(delivery.shortfallPoysha, locale),
+        place: delivery.place,
+      })}
+    </p>
+  );
+}
+
+/** The cart's footer: subtotal, delivery, the free-delivery nudge and the next step. */
+function CartSummary({ cart, delivery, onNavigate }: SummaryProps) {
+  const t = useTranslations('cart');
+  const locale = useLocale();
 
   return (
     <div className="space-y-3 border-t border-border p-5">
@@ -35,13 +74,16 @@ function CartSummary({ cart, onNavigate }: { cart: CartView; onNavigate: () => v
         </div>
         <div className="flex justify-between">
           <dt className="text-subtle">{t('delivery')}</dt>
-          <dd className="text-subtle">{t('deliveryAtCheckout')}</dd>
+          <dd className="text-subtle">
+            <DeliveryFee delivery={delivery} />
+          </dd>
         </div>
       </dl>
+      <FreeDeliveryNudge delivery={delivery} />
       {cart.mode === 'guest' ? (
         <>
           <Link
-            href={{ pathname: ROUTES.signIn, query: { next: pathname } }}
+            href={{ pathname: ROUTES.signIn, query: { next: ROUTES.checkout } }}
             onClick={onNavigate}
             className="flex min-h-12 items-center justify-center rounded-2xl bg-brand px-6 font-semibold text-white transition hover:bg-brand-light active:scale-[0.98]"
           >
@@ -50,14 +92,20 @@ function CartSummary({ cart, onNavigate }: { cart: CartView; onNavigate: () => v
           <p className="text-center text-xs text-subtle">{t('guestNote')}</p>
         </>
       ) : (
-        <p className="text-center text-xs text-subtle">{t('checkoutSoon')}</p>
+        <Link
+          href={ROUTES.checkout}
+          onClick={onNavigate}
+          className="flex min-h-12 items-center justify-center rounded-2xl bg-brand px-6 font-semibold text-white transition hover:bg-brand-light active:scale-[0.98]"
+        >
+          {t('checkout')}
+        </Link>
       )}
     </div>
   );
 }
 
 /** The cart body for each state: load error, empty, or lines with their summary. */
-function CartBody({ cart, onNavigate }: { cart: CartView; onNavigate: () => void }) {
+function CartBody({ cart, delivery, onNavigate }: SummaryProps) {
   const t = useTranslations('cart');
 
   if (cart.status === 'error') {
@@ -89,7 +137,7 @@ function CartBody({ cart, onNavigate }: { cart: CartView; onNavigate: () => void
           <CartLine key={line.key} line={line} />
         ))}
       </ul>
-      <CartSummary cart={cart} onNavigate={onNavigate} />
+      <CartSummary cart={cart} delivery={delivery} onNavigate={onNavigate} />
     </>
   );
 }
@@ -100,7 +148,13 @@ function CartBody({ cart, onNavigate }: { cart: CartView; onNavigate: () => void
  * product page does after adding. Delivery is left to checkout: the fee depends on the address,
  * so the Figma's flat ৳80 and free-over-৳1,000 bar would be guesses.
  */
-export function CartDrawer({ cart }: { cart: CartView }) {
+export function CartDrawer({
+  cart,
+  delivery = null,
+}: {
+  cart: CartView;
+  delivery?: DeliveryContext | null;
+}) {
   const t = useTranslations('cart');
   const locale = useLocale();
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -160,7 +214,7 @@ export function CartDrawer({ cart }: { cart: CartView }) {
             <X aria-hidden="true" size={18} />
           </button>
         </div>
-        <CartBody cart={cart} onNavigate={close} />
+        <CartBody cart={cart} delivery={delivery} onNavigate={close} />
       </dialog>
     </>
   );

@@ -7,16 +7,12 @@ import { useCallback, useState } from 'react';
 
 import type { Address } from '../../lib/account/api';
 import { deleteAddressAction, setDefaultAddressAction } from '../../lib/account/actions';
+import { placeLine } from '../../lib/account/format';
 import { MAX_ADDRESSES } from '../../lib/account/rules';
 import { ADDRESS_LABELS, AddressForm } from './AddressForm';
 
 const ACTION =
   'inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-subtle transition hover:bg-warm hover:text-brand active:scale-95';
-
-/** "House 12, Road 4, Banani, Gulshan, Dhaka 1212": the stored place names, most specific first. */
-const placeLine = (address: Address): string =>
-  [address.addressLine, address.area, address.unit, address.district].filter(Boolean).join(', ') +
-  (address.postCode ? ` ${address.postCode}` : '');
 
 function AddressCard({ address, onEdit }: { address: Address; onEdit: () => void }) {
   const t = useTranslations('address');

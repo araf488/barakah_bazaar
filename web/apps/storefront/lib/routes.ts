@@ -12,10 +12,11 @@ export const ROUTES = {
   forgotPassword: '/forgot-password',
   resetPassword: '/reset-password',
   verifyEmail: '/verify-email',
+  checkout: '/checkout',
 } as const;
 
 export type LivePage =
-  'category' | 'product' | 'fresh' | 'signIn' | 'register' | 'account' | 'orders';
+  'category' | 'product' | 'fresh' | 'signIn' | 'register' | 'account' | 'orders' | 'checkout';
 
 /**
  * Which pages exist today. A link is rendered only when its destination does, so the shell never
@@ -30,7 +31,12 @@ export const LIVE_PAGES: Record<LivePage, boolean> = {
   register: true,
   account: true,
   orders: false,
+  checkout: true,
 };
+
+/** The page a just-placed order opens on. */
+export const orderPlacedPath = (orderId: string): string =>
+  `${ROUTES.checkout}/placed/${encodeURIComponent(orderId)}`;
 
 export const categoryPath = (slug: string): string => `/c/${encodeURIComponent(slug)}`;
 

@@ -52,11 +52,41 @@ const headersFor = (caller: CallerContext): Record<string, string> => ({
  * prefix (`/auth/login`, `/cart/items`). Never throws: a refusal or an unreachable API is a value.
  */
 export const callApi = async <T>(
-  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+  method: HttpMethod,
   path: string,
   caller: CallerContext,
   body?: unknown,
 ): Promise<AuthResult<T>> => {
+  const result = await callApiExplained<T>(method, path, caller, body);
+  return result.ok ? result : { ok: false, status: result.status };
+};
+
+type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+
+/**
+ * A refusal with the API's own `message`, for callers that must tell apart refusals sharing one
+ * status (checkout's several 409s). `null` when the body carried none or the API was unreachable.
+ */
+export type ExplainedResult<T> =
+  { ok: true; data: T } | { ok: false; status: number; message: string | null };
+
+const messageOf = async (res: Response): Promise<string | null> => {
+  try {
+    const body: unknown = await res.json();
+    const message = (body as { message?: unknown } | null)?.message;
+    return typeof message === 'string' ? message : null;
+  } catch {
+    return null;
+  }
+};
+
+/** `callApi`, keeping the refusal's message. Never throws. */
+export const callApiExplained = async <T>(
+  method: HttpMethod,
+  path: string,
+  caller: CallerContext,
+  body?: unknown,
+): Promise<ExplainedResult<T>> => {
   try {
     const res = await fetch(`${serverApiBaseUrl()}${path}`, {
       method,
@@ -65,13 +95,13 @@ export const callApi = async <T>(
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!res.ok) {
-      return { ok: false, status: res.status };
+      return { ok: false, status: res.status, message: await messageOf(res) };
     }
     const data = res.status === NO_CONTENT_STATUS ? undefined : await res.json();
     return { ok: true, data: data as T };
   } catch (error) {
     console.error('API unreachable', error);
-    return { ok: false, status: UNREACHABLE_STATUS };
+    return { ok: false, status: UNREACHABLE_STATUS, message: null };
   }
 };
 
