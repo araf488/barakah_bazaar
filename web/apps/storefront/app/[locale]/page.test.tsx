@@ -17,8 +17,8 @@ describe('storefront home page', () => {
 
   it('marks the page with the locale from its route segment', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
-    render(await Page(PARAMS));
-    expect(screen.getByRole('main')).toHaveAttribute('data-locale', 'en');
+    const { container } = render(await Page(PARAMS));
+    expect(container.firstElementChild).toHaveAttribute('data-locale', 'en');
   });
 
   it('renders API unavailable and does not throw when fetch fails', async () => {

@@ -29,4 +29,12 @@ describe('UI label files', () => {
     const empty = flatten(messages).filter(([, value]) => value.trim() === '');
     expect(empty).toEqual([]);
   });
+
+  it.each([
+    ['bn', bn],
+    ['en', en],
+  ])('use no em dash in %s, which reads as machine-written copy', (_locale, messages) => {
+    const dashed = flatten(messages).filter(([, value]) => value.includes('\u2014'));
+    expect(dashed).toEqual([]);
+  });
 });

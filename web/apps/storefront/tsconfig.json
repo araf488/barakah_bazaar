@@ -15,9 +15,12 @@
     "global.d.ts",
     "proxy.ts",
     "app",
+    "components",
+    "lib",
     "i18n",
     "messages",
     "__tests__",
+    "test",
     "vitest.config.ts",
     "vitest.setup.ts",
     ".next/types/**/*.ts"

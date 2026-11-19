@@ -27,6 +27,28 @@
     color: var(--color-ink);
     -webkit-font-smoothing: antialiased;
   }
+
+  /* Tailwind v4 resets buttons to the default cursor; every enabled control should say it acts. */
+  a[href],
+  button:not(:disabled),
+  summary,
+  label[for],
+  select:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+
+  :disabled,
+  [aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+
+  /* One focus ring for the whole storefront, in the brand green (12:1 on white). Dark surfaces
+     switch it to gold. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
 }
 
 /*

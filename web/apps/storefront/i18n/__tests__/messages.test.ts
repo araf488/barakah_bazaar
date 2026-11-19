@@ -19,11 +19,11 @@ describe('resolveRequestLocale', () => {
 describe('loadMessages', () => {
   it('loads the Bangla labels for bn', async () => {
     const messages = await loadMessages('bn');
-    expect(messages.metadata.title).toBe('বারাকাহ বাজার — হালাল, খাঁটি, ঘরে পৌঁছে দেওয়া');
+    expect(messages.metadata.title).toBe('বারাকাহ বাজার · হালাল, খাঁটি, ঘরে পৌঁছে দেওয়া');
   });
 
   it('loads the English labels for en', async () => {
     const messages = await loadMessages('en');
-    expect(messages.metadata.title).toBe('Barakah Bazaar — Halal. Wholesome. Home-delivered.');
+    expect(messages.metadata.title).toBe('Barakah Bazaar · Halal, wholesome, home-delivered');
   });
 });

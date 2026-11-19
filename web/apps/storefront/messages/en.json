@@ -1,6 +1,61 @@
 {
   "metadata": {
-    "title": "Barakah Bazaar — Halal. Wholesome. Home-delivered.",
+    "title": "Barakah Bazaar · Halal, wholesome, home-delivered",
     "description": "Bangladesh's halal-first marketplace: dates and dry fruits, fresh doi and rosmalai, groceries and care products, delivered to your door."
+  },
+  "shell": {
+    "skipToContent": "Skip to content",
+    "homeLink": "Barakah Bazaar home"
+  },
+  "announcement": {
+    "label": "Announcements",
+    "pause": "Pause announcements",
+    "play": "Play announcements",
+    "halal": "A halal-first marketplace for Bangladesh",
+    "fresh": "Doi and rosmalai travel in cold-chain delivery slots",
+    "dates": "Dates, nuts and dry fruits, by the pack or by weight",
+    "cod": "Cash on delivery across our delivery areas"
+  },
+  "header": {
+    "signIn": "Sign in",
+    "join": "Join free",
+    "cart": "Cart",
+    "categoryNav": "Shop by category",
+    "home": "Home",
+    "freshDaily": "Fresh daily",
+    "switchLocale": "Switch to Bangla"
+  },
+  "search": {
+    "open": "Search products",
+    "trigger": "Search dates, doi, fresh fruit…",
+    "dialogLabel": "Product search",
+    "inputLabel": "Search products",
+    "clear": "Clear",
+    "close": "Close search",
+    "suggestionsHeading": "Try searching",
+    "loading": "Searching…",
+    "error": "Search is unavailable right now. Please try again in a moment.",
+    "noResults": "No products match “{query}”",
+    "resultCount": "{count, plural, =0 {No products} one {# product} other {# products}}",
+    "fromPrice": "from {price}",
+    "suggestions": {
+      "ajwa": "Ajwa dates",
+      "medjool": "Medjool dates",
+      "doi": "Mishti doi",
+      "rosmalai": "Rosmalai",
+      "cashew": "Cashews"
+    }
+  },
+  "footer": {
+    "about": "Bangladesh's halal-first destination for everyday groceries, fresh food, and health and beauty.",
+    "tagline": "Halal. Wholesome. Home-delivered.",
+    "shop": "Shop",
+    "help": "Help",
+    "trackOrder": "Track your order",
+    "account": "My account",
+    "weAccept": "We accept",
+    "cashOnDelivery": "Cash on delivery",
+    "location": "Dhaka, Bangladesh",
+    "copyright": "© {year} Barakah Bazaar. All rights reserved."
   }
 }
