@@ -2,6 +2,8 @@ import { pickLocalized } from '@barakah/ui';
 import { useLocale, useTranslations } from 'next-intl';
 
 import { type CategoryNode, listNewestProducts, type ProductListItem } from '../../lib/api/catalog';
+import { getCart } from '../../lib/cart/getCart';
+import { type CartLineView, linesBySlug } from '../../lib/cart/view';
 import { ProductCard } from './ProductCard';
 
 /** How many other products the page suggests. */
@@ -10,10 +12,11 @@ export const RELATED_LIMIT = 4;
 interface RelatedListProps {
   items: ProductListItem[];
   category: CategoryNode | undefined;
+  cartLines?: ReadonlyMap<string, CartLineView[]>;
 }
 
 /** Up to four other products from the same category; nothing at all when there are none. */
-export function RelatedList({ items, category }: RelatedListProps) {
+export function RelatedList({ items, category, cartLines = new Map() }: RelatedListProps) {
   const t = useTranslations('pdp');
   const locale = useLocale();
 
@@ -31,7 +34,7 @@ export function RelatedList({ items, category }: RelatedListProps) {
       <ul className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {items.map((product) => (
           <li key={product.id}>
-            <ProductCard product={product} />
+            <ProductCard product={product} cartLines={cartLines.get(product.slug) ?? []} />
           </li>
         ))}
       </ul>
@@ -51,9 +54,12 @@ interface RelatedProductsProps {
  * A failure leaves the section out rather than showing an error under a working product.
  */
 export async function RelatedProducts({ slug, categorySlug, category }: RelatedProductsProps) {
-  const result = await listNewestProducts({ categorySlug, limit: RELATED_LIMIT + 1 });
+  const [result, cart] = await Promise.all([
+    listNewestProducts({ categorySlug, limit: RELATED_LIMIT + 1 }),
+    getCart(),
+  ]);
   const items = result.ok
     ? result.page.items.filter((item) => item.slug !== slug).slice(0, RELATED_LIMIT)
     : [];
-  return <RelatedList items={items} category={category} />;
+  return <RelatedList items={items} category={category} cartLines={linesBySlug(cart)} />;
 }

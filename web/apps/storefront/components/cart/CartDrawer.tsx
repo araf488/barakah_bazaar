@@ -1,7 +1,8 @@
 'use client';
 
 import { ShoppingBag, X } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { formatCount, formatPoysha } from '@barakah/ui';
+import { useLocale, useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef } from 'react';
 
 import { Link, usePathname } from '../../i18n/navigation';
@@ -14,6 +15,7 @@ import { CartLine } from './CartLine';
 /** The cart's footer: subtotal, the delivery fee left to checkout, and the next step. */
 function CartSummary({ cart, onNavigate }: { cart: CartView; onNavigate: () => void }) {
   const t = useTranslations('cart');
+  const locale = useLocale();
   const pathname = usePathname();
 
   return (
@@ -27,7 +29,9 @@ function CartSummary({ cart, onNavigate }: { cart: CartView; onNavigate: () => v
       <dl className="space-y-1 text-sm">
         <div className="flex justify-between">
           <dt className="text-subtle">{t('subtotal')}</dt>
-          <dd className="font-display text-lg font-bold text-ink">{cart.subtotalFormatted}</dd>
+          <dd className="font-display text-lg font-bold text-ink">
+            {formatPoysha(cart.subtotalPoysha, locale)}
+          </dd>
         </div>
         <div className="flex justify-between">
           <dt className="text-subtle">{t('delivery')}</dt>
@@ -98,6 +102,7 @@ function CartBody({ cart, onNavigate }: { cart: CartView; onNavigate: () => void
  */
 export function CartDrawer({ cart }: { cart: CartView }) {
   const t = useTranslations('cart');
+  const locale = useLocale();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const open = useCallback(() => {
     if (!dialogRef.current?.open) {
@@ -117,7 +122,7 @@ export function CartDrawer({ cart }: { cart: CartView }) {
         type="button"
         onClick={open}
         aria-label={t('open', { count: cart.itemCount })}
-        className="relative flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-full bg-brand px-4 text-sm font-semibold text-white shadow-md shadow-brand/20 transition hover:bg-brand-light active:scale-95"
+        className="relative hidden min-h-11 min-w-11 items-center justify-center gap-2 rounded-full bg-brand md:flex px-4 text-sm font-semibold text-white shadow-md shadow-brand/20 transition hover:bg-brand-light active:scale-95"
       >
         <ShoppingBag aria-hidden="true" size={18} />
         {cart.itemCount > 0 ? (
@@ -125,7 +130,7 @@ export function CartDrawer({ cart }: { cart: CartView }) {
             aria-hidden="true"
             className="absolute -top-1.5 -right-1.5 flex h-5 min-w-5 animate-scale-in items-center justify-center rounded-full bg-gold px-1 text-[10px] font-bold text-brand-dark"
           >
-            {cart.itemCount}
+            {formatCount(cart.itemCount, locale)}
           </span>
         ) : null}
       </button>

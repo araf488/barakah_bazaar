@@ -19,7 +19,9 @@ describe('AddToCart', () => {
   beforeEach(() => vi.mocked(addToCartAction).mockReset());
 
   it('starts at one and steps between 1 and 99', () => {
-    const { container } = renderWithIntl(<AddToCart slug="ajwa" variantId="v1" />);
+    const { container } = renderWithIntl(
+      <AddToCart slug="ajwa" variantId="v1" priceLabel="৳1,250.00" />,
+    );
     const quantity = () => container.querySelector('input[name="quantity"]');
 
     expect(quantity()).toHaveValue('1');
@@ -32,7 +34,9 @@ describe('AddToCart', () => {
     vi.mocked(addToCartAction).mockResolvedValue({ status: 'added', at: 1 });
     const listener = vi.fn();
     window.addEventListener(OPEN_CART_EVENT, listener);
-    const { container } = renderWithIntl(<AddToCart slug="ajwa" variantId="v1" />);
+    const { container } = renderWithIntl(
+      <AddToCart slug="ajwa" variantId="v1" priceLabel="৳1,250.00" />,
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Increase quantity' }));
 
     await submit();
@@ -45,12 +49,41 @@ describe('AddToCart', () => {
 
   it('explains a refusal', async () => {
     vi.mocked(addToCartAction).mockResolvedValue({ status: 'error', error: 'stock' });
-    renderWithIntl(<AddToCart slug="ajwa" variantId="v1" />, 'bn');
+    renderWithIntl(<AddToCart slug="ajwa" variantId="v1" priceLabel="৳1,250.00" />, 'bn');
 
     await act(async () => {
       fireEvent.submit(screen.getByRole('button', { name: 'কার্টে যোগ করুন' }).closest('form')!);
     });
 
     expect(screen.getByRole('alert')).toHaveTextContent('এই পরিমাণের জন্য যথেষ্ট স্টক নেই।');
+  });
+
+  it('shows a sticky bar with the price once the main button scrolls away, submitting the same form', () => {
+    let notify: (entries: Array<{ isIntersecting: boolean }>) => void = () => undefined;
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(callback: typeof notify) {
+          notify = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const { container } = renderWithIntl(
+      <AddToCart slug="ajwa" variantId="v1" priceLabel="৳1,250.00" />,
+    );
+    expect(screen.queryByText('৳1,250.00')).not.toBeInTheDocument();
+
+    act(() => notify([{ isIntersecting: false }]));
+
+    expect(screen.getByText('৳1,250.00')).toBeInTheDocument();
+    const buttons = screen.getAllByRole('button', { name: 'Add to cart' });
+    expect(buttons).toHaveLength(2);
+    expect(buttons[1]).toHaveAttribute('form', container.querySelector('form')?.id);
+
+    act(() => notify([{ isIntersecting: true }]));
+    expect(screen.queryByText('৳1,250.00')).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 });

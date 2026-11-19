@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { fakeJar } from '../../../test/cookieJar';
+import { productDetail, variant } from '../../../test/productDetail';
 
 const jar = { current: fakeJar() };
 vi.mock('next/headers', () => ({
@@ -9,9 +10,18 @@ vi.mock('next/headers', () => ({
 }));
 vi.mock('../../auth/session', () => ({ getCurrentUser: vi.fn() }));
 vi.mock('next/cache', () => ({ refresh: vi.fn() }));
+vi.mock('next-intl/server', () => ({ getLocale: vi.fn(async () => 'bn') }));
+vi.mock('../../../i18n/navigation', () => ({
+  redirect: vi.fn(() => {
+    throw new Error('NEXT_REDIRECT');
+  }),
+}));
+vi.mock('../../api/catalog', () => ({ getProductBySlug: vi.fn() }));
 vi.mock('../api', () => ({ cartApi: { add: vi.fn(), update: vi.fn(), remove: vi.fn() } }));
 
-const { addToCartAction, setQuantityAction } = await import('../actions');
+const { addToCartAction, quickAddAction, setQuantityAction } = await import('../actions');
+const { getProductBySlug } = await import('../../api/catalog');
+const { redirect } = await import('../../../i18n/navigation');
 const { getCurrentUser } = await import('../../auth/session');
 const { cartApi } = await import('../api');
 const { refresh } = await import('next/cache');
@@ -136,5 +146,38 @@ describe('setQuantityAction', () => {
     await setQuantityAction(form({ key: '', quantity: '1' }));
     await setQuantityAction(form({ key: 'v1', quantity: '-1' }));
     expect(jar.current.set).not.toHaveBeenCalled();
+  });
+});
+
+describe('quickAddAction', () => {
+  it('adds one of a single-size product straight to the cart', async () => {
+    vi.mocked(getProductBySlug).mockResolvedValue({
+      ok: true,
+      product: productDetail({ variants: [variant()] }),
+    });
+
+    const state = await quickAddAction(IDLE, form({ slug: 'ajwa-dates' }));
+
+    expect(state.status).toBe('added');
+    expect(guestLines()).toEqual([{ s: 'ajwa-dates', v: 'v-500', q: 1 }]);
+  });
+
+  it('opens the product page for a product with several sizes, adding nothing', async () => {
+    vi.mocked(getProductBySlug).mockResolvedValue({ ok: true, product: productDetail() });
+
+    await expect(quickAddAction(IDLE, form({ slug: 'ajwa-dates' }))).rejects.toThrow(
+      'NEXT_REDIRECT',
+    );
+
+    expect(redirect).toHaveBeenCalledWith({ href: '/p/ajwa-dates', locale: 'bn' });
+    expect(jar.current.values.has('bb_guest_cart')).toBe(false);
+  });
+
+  it('says the item is unavailable when the product is gone', async () => {
+    vi.mocked(getProductBySlug).mockResolvedValue({ ok: false, notFound: true });
+    await expect(quickAddAction(IDLE, form({ slug: 'gone' }))).resolves.toEqual({
+      status: 'error',
+      error: 'unavailable',
+    });
   });
 });

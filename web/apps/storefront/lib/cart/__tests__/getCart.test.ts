@@ -42,7 +42,7 @@ describe('getCart', () => {
     const cart = await getCart();
 
     expect(getProductBySlug).toHaveBeenCalledTimes(1);
-    expect(cart).toMatchObject({ mode: 'guest', itemCount: 2, subtotalFormatted: '৳1,900.00' });
+    expect(cart).toMatchObject({ mode: 'guest', itemCount: 2, subtotalPoysha: 190000 });
   });
 
   it('reads the account cart once signed in', async () => {

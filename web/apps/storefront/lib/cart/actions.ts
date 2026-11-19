@@ -3,7 +3,13 @@
 import { refresh } from 'next/cache';
 import { cookies } from 'next/headers';
 
+import { getLocale } from 'next-intl/server';
+
+import type { StorefrontLocale } from '../../i18n/messages';
+import { redirect } from '../../i18n/navigation';
+import { getProductBySlug } from '../api/catalog';
 import { callerFromAction } from '../auth/caller';
+import { productPath } from '../routes';
 import { COOKIE_BASE, SESSION_COOKIE } from '../auth/cookies';
 import { getCurrentUser } from '../auth/session';
 import { cartApi } from './api';
@@ -64,17 +70,12 @@ const accountCaller = async (jar: Jar) => {
   };
 };
 
-/** Adds a size of a product: to the account's cart when signed in, to the guest cookie otherwise. */
-export async function addToCartAction(
-  _prev: AddToCartState,
-  form: FormData,
-): Promise<AddToCartState> {
-  const slug = String(form.get('slug') ?? '');
-  const variantId = String(form.get('variantId') ?? '');
-  const quantity = quantityOf(form);
-  if (!slug || !variantId || !quantity) {
-    return { status: 'error', error: 'quantity' };
-  }
+/** Adds `quantity` of one size: to the account's cart when signed in, to the guest cookie otherwise. */
+const addLine = async (
+  slug: string,
+  variantId: string,
+  quantity: number,
+): Promise<AddToCartState> => {
   const jar = await cookies();
   const caller = await accountCaller(jar);
   if (caller) {
@@ -96,6 +97,41 @@ export async function addToCartAction(
   writeGuest(jar, change.lines);
   refresh();
   return { status: 'added', at: Date.now() };
+};
+
+/** The product page's "Add to cart": the size and quantity the shopper chose. */
+export async function addToCartAction(
+  _prev: AddToCartState,
+  form: FormData,
+): Promise<AddToCartState> {
+  const slug = String(form.get('slug') ?? '');
+  const variantId = String(form.get('variantId') ?? '');
+  const quantity = quantityOf(form);
+  if (!slug || !variantId || !quantity) {
+    return { status: 'error', error: 'quantity' };
+  }
+  return addLine(slug, variantId, quantity);
+}
+
+/**
+ * A product card's "+": adds one of the product's only size. A product with several sizes opens
+ * its page instead, so nobody gets a size they did not choose. (A catalogue list item carries no
+ * variant id yet, hence the lookup; the backend ticket adds a default variant to list items.)
+ */
+export async function quickAddAction(
+  _prev: AddToCartState,
+  form: FormData,
+): Promise<AddToCartState> {
+  const slug = String(form.get('slug') ?? '');
+  const result = slug ? await getProductBySlug(slug) : null;
+  if (!result?.ok) {
+    return { status: 'error', error: 'unavailable' };
+  }
+  const [only, ...others] = result.product.variants;
+  if (!only || others.length > 0) {
+    return redirect({ href: productPath(slug), locale: (await getLocale()) as StorefrontLocale });
+  }
+  return addLine(slug, only.id, 1);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { Star } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { formatCount, formatRating } from '@barakah/ui';
+import { useLocale, useTranslations } from 'next-intl';
 
 import type { ProductListItem } from '../../lib/api/catalog';
 
@@ -9,12 +10,14 @@ import type { ProductListItem } from '../../lib/api/catalog';
  */
 export function RatingSummary({ rating }: { rating: ProductListItem['rating'] }) {
   const t = useTranslations();
+  const locale = useLocale();
 
   if (rating.average === null || rating.count === 0) {
     return <p className="text-sm text-subtle">{t('pdp.notRated')}</p>;
   }
 
-  const average = rating.average.toFixed(1);
+  const average = formatRating(rating.average, locale);
+  const count = formatCount(rating.count, locale);
   return (
     <p className="flex items-center gap-1.5 text-sm">
       <Star aria-hidden="true" size={16} className="fill-gold text-gold" />
@@ -22,9 +25,9 @@ export function RatingSummary({ rating }: { rating: ProductListItem['rating'] })
         {average}
       </span>
       <span aria-hidden="true" className="text-subtle">
-        ({rating.count})
+        ({count})
       </span>
-      <span className="sr-only">{t('product.rating', { average, count: rating.count })}</span>
+      <span className="sr-only">{t('product.rating', { average, count })}</span>
     </p>
   );
 }

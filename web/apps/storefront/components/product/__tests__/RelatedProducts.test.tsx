@@ -6,6 +6,21 @@ import { category, page, product } from '../../../test/fixtures';
 import { renderWithIntl } from '../../../test/intl';
 
 vi.mock('../../../lib/api/catalog', () => ({ listNewestProducts: vi.fn() }));
+vi.mock('../../../lib/cart/getCart', () => ({
+  getCart: vi.fn(async () => ({
+    mode: 'guest',
+    status: 'ok',
+    lines: [],
+    itemCount: 0,
+    subtotalPoysha: 0,
+    hasPriceChanges: false,
+    hasStockIssues: false,
+  })),
+}));
+vi.mock('../../../lib/cart/actions', () => ({
+  quickAddAction: vi.fn(),
+  setQuantityAction: vi.fn(),
+}));
 
 const { RelatedList, RelatedProducts } = await import('../RelatedProducts');
 const { listNewestProducts } = await import('../../../lib/api/catalog');

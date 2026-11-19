@@ -1,11 +1,13 @@
-import { LocalizedName } from '@barakah/ui';
+import { formatCount, formatPoysha, formatRating, LocalizedName, pickLocalized } from '@barakah/ui';
 import { Star } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
 
 import { Link } from '../../i18n/navigation';
 import type { ProductListItem } from '../../lib/api/catalog';
+import type { CartLineView } from '../../lib/cart/view';
 import { LIVE_PAGES, productPath } from '../../lib/routes';
+import { QuickAdd } from '../cart/QuickAdd';
 
 /** Rendered size of the square card image, for the browser to reserve space. */
 const CARD_IMAGE_SIZE = 400;
@@ -33,18 +35,19 @@ function HandlingBadge({ product }: { product: ProductListItem }) {
 /** Stars only once someone has rated it; "no rating yet" is not "zero stars". */
 function Rating({ rating }: { rating: ProductListItem['rating'] }) {
   const t = useTranslations('product');
+  const locale = useLocale();
   if (rating.average === null || rating.count === 0) {
     return null;
   }
+  const average = formatRating(rating.average, locale);
+  const count = formatCount(rating.count, locale);
   return (
     <p className="mb-2 flex items-center gap-1 text-xs text-subtle">
       <Star aria-hidden="true" size={12} className="fill-gold text-gold" />
       <span aria-hidden="true">
-        {rating.average.toFixed(1)} ({rating.count})
+        {average} ({count})
       </span>
-      <span className="sr-only">
-        {t('rating', { average: rating.average.toFixed(1), count: rating.count })}
-      </span>
+      <span className="sr-only">{t('rating', { average, count })}</span>
     </p>
   );
 }
@@ -74,7 +77,7 @@ function CardBody({ product }: { product: ProductListItem }) {
         </h3>
         <Rating rating={product.rating} />
         <span className="mt-auto font-display text-lg font-bold text-brand">
-          {t('fromPrice', { price: product.fromPriceFormatted })}
+          {t('fromPrice', { price: formatPoysha(product.fromPricePoysha, locale) })}
         </span>
       </span>
     </>
@@ -86,14 +89,36 @@ function CardBody({ product }: { product: ProductListItem }) {
  * price. The card links to the product page once it exists (`LIVE_PAGES.product`). There is no
  * add-to-cart or wishlist here: a list item carries no variant id, and the API has no wishlist.
  */
-export function ProductCard({ product }: { product: ProductListItem }) {
+export function ProductCard({
+  product,
+  cartLines = [],
+}: {
+  product: ProductListItem;
+  /** This product's lines already in the cart, for the quick-add stepper. */
+  cartLines?: CartLineView[];
+}) {
+  const locale = useLocale();
   const content: ReactNode = <CardBody product={product} />;
 
-  return LIVE_PAGES.product ? (
-    <Link href={productPath(product.slug)} className={`${CARD} ${CARD_INTERACTIVE}`}>
-      {content}
-    </Link>
-  ) : (
-    <div className={CARD}>{content}</div>
+  return (
+    <div className="relative h-full">
+      {LIVE_PAGES.product ? (
+        <Link href={productPath(product.slug)} className={`${CARD} ${CARD_INTERACTIVE}`}>
+          {content}
+        </Link>
+      ) : (
+        <div className={CARD}>{content}</div>
+      )}
+      {/* Over the image's bottom-right corner, outside the link: a button cannot sit in a link. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex aspect-square items-end justify-end p-2">
+        <div className="pointer-events-auto">
+          <QuickAdd
+            slug={product.slug}
+            name={pickLocalized(product, locale).text}
+            lines={cartLines}
+          />
+        </div>
+      </div>
+    </div>
   );
 }

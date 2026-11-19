@@ -13,7 +13,7 @@ describe('ProductCard', () => {
     renderWithIntl(<ProductCard product={product()} />, 'bn');
 
     expect(screen.getByRole('heading', { name: 'আজওয়া খেজুর' })).toBeInTheDocument();
-    expect(screen.getByText('৳1,250.00 থেকে')).toBeInTheDocument();
+    expect(screen.getByText('৳১,২৫০.০০ থেকে')).toBeInTheDocument();
   });
 
   it('links to the product page once it exists', () => {
@@ -68,5 +68,13 @@ describe('ProductCard', () => {
     expect(img).toHaveAttribute('alt', '');
     expect(img).toHaveAttribute('width', '400');
     expect(img).toHaveAttribute('height', '400');
+  });
+
+  it('writes the rating in Bengali digits on a Bangla page', () => {
+    renderWithIntl(
+      <ProductCard product={product({ rating: { average: 4.5, count: 12 } })} />,
+      'bn',
+    );
+    expect(screen.getByText('৪.৫ (১২)')).toBeInTheDocument();
   });
 });

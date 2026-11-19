@@ -2,6 +2,8 @@ import { useTranslations } from 'next-intl';
 
 import { Link } from '../../i18n/navigation';
 import { listNewestProducts, type ProductListResult } from '../../lib/api/catalog';
+import { getCart } from '../../lib/cart/getCart';
+import { type CartLineView, linesBySlug } from '../../lib/cart/view';
 import {
   type HomeFilter,
   HOME_PRODUCT_LIMIT,
@@ -41,10 +43,16 @@ export function ProductGridSkeleton() {
 interface ProductGridResultProps {
   result: ProductListResult;
   filter: HomeFilter;
+  /** Cart lines by product slug, so each card shows its quick-add state. */
+  cartLines?: ReadonlyMap<string, CartLineView[]>;
 }
 
 /** One loaded page of new arrivals, or its empty or error state. */
-export function ProductGridResult({ result, filter }: ProductGridResultProps) {
+export function ProductGridResult({
+  result,
+  filter,
+  cartLines = new Map(),
+}: ProductGridResultProps) {
   const t = useTranslations('home.products');
 
   if (!result.ok) {
@@ -76,7 +84,7 @@ export function ProductGridResult({ result, filter }: ProductGridResultProps) {
     <ul className={GRID}>
       {result.page.items.map((product) => (
         <li key={product.id}>
-          <ProductCard product={product} />
+          <ProductCard product={product} cartLines={cartLines.get(product.slug) ?? []} />
         </li>
       ))}
     </ul>
@@ -85,6 +93,9 @@ export function ProductGridResult({ result, filter }: ProductGridResultProps) {
 
 /** Loads one filtered page of new arrivals; suspends behind {@link ProductGridSkeleton}. */
 export async function ProductGrid({ filter }: { filter: HomeFilter }) {
-  const result = await listNewestProducts(toProductFilter(filter));
-  return <ProductGridResult result={result} filter={filter} />;
+  const [result, cart] = await Promise.all([
+    listNewestProducts(toProductFilter(filter)),
+    getCart(),
+  ]);
+  return <ProductGridResult result={result} filter={filter} cartLines={linesBySlug(cart)} />;
 }

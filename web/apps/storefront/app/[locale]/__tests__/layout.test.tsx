@@ -33,6 +33,7 @@ const { fetchTopCategories } = await import('../../../lib/api/catalog');
 const { getCurrentUser } = await import('../../../lib/auth/session');
 const { SiteHeader } = await import('../../../components/shell/SiteHeader');
 const { SiteFooter } = await import('../../../components/shell/SiteFooter');
+const { BottomNav } = await import('../../../components/shell/BottomNav');
 
 type AnyElement = ReactElement<{ children?: ReactNode; [prop: string]: unknown }>;
 
@@ -56,7 +57,7 @@ const CART = {
   status: 'ok',
   lines: [],
   itemCount: 0,
-  subtotalFormatted: '৳0.00',
+  subtotalPoysha: 0,
   hasPriceChanges: false,
   hasStockIssues: false,
 };
@@ -104,6 +105,10 @@ describe('locale layout', () => {
       user: USER,
     });
     expect(tree.find((el) => el.type === SiteFooter)?.props.categories).toBe(CATEGORIES);
+    expect(tree.find((el) => el.type === BottomNav)?.props).toEqual({
+      cartCount: 0,
+      signedIn: true,
+    });
   });
 
   it('answers 404 for a locale the storefront does not serve, before loading anything', async () => {

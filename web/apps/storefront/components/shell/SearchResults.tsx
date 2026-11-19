@@ -1,6 +1,6 @@
 'use client';
 
-import { LocalizedName } from '@barakah/ui';
+import { formatPoysha, LocalizedName } from '@barakah/ui';
 import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
 
@@ -44,7 +44,7 @@ function ResultContent({ product }: { product: ProductListItem }) {
           <LocalizedName entity={product} locale={locale} />
         </span>
         <span className="mt-1 block text-sm font-bold text-brand">
-          {t('fromPrice', { price: product.fromPriceFormatted })}
+          {t('fromPrice', { price: formatPoysha(product.fromPricePoysha, locale) })}
         </span>
       </span>
     </>

@@ -104,4 +104,14 @@ describe('CartDrawer', () => {
     expect(screen.getByText(/Some items have less stock/)).toBeInTheDocument();
     expect(screen.getByText('Only 1 left')).toBeInTheDocument();
   });
+
+  it('writes the count and subtotal in Bengali digits on a Bangla page', () => {
+    renderWithIntl(<CartDrawer cart={fromServerCart(serverCart())} />, 'bn');
+    const pill = screen.getByRole('button', { name: 'কার্ট খুলুন, ২টি পণ্য' });
+    fireEvent.click(pill);
+
+    expect(pill).toHaveTextContent('২');
+    expect(screen.getByText('৳২,৫০০.০০', { selector: 'dd' })).toBeInTheDocument();
+    expect(screen.getByText('(২টি পণ্য)')).toBeInTheDocument();
+  });
 });

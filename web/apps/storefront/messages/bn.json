@@ -126,8 +126,8 @@
     "coldBody": "{storage, select, CHILLED {ঠান্ডায় রাখা হয়} FROZEN {হিমায়িত রাখা হয়} other {পচনশীল}}, তাই শুধু কোল্ড ভ্যানের ডেলিভারি স্লটে যায়।",
     "standardTitle": "সাধারণ ডেলিভারি",
     "standardBody": "সহজে নষ্ট হয় না, তাই যেকোনো ডেলিভারি স্লটে যেতে পারে।",
-    "shelfLifeHours": "{value} ঘণ্টা ভালো থাকে",
-    "shelfLifeDays": "{value} দিন ভালো থাকে",
+    "shelfLifeHours": "{value, plural, other {# ঘণ্টা ভালো থাকে}}",
+    "shelfLifeDays": "{value, plural, other {# দিন ভালো থাকে}}",
     "distance": "আমাদের হাব থেকে {km} কিলোমিটারের মধ্যে ডেলিভারি",
     "relatedTitle": "{category} থেকে আরও",
     "relatedFallback": "আরও দেখুন",
@@ -244,7 +244,7 @@
     "open": "কার্ট খুলুন, {count, plural, =0 {খালি} other {#টি পণ্য}}",
     "title": "আপনার কার্ট",
     "close": "কার্ট বন্ধ করুন",
-    "count": "{count}টি পণ্য",
+    "count": "{count, plural, other {#টি পণ্য}}",
     "empty": "আপনার কার্ট খালি।",
     "emptyAction": "নতুন পণ্য দেখুন",
     "loadError": "এই মুহূর্তে কার্ট লোড করা যাচ্ছে না। একটু পরে আবার চেষ্টা করুন।",
@@ -254,7 +254,7 @@
     "quantity": "পরিমাণ",
     "each": "প্রতিটি {price}",
     "priceChanged": "যোগ করার পর দাম বদলেছে",
-    "onlyLeft": "মাত্র {count}টি আছে",
+    "onlyLeft": "{count, plural, other {মাত্র #টি আছে}}",
     "unavailableLine": "আর পাওয়া যাচ্ছে না",
     "priceNotice": "যোগ করার পর কিছু পণ্যের দাম বদলেছে। আপনি বর্তমান দাম দেবেন।",
     "stockNotice": "কিছু পণ্যের স্টক আপনার চাওয়ার চেয়ে কম। চেকআউটের আগে পরিমাণ কমান।",
@@ -275,6 +275,13 @@
       "failed": "কাজটি হয়নি। আবার চেষ্টা করুন।"
     },
     "fewer": "পরিমাণ কমান",
-    "more": "পরিমাণ বাড়ান"
+    "more": "পরিমাণ বাড়ান",
+    "quickAdd": "{name} কার্টে যোগ করুন",
+    "inCartMany": "{count, plural, other {কার্টে #টি}}"
+  },
+  "nav": {
+    "label": "প্রধান মেনু",
+    "search": "খুঁজুন",
+    "cart": "কার্ট"
   }
 }

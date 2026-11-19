@@ -1,6 +1,6 @@
 'use client';
 
-import { pickLocalized } from '@barakah/ui';
+import { formatCount, formatPoysha, pickLocalized } from '@barakah/ui';
 import { Minus, Plus, Trash2 } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
@@ -71,7 +71,9 @@ export function CartLine({ line }: { line: CartLineView }) {
         <p className="truncate text-sm font-semibold text-ink">{name}</p>
         <p className="text-xs text-subtle">
           {line.variantLabel}
-          {line.unitPriceFormatted ? ` · ${t('each', { price: line.unitPriceFormatted })}` : ''}
+          {line.unitPricePoysha === null
+            ? ''
+            : ` · ${t('each', { price: formatPoysha(line.unitPricePoysha, locale) })}`}
         </p>
         {line.unavailable ? (
           <p className="mt-1 text-xs font-semibold text-red-700">{t('unavailableLine')}</p>
@@ -101,7 +103,7 @@ export function CartLine({ line }: { line: CartLineView }) {
                 <Minus aria-hidden="true" size={14} />
               </QuantityForm>
               <span className="w-8 text-center text-sm font-semibold" aria-live="polite">
-                {line.quantity}
+                {formatCount(line.quantity, locale)}
               </span>
               {line.quantity < MAX_QUANTITY_PER_LINE ? (
                 <QuantityForm
@@ -114,7 +116,9 @@ export function CartLine({ line }: { line: CartLineView }) {
               ) : null}
             </div>
           )}
-          <span className="text-sm font-bold text-brand">{line.lineTotalFormatted}</span>
+          <span className="text-sm font-bold text-brand">
+            {line.lineTotalPoysha === null ? '' : formatPoysha(line.lineTotalPoysha, locale)}
+          </span>
           <QuantityForm lineKey={line.key} quantity={0} label={t('remove', { name })}>
             <Trash2 aria-hidden="true" size={16} className="text-subtle" />
           </QuantityForm>

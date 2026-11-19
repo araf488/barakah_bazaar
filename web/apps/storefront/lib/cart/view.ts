@@ -1,5 +1,3 @@
-import { formatPoysha } from '@barakah/ui';
-
 import type { ProductDetail } from '../api/catalog';
 import type { Cart } from './api';
 import type { GuestLine } from './guestCart';
@@ -14,8 +12,9 @@ export interface CartLineView {
   variantLabel: string;
   imageUrl: string | null;
   quantity: number;
-  unitPriceFormatted: string;
-  lineTotalFormatted: string;
+  /** Integer poysha; `null` when the size is gone. Formatted by the drawer in the reader's digits. */
+  unitPricePoysha: number | null;
+  lineTotalPoysha: number | null;
   priceChanged: boolean;
   /** Units in stock when the line asks for more; `null` when stock is fine or unknown. */
   onlyLeft: number | null;
@@ -28,7 +27,7 @@ export interface CartView {
   status: 'ok' | 'error';
   lines: CartLineView[];
   itemCount: number;
-  subtotalFormatted: string;
+  subtotalPoysha: number;
   hasPriceChanges: boolean;
   hasStockIssues: boolean;
 }
@@ -38,7 +37,7 @@ export const emptyCart = (mode: CartView['mode'], status: CartView['status'] = '
   status,
   lines: [],
   itemCount: 0,
-  subtotalFormatted: formatPoysha(0),
+  subtotalPoysha: 0,
   hasPriceChanges: false,
   hasStockIssues: false,
 });
@@ -55,14 +54,14 @@ export const fromServerCart = (cart: Cart): CartView => ({
     variantLabel: item.variantNameEn,
     imageUrl: item.imageUrl,
     quantity: item.quantity,
-    unitPriceFormatted: formatPoysha(item.unitPricePoysha),
-    lineTotalFormatted: item.lineTotalFormatted,
+    unitPricePoysha: item.unitPricePoysha,
+    lineTotalPoysha: item.lineTotalPoysha,
     priceChanged: item.priceChanged,
     onlyLeft: item.exceedsStock ? item.availableQuantity : null,
     unavailable: false,
   })),
   itemCount: cart.itemCount,
-  subtotalFormatted: cart.subtotalFormatted,
+  subtotalPoysha: cart.subtotalPoysha,
   hasPriceChanges: cart.hasPriceChanges,
   hasStockIssues: cart.hasStockIssues,
 });
@@ -81,8 +80,8 @@ const guestLineView = (
     variantLabel: variant?.unitLabel ?? '',
     imageUrl: primary?.url ?? product?.primaryImage?.url ?? null,
     quantity: line.q,
-    unitPriceFormatted: variant ? variant.priceFormatted : '',
-    lineTotalFormatted: variant ? formatPoysha(variant.pricePoysha * line.q) : '',
+    unitPricePoysha: variant ? variant.pricePoysha : null,
+    lineTotalPoysha: variant ? variant.pricePoysha * line.q : null,
     priceChanged: false,
     onlyLeft: null,
     unavailable: !variant,
@@ -107,8 +106,17 @@ export const fromGuestLines = (
     status: 'ok',
     lines: views,
     itemCount: lines.reduce((sum, line) => sum + line.q, 0),
-    subtotalFormatted: formatPoysha(subtotal),
+    subtotalPoysha: subtotal,
     hasPriceChanges: false,
     hasStockIssues: false,
   };
+};
+
+/** The cart's lines grouped by product, so a product card can show what is already in the cart. */
+export const linesBySlug = (cart: CartView): ReadonlyMap<string, CartLineView[]> => {
+  const map = new Map<string, CartLineView[]>();
+  for (const line of cart.lines) {
+    map.set(line.slug, [...(map.get(line.slug) ?? []), line]);
+  }
+  return map;
 };

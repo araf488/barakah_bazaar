@@ -275,6 +275,13 @@
       "failed": "That did not work. Please try again."
     },
     "fewer": "Decrease quantity",
-    "more": "Increase quantity"
+    "more": "Increase quantity",
+    "quickAdd": "Add {name} to cart",
+    "inCartMany": "{count, plural, other {# in cart}}"
+  },
+  "nav": {
+    "label": "Main menu",
+    "search": "Search",
+    "cart": "Cart"
   }
 }

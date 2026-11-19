@@ -1,8 +1,9 @@
 'use client';
 
 import { Minus, Plus, ShoppingBag } from 'lucide-react';
-import { useTranslations } from 'next-intl';
-import { useActionState, useEffect, useState } from 'react';
+import { formatCount } from '@barakah/ui';
+import { useLocale, useTranslations } from 'next-intl';
+import { useActionState, useEffect, useId, useRef, useState } from 'react';
 import { useFormStatus } from 'react-dom';
 
 import { type AddToCartState, addToCartAction } from '../../lib/cart/actions';
@@ -33,10 +34,37 @@ function SubmitAdd() {
  * cookie until they sign in). On success the cart drawer opens, so the shopper sees what changed,
  * and the quantity goes back to one so the next add is not silently doubled.
  */
-export function AddToCart({ slug, variantId }: { slug: string; variantId: string }) {
+export function AddToCart({
+  slug,
+  variantId,
+  priceLabel,
+}: {
+  slug: string;
+  variantId: string;
+  /** The selected size's price, repeated in the sticky bar. */
+  priceLabel: string;
+}) {
   const t = useTranslations('cart');
+  const locale = useLocale();
   const [state, action] = useActionState(addToCartAction, IDLE);
   const [quantity, setQuantity] = useState(1);
+  const formId = useId();
+  const mainRef = useRef<HTMLDivElement>(null);
+  const [mainOutOfView, setMainOutOfView] = useState(false);
+
+  // Phones: once the main button scrolls away, a bar with the price and the same button sticks
+  // above the bottom navigation (Cartup's pattern), so a long product page never loses its action.
+  useEffect(() => {
+    const target = mainRef.current;
+    if (!target || typeof IntersectionObserver === 'undefined') {
+      return undefined;
+    }
+    const observer = new IntersectionObserver(([entry]) =>
+      setMainOutOfView(entry ? !entry.isIntersecting : false),
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (state.status === 'added') {
@@ -46,11 +74,11 @@ export function AddToCart({ slug, variantId }: { slug: string; variantId: string
   }, [state]);
 
   return (
-    <form action={action} className="space-y-3">
+    <form id={formId} action={action} className="space-y-3">
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="variantId" value={variantId} />
       <input type="hidden" name="quantity" value={quantity} />
-      <div className="flex items-center gap-3">
+      <div ref={mainRef} className="flex items-center gap-3">
         <div
           role="group"
           aria-label={t('quantity')}
@@ -66,7 +94,7 @@ export function AddToCart({ slug, variantId }: { slug: string; variantId: string
             <Minus aria-hidden="true" size={14} />
           </button>
           <span aria-live="polite" className="w-10 text-center font-semibold">
-            {quantity}
+            {formatCount(quantity, locale)}
           </span>
           <button
             type="button"
@@ -92,6 +120,22 @@ export function AddToCart({ slug, variantId }: { slug: string; variantId: string
         <p role="status" className="sr-only">
           {t('added')}
         </p>
+      ) : null}
+      {mainOutOfView ? (
+        <div
+          data-sticky-buy
+          className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 flex animate-slide-up items-center gap-3 border-t border-border bg-white/95 px-4 py-2 backdrop-blur-md md:hidden"
+        >
+          <span className="font-display text-lg font-bold text-brand">{priceLabel}</span>
+          <button
+            type="submit"
+            form={formId}
+            className="ml-auto flex min-h-11 items-center gap-2 rounded-full bg-brand px-5 text-sm font-semibold text-white transition hover:bg-brand-light active:scale-95"
+          >
+            <ShoppingBag aria-hidden="true" size={16} />
+            {t('add')}
+          </button>
+        </div>
       ) : null}
     </form>
   );

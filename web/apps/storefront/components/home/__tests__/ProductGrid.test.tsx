@@ -6,6 +6,36 @@ import { page, product } from '../../../test/fixtures';
 import { renderWithIntl } from '../../../test/intl';
 
 vi.mock('../../../lib/api/catalog', () => ({ listNewestProducts: vi.fn() }));
+vi.mock('../../../lib/cart/getCart', () => ({ getCart: vi.fn(async () => CART) }));
+vi.mock('../../../lib/cart/actions', () => ({
+  quickAddAction: vi.fn(),
+  setQuantityAction: vi.fn(),
+}));
+
+const CART = {
+  mode: 'guest',
+  status: 'ok',
+  lines: [
+    {
+      key: 'v1',
+      slug: 'ajwa-dates',
+      nameEn: 'Ajwa Dates',
+      nameBn: '',
+      variantLabel: '500g',
+      imageUrl: null,
+      quantity: 2,
+      unitPricePoysha: 1,
+      lineTotalPoysha: 2,
+      priceChanged: false,
+      onlyLeft: null,
+      unavailable: false,
+    },
+  ],
+  itemCount: 2,
+  subtotalPoysha: 2,
+  hasPriceChanges: false,
+  hasStockIssues: false,
+};
 
 const { ProductGrid, ProductGridResult, ProductGridSkeleton } = await import('../ProductGrid');
 const { listNewestProducts } = await import('../../../lib/api/catalog');
@@ -17,10 +47,12 @@ describe('ProductGrid', () => {
 
     const element = (await ProductGrid({ filter: { kind: 'fresh' } })) as ReactElement<{
       result: unknown;
+      cartLines: ReadonlyMap<string, unknown[]>;
     }>;
 
     expect(listNewestProducts).toHaveBeenCalledWith({ limit: 8, perishableOnly: true });
     expect(element.props.result).toBe(result);
+    expect(element.props.cartLines.get('ajwa-dates')).toHaveLength(1);
   });
 });
 

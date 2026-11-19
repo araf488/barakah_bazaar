@@ -17,7 +17,7 @@ const isEditable = (target: EventTarget | null): boolean =>
   target instanceof HTMLElement && (target.isContentEditable || EDITABLE_TAGS.has(target.tagName));
 
 /**
- * The header's search pill (and its icon twin on phones) plus the overlay they open. The overlay
+ * The header's search pill (phones open search from the bottom bar) plus the overlay. The overlay
  * is a native modal <dialog>: the browser traps focus, makes the page behind it inert, closes it
  * on Escape and returns focus to the trigger.
  */
@@ -70,14 +70,6 @@ export function HeaderSearch() {
         >
           {SEARCH_HOTKEY}
         </kbd>
-      </button>
-      <button
-        type="button"
-        onClick={() => open()}
-        aria-label={t('open')}
-        className="flex h-11 w-11 items-center justify-center rounded-full text-subtle transition hover:bg-warm hover:text-brand active:scale-95 sm:hidden"
-      >
-        <Search aria-hidden="true" size={20} />
       </button>
       <dialog
         ref={dialogRef}

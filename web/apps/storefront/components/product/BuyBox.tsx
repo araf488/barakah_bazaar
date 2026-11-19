@@ -1,6 +1,6 @@
 'use client';
 
-import { formatPoysha, LocalizedName } from '@barakah/ui';
+import { formatCount, formatPoysha, LocalizedName } from '@barakah/ui';
 import { useLocale, useTranslations } from 'next-intl';
 import { useState } from 'react';
 
@@ -10,6 +10,7 @@ import { AddToCart } from './AddToCart';
 
 function Price({ variant }: { variant: ProductVariant }) {
   const t = useTranslations('pdp');
+  const locale = useLocale();
   const saving = savingPercent(variant);
 
   return (
@@ -17,18 +18,20 @@ function Price({ variant }: { variant: ProductVariant }) {
       aria-live="polite"
       className="flex flex-wrap items-end gap-x-3 gap-y-1 border-y border-border py-4"
     >
-      <span className="font-display text-4xl font-bold text-brand">{variant.priceFormatted}</span>
+      <span className="font-display text-4xl font-bold text-brand">
+        {formatPoysha(variant.pricePoysha, locale)}
+      </span>
       <span className="mb-1 text-sm text-subtle">{t('perUnit', { unit: variant.unitLabel })}</span>
       {saving !== null && variant.compareAtPricePoysha ? (
         <>
           <s className="mb-1 text-lg text-subtle">
             <span className="sr-only">
-              {t('wasPrice', { price: formatPoysha(variant.compareAtPricePoysha) })}
+              {t('wasPrice', { price: formatPoysha(variant.compareAtPricePoysha, locale) })}
             </span>
-            <span aria-hidden="true">{formatPoysha(variant.compareAtPricePoysha)}</span>
+            <span aria-hidden="true">{formatPoysha(variant.compareAtPricePoysha, locale)}</span>
           </s>
           <span className="mb-1.5 rounded-full bg-ink px-2.5 py-1 text-xs font-bold text-white">
-            {t('saving', { percent: saving })}
+            {t('saving', { percent: formatCount(saving, locale) })}
           </span>
         </>
       ) : null}
@@ -72,7 +75,7 @@ export function BuyBox({ slug, variants }: { slug: string; variants: ProductVari
                 />
                 <span>{variant.unitLabel}</span>
                 <span className="mt-0.5 text-[11px] font-normal opacity-80">
-                  {variant.priceFormatted}
+                  {formatPoysha(variant.pricePoysha, locale)}
                 </span>
                 <span className="sr-only">
                   <LocalizedName entity={variant} locale={locale} />
@@ -82,7 +85,11 @@ export function BuyBox({ slug, variants }: { slug: string; variants: ProductVari
           </div>
         </fieldset>
       ) : null}
-      <AddToCart slug={slug} variantId={selected.id} />
+      <AddToCart
+        slug={slug}
+        variantId={selected.id}
+        priceLabel={formatPoysha(selected.pricePoysha, locale)}
+      />
     </div>
   );
 }

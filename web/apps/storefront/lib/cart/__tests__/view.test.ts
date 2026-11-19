@@ -12,12 +12,12 @@ describe('fromServerCart', () => {
       mode: 'account',
       status: 'ok',
       itemCount: 2,
-      subtotalFormatted: '৳2,500.00',
+      subtotalPoysha: 250000,
     });
     expect(view.lines[0]).toMatchObject({
       key: 'item-1',
-      unitPriceFormatted: '৳1,250.00',
-      lineTotalFormatted: '৳2,500.00',
+      unitPricePoysha: 125000,
+      lineTotalPoysha: 250000,
       onlyLeft: null,
     });
   });
@@ -38,12 +38,12 @@ describe('fromGuestLines', () => {
   it('prices guest lines from the live catalog', () => {
     const view = fromGuestLines([{ s: 'ajwa-dates', v: 'v-250', q: 3 }], PRODUCTS);
 
-    expect(view).toMatchObject({ mode: 'guest', itemCount: 3, subtotalFormatted: '৳1,950.00' });
+    expect(view).toMatchObject({ mode: 'guest', itemCount: 3, subtotalPoysha: 195000 });
     expect(view.lines[0]).toMatchObject({
       key: 'v-250',
       variantLabel: '250g',
-      unitPriceFormatted: '৳650.00',
-      lineTotalFormatted: '৳1,950.00',
+      unitPricePoysha: 65000,
+      lineTotalPoysha: 195000,
       imageUrl: 'https://cdn.example.test/ajwa-1.jpg',
     });
   });
@@ -57,17 +57,17 @@ describe('fromGuestLines', () => {
       new Map([...PRODUCTS, ['gone', null]]),
     );
 
-    expect(view.lines[1]).toMatchObject({ unavailable: true, lineTotalFormatted: '' });
-    expect(view.subtotalFormatted).toBe('৳1,250.00');
+    expect(view.lines[1]).toMatchObject({ unavailable: true, lineTotalPoysha: null });
+    expect(view.subtotalPoysha).toBe(125000);
   });
 });
 
 describe('emptyCart', () => {
-  it('is zero items at ৳0.00', () => {
+  it('is zero items at zero poysha', () => {
     expect(emptyCart('guest')).toMatchObject({
       lines: [],
       itemCount: 0,
-      subtotalFormatted: '৳0.00',
+      subtotalPoysha: 0,
       status: 'ok',
     });
   });

@@ -23,7 +23,9 @@ describe('CartLine', () => {
     );
 
     expect(screen.getByText('আজওয়া খেজুর')).toBeInTheDocument();
-    expect(screen.getByText('500g · প্রতিটি ৳1,250.00')).toBeInTheDocument();
+    expect(screen.getByText('500g · প্রতিটি ৳১,২৫০.০০')).toBeInTheDocument();
+    expect(screen.getByText('৳২,৫০০.০০')).toBeInTheDocument();
+    expect(screen.getByText('২')).toBeInTheDocument();
   });
 
   it('sets the quantity one lower, one higher, or to zero to remove', () => {
@@ -51,7 +53,7 @@ describe('CartLine', () => {
     renderWithIntl(
       <ul>
         <CartLine
-          line={{ ...lineOf(), unavailable: true, unitPriceFormatted: '', lineTotalFormatted: '' }}
+          line={{ ...lineOf(), unavailable: true, unitPricePoysha: null, lineTotalPoysha: null }}
         />
       </ul>,
     );

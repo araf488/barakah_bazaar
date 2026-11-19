@@ -33,7 +33,9 @@ describe('SiteHeader', () => {
     setLivePages('all');
     renderWithIntl(<SiteHeader categories={[category()]} user={null} cart={GUEST_CART} />);
 
-    expect(screen.getByRole('button', { name: 'Search products' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Search dates, doi, fresh fruit/ }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Switch to Bangla' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Dates' })).toHaveAttribute('href', '/en/c/dates');
   });
