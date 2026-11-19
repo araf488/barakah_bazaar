@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { category, jsonResponse, page, product } from '../../../test/fixtures';
-import { fetchTopCategories, searchProducts } from '../catalog';
+import { fetchTopCategories, listNewestProducts, searchProducts } from '../catalog';
 
 describe('fetchTopCategories', () => {
   beforeEach(() => vi.stubEnv('WEB_INTERNAL_API_BASE_URL', 'http://api.internal/api/v1'));
@@ -83,5 +83,52 @@ describe('searchProducts', () => {
     await searchProducts('doi', controller.signal);
 
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
+  });
+});
+
+describe('listNewestProducts', () => {
+  beforeEach(() => vi.stubEnv('WEB_INTERNAL_API_BASE_URL', 'http://api.internal/api/v1'));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  const requested = (fetchMock: ReturnType<typeof vi.fn>) =>
+    new URL(fetchMock.mock.calls[0]?.[0] as string);
+
+  it('asks the internal API for the newest products, cached for a minute', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(page([product()])));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await listNewestProducts({ limit: 8 });
+
+    const url = requested(fetchMock);
+    expect(url.origin + url.pathname).toBe('http://api.internal/api/v1/catalog/products');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ sort: 'newest', limit: '8' });
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ next: { revalidate: 60 } });
+    expect(result).toEqual({ ok: true, page: page([product()]) });
+  });
+
+  it('passes the category and perishables filters through', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(page([])));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listNewestProducts({ limit: 8, categorySlug: 'doi', perishableOnly: true });
+
+    expect(Object.fromEntries(requested(fetchMock).searchParams)).toEqual({
+      sort: 'newest',
+      limit: '8',
+      categorySlug: 'doi',
+      perishableOnly: 'true',
+    });
+  });
+
+  it('reports failure as a value, so the page shows its error state', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 500)));
+
+    await expect(listNewestProducts({ limit: 8 })).resolves.toEqual({ ok: false });
+    expect(console.error).toHaveBeenCalled();
   });
 });

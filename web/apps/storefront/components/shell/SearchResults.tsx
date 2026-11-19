@@ -20,7 +20,7 @@ interface SearchResultsProps {
 
 /** Thumbnail, name in the reader's language, and the cheapest variant's price. */
 function ResultContent({ product }: { product: ProductListItem }) {
-  const t = useTranslations('search');
+  const t = useTranslations('product');
   const locale = useLocale();
 
   return (

@@ -37,7 +37,6 @@
     "error": "Search is unavailable right now. Please try again in a moment.",
     "noResults": "No products match “{query}”",
     "resultCount": "{count, plural, =0 {No products} one {# product} other {# products}}",
-    "fromPrice": "from {price}",
     "suggestions": {
       "ajwa": "Ajwa dates",
       "medjool": "Medjool dates",
@@ -57,5 +56,60 @@
     "cashOnDelivery": "Cash on delivery",
     "location": "Dhaka, Bangladesh",
     "copyright": "© {year} Barakah Bazaar. All rights reserved."
+  },
+  "product": {
+    "fromPrice": "from {price}",
+    "rating": "Rated {average} out of 5 from {count, plural, one {# review} other {# reviews}}",
+    "storage": {
+      "CHILLED": "Chilled",
+      "FROZEN": "Frozen",
+      "AMBIENT": "Perishable"
+    }
+  },
+  "home": {
+    "hero": {
+      "eyebrow": "Halal · Wholesome · Home-delivered",
+      "title": "Halal groceries,<br></br><accent>delivered</accent> to your door.",
+      "body": "Dates and dry fruits, doi and rosmalai, seasonal fruit and everyday groceries, brought to your doorstep.",
+      "search": "Search the bazaar",
+      "imageAlt": "Vegetables and green bananas piled high at a market stall",
+      "cardTitle": "Perishables travel chilled",
+      "cardBody": "Cold-chain delivery slots for doi, rosmalai and fruit"
+    },
+    "categories": {
+      "eyebrow": "Browse by category",
+      "title": "Everything halal,<br></br><accent>all in one place.</accent>"
+    },
+    "products": {
+      "eyebrow": "Newest in the bazaar",
+      "title": "New arrivals",
+      "filters": "Filter new arrivals",
+      "all": "All",
+      "fresh": "Fresh daily",
+      "loading": "Loading products…",
+      "empty": "Nothing in this category yet.",
+      "emptyAll": "No products are listed yet. Please check back soon.",
+      "showAll": "Show all new arrivals",
+      "error": "Products could not be loaded right now. Please refresh the page in a moment."
+    },
+    "facts": {
+      "title": "How your order reaches you",
+      "coldChainTitle": "Cold chain for perishables",
+      "coldChainBody": "Chilled and frozen items only go out in delivery slots with a cold van.",
+      "slotTitle": "Pick your delivery slot",
+      "slotBody": "Choose the day and time that suits you when you check out.",
+      "paymentTitle": "Cash on delivery or bKash",
+      "paymentBody": "Pay the rider in cash, or pay online with bKash."
+    },
+    "promo": {
+      "doiEyebrow": "Kept chilled",
+      "doiTitle": "Doi and<br></br><accent>rosmalai</accent>",
+      "doiBody": "Kept cold from our shelf to your door.",
+      "doiAction": "Search doi",
+      "datesEyebrow": "By the pack or by weight",
+      "datesTitle": "Dates, nuts and<br></br><accent>dry fruits</accent>",
+      "datesBody": "Ajwa, Medjool and more, for everyday snacking and Ramadan.",
+      "datesAction": "Search dates"
+    }
   }
 }

@@ -4,6 +4,7 @@ import { Search } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { OPEN_SEARCH_EVENT, type OpenSearchDetail } from '../../lib/searchEvents';
 import { SearchPanel } from './SearchPanel';
 
 /** The key that opens search from anywhere on the page, as in the Figma file. */
@@ -26,8 +27,8 @@ export function HeaderSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
 
-  const open = useCallback(() => {
-    setQuery('');
+  const open = useCallback((initialQuery = '') => {
+    setQuery(initialQuery);
     dialogRef.current?.showModal();
     inputRef.current?.focus();
   }, []);
@@ -42,15 +43,22 @@ export function HeaderSearch() {
       event.preventDefault();
       open();
     };
+    const onOpenRequest = (event: Event) => {
+      open((event as CustomEvent<OpenSearchDetail>).detail?.query ?? '');
+    };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener(OPEN_SEARCH_EVENT, onOpenRequest);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener(OPEN_SEARCH_EVENT, onOpenRequest);
+    };
   }, [open]);
 
   return (
     <>
       <button
         type="button"
-        onClick={open}
+        onClick={() => open()}
         aria-keyshortcuts={SEARCH_HOTKEY}
         className="group hidden min-h-11 max-w-lg flex-1 items-center gap-3 rounded-full border border-border bg-warm px-5 text-sm text-ink/70 transition duration-200 hover:border-brand/50 hover:bg-white active:scale-[0.99] sm:flex"
       >
@@ -65,7 +73,7 @@ export function HeaderSearch() {
       </button>
       <button
         type="button"
-        onClick={open}
+        onClick={() => open()}
         aria-label={t('open')}
         className="flex h-11 w-11 items-center justify-center rounded-full text-subtle transition hover:bg-warm hover:text-brand active:scale-95 sm:hidden"
       >

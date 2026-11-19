@@ -60,6 +60,11 @@ export const CATEGORY_TREE_REVALIDATE_SECONDS = 300;
 /** How many matches the search overlay shows; the full list belongs to the search page. */
 export const SEARCH_RESULT_LIMIT = 8;
 
+/** Product lists change as stock and prices do; the home grid re-reads them every minute. */
+export const PRODUCT_LIST_REVALIDATE_SECONDS = 60;
+
+const NEWEST_SORT = 'newest';
+
 const CATEGORIES_PATH = '/catalog/categories';
 const PRODUCTS_PATH = '/catalog/products';
 const RELEVANCE_SORT = 'relevance';
@@ -96,4 +101,41 @@ export const searchProducts = (
     `${browserApiBaseUrl()}${PRODUCTS_PATH}?${params.toString()}`,
     signal ? { signal } : {},
   );
+};
+
+export interface ProductFilter {
+  categorySlug?: string;
+  perishableOnly?: boolean;
+  limit: number;
+}
+
+/** A product page, or the fact that it could not be loaded; never an exception. */
+export type ProductListResult = { ok: true; page: Paginated<ProductListItem> } | { ok: false };
+
+const filterParams = (filter: ProductFilter): URLSearchParams => {
+  const params = new URLSearchParams({ sort: NEWEST_SORT, limit: String(filter.limit) });
+  if (filter.categorySlug) {
+    params.set('categorySlug', filter.categorySlug);
+  }
+  if (filter.perishableOnly) {
+    params.set('perishableOnly', 'true');
+  }
+  return params;
+};
+
+/**
+ * The newest published products for a server-rendered grid. A failure becomes `{ ok: false }`
+ * so the page can show its error state instead of an error page.
+ */
+export const listNewestProducts = async (filter: ProductFilter): Promise<ProductListResult> => {
+  try {
+    const page = await getJson<Paginated<ProductListItem>>(
+      `${serverApiBaseUrl()}${PRODUCTS_PATH}?${filterParams(filter).toString()}`,
+      { next: { revalidate: PRODUCT_LIST_REVALIDATE_SECONDS } },
+    );
+    return { ok: true, page };
+  } catch (error) {
+    console.error('Product list unavailable; rendering the grid error state', error);
+    return { ok: false };
+  }
 };

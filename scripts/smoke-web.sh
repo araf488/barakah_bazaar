@@ -100,7 +100,7 @@ check() {
 check "health"            /api/v1/health          200 application/json "\"environment\":\"$MODE\""
 check "storefront root"   /                       307 ""
 check "storefront (bn)"   /bn                     200 text/html "<html lang=\"bn\""
-check "storefront (en)"   /en                     200 text/html "<h1[^>]*>Barakah Bazaar</h1>"
+check "storefront (en)"   /en                     200 text/html "<html lang=\"en\""
 check "admin"             /admin/                 200 text/html "Barakah Bazaar Admin"
 check "unknown api path"  /api/v1/does-not-exist  404 application/json
 check "auth guard (R1)"   /api/v1/auth/me         401 application/json

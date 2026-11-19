@@ -1,7 +1,8 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { jsonResponse, page, product } from '../../../test/fixtures';
+import { openSearch } from '../../../lib/searchEvents';
 import { renderWithIntl } from '../../../test/intl';
 import { restoreLivePages, setLivePages } from '../../../test/livePages';
 import { HeaderSearch } from '../HeaderSearch';
@@ -36,6 +37,18 @@ describe('HeaderSearch', () => {
     fireEvent.keyDown(window, { key: '/' });
 
     expect(dialog()).toHaveAttribute('open');
+  });
+
+  it('opens with a query when another control asks it to', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(page([])));
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithIntl(<HeaderSearch />);
+
+    act(() => openSearch('Dates'));
+
+    expect(dialog()).toHaveAttribute('open');
+    expect(input()).toHaveValue('Dates');
+    await screen.findByText('No products match “Dates”');
   });
 
   it('leaves "/" alone while the visitor is typing in another field', () => {
