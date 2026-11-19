@@ -10,6 +10,9 @@ export const ROUTES = {
   cart: '/cart',
   account: '/account',
   orders: '/account/orders',
+  forgotPassword: '/forgot-password',
+  resetPassword: '/reset-password',
+  verifyEmail: '/verify-email',
 } as const;
 
 export type LivePage =
@@ -24,8 +27,8 @@ export const LIVE_PAGES: Record<LivePage, boolean> = {
   category: false,
   product: true,
   fresh: false,
-  signIn: false,
-  register: false,
+  signIn: true,
+  register: true,
   cart: false,
   account: false,
   orders: false,

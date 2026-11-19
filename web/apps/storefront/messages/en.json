@@ -139,5 +139,106 @@
     "title": "We couldn't find that page",
     "body": "It may have been removed, or the link may have changed.",
     "backHome": "Back to the home page"
+  },
+  "auth": {
+    "panel": {
+      "eyebrow": "Halal · Wholesome · Home-delivered",
+      "factHalal": "A halal-first marketplace for Bangladesh",
+      "factCold": "Cold-chain delivery for doi and rosmalai",
+      "factPay": "Pay on delivery or with bKash"
+    },
+    "fields": {
+      "fullName": "Full name",
+      "email": "Email address",
+      "password": "Password",
+      "newPassword": "New password",
+      "confirm": "Confirm password",
+      "code": "6-digit code",
+      "recoveryCode": "Recovery code",
+      "showPassword": "Show password",
+      "hidePassword": "Hide password",
+      "passwordHint": "At least 12 characters."
+    },
+    "signIn": {
+      "title": "Sign in",
+      "heading": "Welcome<br></br><accent>back.</accent>",
+      "intro": "Good to see you again.",
+      "submit": "Sign in",
+      "pending": "Signing in…",
+      "forgot": "Forgot your password?",
+      "noAccount": "New to Barakah Bazaar?",
+      "register": "Create an account"
+    },
+    "mfa": {
+      "title": "Two-step verification",
+      "intro": "Enter the 6-digit code from your authenticator app.",
+      "submit": "Verify and sign in",
+      "pending": "Verifying…",
+      "useRecovery": "Use a recovery code instead",
+      "useCode": "Use an authenticator code instead",
+      "restart": "Start again"
+    },
+    "register": {
+      "title": "Create an account",
+      "heading": "Join the<br></br><accent>family.</accent>",
+      "intro": "One account for orders, addresses and delivery updates.",
+      "submit": "Create account",
+      "pending": "Creating your account…",
+      "haveAccount": "Already have an account?",
+      "signIn": "Sign in"
+    },
+    "verify": {
+      "title": "Confirm your email",
+      "heading": "Almost<br></br><accent>there.</accent>",
+      "sentIntro": "If {email} can be registered, we have sent a confirmation link and a 6-digit code to it.",
+      "linkIntro": "Confirm this email address to finish setting up your account.",
+      "codeIntro": "Enter the 6-digit code from the email we sent you.",
+      "submitLink": "Confirm my email",
+      "submitCode": "Confirm email",
+      "pending": "Confirming…",
+      "resend": "Send a new link",
+      "resendPending": "Sending…",
+      "resent": "If that address has an account waiting for confirmation, a new link is on its way.",
+      "done": "Your email is confirmed. You can sign in now.",
+      "signIn": "Sign in"
+    },
+    "forgot": {
+      "title": "Reset your password",
+      "heading": "Forgot your<br></br><accent>password?</accent>",
+      "intro": "Enter the email address on your account and we will send a reset link and code.",
+      "submit": "Send reset link",
+      "pending": "Sending…",
+      "sent": "If {email} has an account, a reset link and code are on their way. The link expires soon, so use it today.",
+      "back": "Back to sign in"
+    },
+    "reset": {
+      "title": "Choose a new password",
+      "heading": "New<br></br><accent>password.</accent>",
+      "intro": "Choose a password you do not use anywhere else.",
+      "codeIntro": "Enter the email address, the 6-digit code we sent, and your new password.",
+      "submit": "Update password",
+      "pending": "Updating…",
+      "done": "Your password is updated, and every other device has been signed out. Sign in with your new password.",
+      "signIn": "Sign in"
+    },
+    "signOut": "Sign out",
+    "greeting": "Hi, {name}",
+    "errors": {
+      "invalid": "Something in the form is not right. Please check it and try again.",
+      "credentials": "That email and password do not match an account.",
+      "blocked": "This account cannot sign in yet. Confirm your email address first, or contact us if the account was disabled.",
+      "code": "That code did not work. Check it and try again.",
+      "expired": "This link or code has expired or was already used. Ask for a new one.",
+      "tooMany": "Too many attempts. Please wait a minute and try again.",
+      "unavailable": "We cannot reach our servers right now. Please try again in a moment.",
+      "emailInvalid": "Enter a valid email address.",
+      "passwordShort": "Use at least 12 characters.",
+      "passwordLong": "Use 128 characters or fewer.",
+      "passwordMismatch": "The two passwords do not match.",
+      "nameMissing": "Enter your name.",
+      "codeInvalid": "Enter the 6-digit code.",
+      "staffPortal": "Staff accounts sign in at the admin portal.",
+      "mfaExpired": "That sign-in attempt timed out. Please enter your password again."
+    }
   }
 }

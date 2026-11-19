@@ -24,10 +24,12 @@ vi.mock('next-intl/server', () => ({
 vi.mock('../../fonts', () => ({ fontVariables: 'face-display face-body face-bengali' }));
 
 vi.mock('../../../lib/api/catalog', () => ({ fetchTopCategories: vi.fn() }));
+vi.mock('../../../lib/auth/session', () => ({ getCurrentUser: vi.fn() }));
 
 const { default: LocaleLayout, generateMetadata, generateStaticParams } = await import('../layout');
 const { setRequestLocale } = await import('next-intl/server');
 const { fetchTopCategories } = await import('../../../lib/api/catalog');
+const { getCurrentUser } = await import('../../../lib/auth/session');
 const { SiteHeader } = await import('../../../components/shell/SiteHeader');
 const { SiteFooter } = await import('../../../components/shell/SiteFooter');
 
@@ -48,11 +50,20 @@ const elementsOf = (node: ReactNode): AnyElement[] => {
 };
 
 const CATEGORIES = [category()];
+const USER = {
+  id: 'u1',
+  email: 'tahmina@example.test',
+  fullName: 'Tahmina Rahman',
+  phoneVerified: false,
+  role: 'CUSTOMER',
+  createdAt: '2026-11-01T00:00:00Z',
+};
 
 describe('locale layout', () => {
   beforeEach(() => {
     vi.mocked(setRequestLocale).mockClear();
     vi.mocked(fetchTopCategories).mockClear().mockResolvedValue(CATEGORIES);
+    vi.mocked(getCurrentUser).mockClear().mockResolvedValue(USER);
   });
 
   it('pre-renders exactly the two storefront locales', () => {
@@ -78,7 +89,10 @@ describe('locale layout', () => {
     expect(skip?.props.children).toBe('en:skipToContent');
     expect(main?.props.id).toBe('main');
     expect(main?.props.children).toBe(page);
-    expect(tree.find((el) => el.type === SiteHeader)?.props.categories).toBe(CATEGORIES);
+    expect(tree.find((el) => el.type === SiteHeader)?.props).toMatchObject({
+      categories: CATEGORIES,
+      user: USER,
+    });
     expect(tree.find((el) => el.type === SiteFooter)?.props.categories).toBe(CATEGORIES);
   });
 

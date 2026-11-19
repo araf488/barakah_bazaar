@@ -10,7 +10,7 @@ describe('SiteHeader', () => {
   afterEach(() => restoreLivePages());
 
   it('links the logo home under the current locale', () => {
-    renderWithIntl(<SiteHeader categories={[]} />);
+    renderWithIntl(<SiteHeader categories={[]} user={null} />);
     expect(screen.getByRole('link', { name: 'Barakah Bazaar home' })).toHaveAttribute(
       'href',
       '/en',
@@ -19,7 +19,7 @@ describe('SiteHeader', () => {
 
   it('offers sign-in, registration and the cart while signed out', () => {
     setLivePages('all');
-    renderWithIntl(<SiteHeader categories={[]} />);
+    renderWithIntl(<SiteHeader categories={[]} user={null} />);
 
     expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/en/sign-in');
     expect(screen.getByRole('link', { name: 'Join free' })).toHaveAttribute('href', '/en/register');
@@ -28,7 +28,7 @@ describe('SiteHeader', () => {
 
   it('carries the search trigger, the language switch and the category row', () => {
     setLivePages('all');
-    renderWithIntl(<SiteHeader categories={[category()]} />);
+    renderWithIntl(<SiteHeader categories={[category()]} user={null} />);
 
     expect(screen.getByRole('button', { name: 'Search products' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Switch to Bangla' })).toBeInTheDocument();
@@ -37,16 +37,54 @@ describe('SiteHeader', () => {
 
   it('links to no page that does not exist yet', () => {
     setLivePages([]);
-    renderWithIntl(<SiteHeader categories={[category()]} />);
+    renderWithIntl(<SiteHeader categories={[category()]} user={null} />);
 
     expect(screen.getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(['/en', '/bn']);
   });
 
   it('has no admin-portal or flash-deal entry, which the storefront does not serve', () => {
     setLivePages('all');
-    renderWithIntl(<SiteHeader categories={[]} />);
+    renderWithIntl(<SiteHeader categories={[]} user={null} />);
 
     expect(screen.queryByText(/admin/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/flash/i)).not.toBeInTheDocument();
+  });
+
+  it('greets a signed-in customer by first name and offers to sign out', () => {
+    setLivePages('all');
+    renderWithIntl(
+      <SiteHeader
+        categories={[]}
+        user={{
+          id: 'u1',
+          email: 'tahmina@example.test',
+          fullName: 'Tahmina Rahman',
+          phoneVerified: false,
+          role: 'CUSTOMER',
+          createdAt: '2026-11-01',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Hi, Tahmina')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
+  });
+
+  it('falls back to the email name when no full name was given', () => {
+    renderWithIntl(
+      <SiteHeader
+        categories={[]}
+        user={{
+          id: 'u1',
+          email: 'karim@example.test',
+          fullName: null,
+          phoneVerified: false,
+          role: 'CUSTOMER',
+          createdAt: '2026-11-01',
+        }}
+      />,
+    );
+    expect(screen.getByText('Hi, karim')).toBeInTheDocument();
   });
 });
