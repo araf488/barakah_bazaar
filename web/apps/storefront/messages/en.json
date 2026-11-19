@@ -111,5 +111,33 @@
       "datesBody": "Ajwa, Medjool and more, for everyday snacking and Ramadan.",
       "datesAction": "Search dates"
     }
+  },
+  "pdp": {
+    "breadcrumb": "You are here",
+    "chooseVariant": "Choose a size",
+    "perUnit": "per {unit}",
+    "wasPrice": "Was {price}",
+    "saving": "Save {percent}%",
+    "notRated": "Not rated yet",
+    "imageButton": "Show image {index} of {total}",
+    "aboutTitle": "About this product",
+    "noDescription": "The shop has not added a description for this product yet.",
+    "handlingTitle": "Delivery",
+    "coldTitle": "Cold-chain delivery",
+    "coldBody": "{storage, select, CHILLED {Kept chilled} FROZEN {Kept frozen} other {Perishable}}, so it only goes out in delivery slots with a cold van.",
+    "standardTitle": "Regular delivery",
+    "standardBody": "Shelf-stable, so it can go out in any delivery slot.",
+    "shelfLifeHours": "Keeps for {value, plural, one {# hour} other {# hours}}",
+    "shelfLifeDays": "Keeps for {value, plural, one {# day} other {# days}}",
+    "distance": "Delivered within {km} km of our hub",
+    "relatedTitle": "More from {category}",
+    "relatedFallback": "You might also like",
+    "error": "This product could not be loaded right now. Please refresh the page in a moment.",
+    "titleSuffix": "Barakah Bazaar"
+  },
+  "notFound": {
+    "title": "We couldn't find that page",
+    "body": "It may have been removed, or the link may have changed.",
+    "backHome": "Back to the home page"
   }
 }

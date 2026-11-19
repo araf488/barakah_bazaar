@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { category, jsonResponse, page, product } from '../../../test/fixtures';
-import { fetchTopCategories, listNewestProducts, searchProducts } from '../catalog';
+import { productDetail } from '../../../test/productDetail';
+import {
+  fetchTopCategories,
+  findCategoryBySlug,
+  getProductBySlug,
+  listNewestProducts,
+  searchProducts,
+} from '../catalog';
 
 describe('fetchTopCategories', () => {
   beforeEach(() => vi.stubEnv('WEB_INTERNAL_API_BASE_URL', 'http://api.internal/api/v1'));
@@ -130,5 +137,73 @@ describe('listNewestProducts', () => {
 
     await expect(listNewestProducts({ limit: 8 })).resolves.toEqual({ ok: false });
     expect(console.error).toHaveBeenCalled();
+  });
+});
+
+describe('getProductBySlug', () => {
+  beforeEach(() => vi.stubEnv('WEB_INTERNAL_API_BASE_URL', 'http://api.internal/api/v1'));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('reads the product by slug from the internal API, cached for a minute', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(productDetail()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await getProductBySlug('ajwa-dates');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'http://api.internal/api/v1/catalog/products/ajwa-dates',
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ next: { revalidate: 60 } });
+    expect(result).toEqual({ ok: true, product: productDetail() });
+  });
+
+  it('escapes the slug into one path segment', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(productDetail()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getProductBySlug('doi/../admin');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      'http://api.internal/api/v1/catalog/products/doi%2F..%2Fadmin',
+    );
+  });
+
+  it('reports an unknown or unpublished product as not found, without logging an error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 404)));
+
+    await expect(getProductBySlug('gone')).resolves.toEqual({ ok: false, notFound: true });
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it('reports any other failure as an error, and logs it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 503)));
+
+    await expect(getProductBySlug('ajwa')).resolves.toEqual({ ok: false, notFound: false });
+    expect(console.error).toHaveBeenCalled();
+  });
+});
+
+describe('findCategoryBySlug', () => {
+  const tree = [
+    category({ id: 'a', slug: 'fresh', children: [category({ id: 'b', slug: 'doi' })] }),
+    category({ id: 'c', slug: 'dates' }),
+  ];
+
+  it('finds a top-level category', () => {
+    expect(findCategoryBySlug(tree, 'dates')?.id).toBe('c');
+  });
+
+  it('finds a sub-category', () => {
+    expect(findCategoryBySlug(tree, 'doi')?.id).toBe('b');
+  });
+
+  it('finds nothing for an unknown slug', () => {
+    expect(findCategoryBySlug(tree, 'nope')).toBeUndefined();
   });
 });

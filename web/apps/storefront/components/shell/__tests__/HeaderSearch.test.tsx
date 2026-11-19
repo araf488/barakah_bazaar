@@ -90,6 +90,7 @@ describe('HeaderSearch', () => {
   });
 
   it('lists matches without linking them while product pages do not exist', async () => {
+    setLivePages([]);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(page([product()]))));
     renderWithIntl(<HeaderSearch />);
     openWithPill();

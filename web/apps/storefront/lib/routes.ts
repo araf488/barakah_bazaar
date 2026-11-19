@@ -22,7 +22,7 @@ export type LivePage =
  */
 export const LIVE_PAGES: Record<LivePage, boolean> = {
   category: false,
-  product: false,
+  product: true,
   fresh: false,
   signIn: false,
   register: false,

@@ -24,6 +24,7 @@ describe('ProductCard', () => {
   });
 
   it('is not a link while product pages do not exist', () => {
+    setLivePages([]);
     renderWithIntl(<ProductCard product={product()} />);
 
     expect(screen.queryByRole('link')).not.toBeInTheDocument();

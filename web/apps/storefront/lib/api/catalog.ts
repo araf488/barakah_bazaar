@@ -1,5 +1,7 @@
 import { browserApiBaseUrl, serverApiBaseUrl } from './config';
-import { getJson } from './http';
+import { cache } from 'react';
+
+import { ApiRequestError, getJson } from './http';
 
 // Hand-written mirrors of src/modules/catalog/dto/catalog-response.dto.ts until the generated
 // client exists (web/README.md, packages/api-client). Field names match the API exactly.
@@ -41,6 +43,28 @@ export interface ProductListItem {
   primaryImage?: ProductImage | null;
   handling: ProductHandling;
   rating: { average: number | null; count: number };
+}
+
+export interface ProductVariant {
+  id: string;
+  sku: string;
+  nameEn: string;
+  nameBn: string;
+  /** Integer poysha; the only price a client calculates with. */
+  pricePoysha: number;
+  compareAtPricePoysha?: number | null;
+  priceFormatted: string;
+  weightGrams?: number | null;
+  unitLabel: string;
+  isDefault: boolean;
+}
+
+export interface ProductDetail extends ProductListItem {
+  descriptionEn?: string | null;
+  descriptionBn?: string | null;
+  categorySlug: string;
+  variants: ProductVariant[];
+  images: ProductImage[];
 }
 
 export interface Paginated<T> {
@@ -138,4 +162,50 @@ export const listNewestProducts = async (filter: ProductFilter): Promise<Product
     console.error('Product list unavailable; rendering the grid error state', error);
     return { ok: false };
   }
+};
+
+/** Product pages change with price and stock; re-read at most every minute. */
+export const PRODUCT_DETAIL_REVALIDATE_SECONDS = 60;
+
+const NOT_FOUND_STATUS = 404;
+
+/** A product, its absence, or the fact that it could not be loaded; never an exception. */
+export type ProductDetailResult =
+  { ok: true; product: ProductDetail } | { ok: false; notFound: boolean };
+
+/**
+ * One published product by slug. Wrapped in React's `cache` so the page and its metadata share
+ * one request per render. An unpublished or unknown slug is `notFound`, not an error.
+ */
+export const getProductBySlug = cache(async (slug: string): Promise<ProductDetailResult> => {
+  try {
+    const product = await getJson<ProductDetail>(
+      `${serverApiBaseUrl()}${PRODUCTS_PATH}/${encodeURIComponent(slug)}`,
+      { next: { revalidate: PRODUCT_DETAIL_REVALIDATE_SECONDS } },
+    );
+    return { ok: true, product };
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.status === NOT_FOUND_STATUS) {
+      return { ok: false, notFound: true };
+    }
+    console.error('Product detail unavailable; rendering the product error state', error);
+    return { ok: false, notFound: false };
+  }
+});
+
+/** Depth-first search of the category tree, so a sub-category's name can be shown. */
+export const findCategoryBySlug = (
+  tree: CategoryNode[],
+  slug: string,
+): CategoryNode | undefined => {
+  for (const node of tree) {
+    if (node.slug === slug) {
+      return node;
+    }
+    const child = findCategoryBySlug(node.children, slug);
+    if (child) {
+      return child;
+    }
+  }
+  return undefined;
 };
