@@ -58,7 +58,7 @@ export default async function LocaleLayout({ children, params }: LocaleLayoutPro
 
   return (
     <html lang={locale} className={fontVariables}>
-      <body className="flex min-h-screen flex-col pb-[calc(3.5rem+env(safe-area-inset-bottom))] has-[[data-sticky-buy]]:pb-[calc(7.5rem+env(safe-area-inset-bottom))] md:pb-0 md:has-[[data-sticky-buy]]:pb-0">
+      <body className="flex min-h-screen flex-col pb-[calc(3.5rem+1px+env(safe-area-inset-bottom))] has-[[data-sticky-buy]]:pb-[calc(7.5rem+1px+env(safe-area-inset-bottom))] md:pb-0 md:has-[[data-sticky-buy]]:pb-0">
         <NextIntlClientProvider>
           <a
             href={MAIN_CONTENT_HASH}

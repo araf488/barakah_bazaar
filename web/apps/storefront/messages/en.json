@@ -283,5 +283,69 @@
     "label": "Main menu",
     "search": "Search",
     "cart": "Cart"
+  },
+  "account": {
+    "title": "My account",
+    "profile": "Profile",
+    "email": "Email",
+    "phone": "Mobile",
+    "phoneUnverified": "Not verified yet",
+    "addresses": "Addresses",
+    "nav": "Account"
+  },
+  "address": {
+    "add": "Add an address",
+    "newTitle": "New address",
+    "editTitle": "Edit address",
+    "edit": "Edit",
+    "editNamed": "Edit the address for {name}",
+    "remove": "Remove",
+    "removeNamed": "Remove the address for {name}",
+    "makeDefault": "Make default",
+    "makeDefaultNamed": "Make the address for {name} the default",
+    "default": "Default",
+    "save": "Save address",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "empty": "No saved addresses yet. Add one now and checkout takes a single tap.",
+    "loadError": "Your addresses could not be loaded right now. Please refresh in a moment.",
+    "labelField": "Label",
+    "labels": {
+      "Home": "Home",
+      "Office": "Office",
+      "Other": "Other"
+    },
+    "fields": {
+      "recipientName": "Recipient's name",
+      "phone": "Mobile number",
+      "phoneHint": "A Bangladeshi mobile, for example 01712345678.",
+      "division": "Division",
+      "district": "District",
+      "unit": "Upazila or thana",
+      "area": "Area or union (optional)",
+      "unitText": "Upazila, thana or area name",
+      "areaText": "Area (optional)",
+      "choose": "Choose…",
+      "unlisted": "My area is not in the list",
+      "addressLine": "House, road and a landmark",
+      "postCode": "Post code (optional)"
+    },
+    "places": {
+      "loading": "Loading places…",
+      "error": "Places could not be loaded. Check your connection and try again.",
+      "retry": "Try again"
+    },
+    "errors": {
+      "nameMissing": "Enter the recipient's name.",
+      "phoneInvalid": "Enter a Bangladeshi mobile number, such as 01712345678.",
+      "placeMissing": "Choose the division, district and upazila or thana.",
+      "lineMissing": "Enter the house, road or a landmark.",
+      "postCodeInvalid": "A post code has four digits.",
+      "invalid": "That address could not be saved. Check the place and the number, then try again.",
+      "tooMany": "You can save up to 20 addresses. Remove one first.",
+      "notFound": "That address no longer exists.",
+      "signedOut": "Your session ended. Please sign in again.",
+      "failed": "That did not work. Please try again."
+    }
   }
 }

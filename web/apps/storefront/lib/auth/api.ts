@@ -52,7 +52,7 @@ const headersFor = (caller: CallerContext): Record<string, string> => ({
  * prefix (`/auth/login`, `/cart/items`). Never throws: a refusal or an unreachable API is a value.
  */
 export const callApi = async <T>(
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
   path: string,
   caller: CallerContext,
   body?: unknown,

@@ -28,7 +28,7 @@ export const LIVE_PAGES: Record<LivePage, boolean> = {
   fresh: false,
   signIn: true,
   register: true,
-  account: false,
+  account: true,
   orders: false,
 };
 

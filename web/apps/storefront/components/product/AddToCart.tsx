@@ -124,7 +124,7 @@ export function AddToCart({
       {mainOutOfView ? (
         <div
           data-sticky-buy
-          className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 flex animate-slide-up items-center gap-3 border-t border-border bg-white/95 px-4 py-2 backdrop-blur-md md:hidden"
+          className="fixed inset-x-0 bottom-[calc(3.5rem+1px+env(safe-area-inset-bottom))] z-30 flex animate-slide-up items-center gap-3 border-t border-border bg-white/95 px-4 py-2 backdrop-blur-md md:hidden"
         >
           <span className="font-display text-lg font-bold text-brand">{priceLabel}</span>
           <button

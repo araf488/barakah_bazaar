@@ -16,15 +16,18 @@ import { LocaleSwitcher } from './LocaleSwitcher';
 const firstNameOf = (user: AuthUser): string =>
   user.fullName?.trim().split(/\s+/)[0] || user.email.split('@')[0] || user.email;
 
-/** Signed in: a greeting and a sign-out button (a form, so it works without JavaScript). */
+/** Signed in: a greeting that opens the account page, and a sign-out button (a form, so it works without JavaScript). */
 function SignedIn({ user }: { user: AuthUser }) {
   const t = useTranslations('auth');
 
   return (
     <div className="hidden items-center gap-2 md:flex">
-      <span className="max-w-40 truncate text-sm font-medium text-ink">
+      <Link
+        href={ROUTES.account}
+        className="inline-flex min-h-11 max-w-40 items-center truncate px-2 text-sm font-medium text-ink underline-offset-4 transition-colors hover:text-brand hover:underline"
+      >
         {t('greeting', { name: firstNameOf(user) })}
-      </span>
+      </Link>
       <form action={signOutAction}>
         <button
           type="submit"

@@ -72,7 +72,10 @@ describe('SiteHeader', () => {
       />,
     );
 
-    expect(screen.getByText('Hi, Tahmina')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Hi, Tahmina' })).toHaveAttribute(
+      'href',
+      '/en/account',
+    );
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });

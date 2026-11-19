@@ -1,12 +1,11 @@
 'use client';
 
 import { formatCount } from '@barakah/ui';
-import { House, LogIn, LogOut, Search, ShoppingBag } from 'lucide-react';
+import { House, LogIn, Search, ShoppingBag, UserRound } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 import type { ReactNode } from 'react';
 
 import { Link, usePathname } from '../../i18n/navigation';
-import { signOutAction } from '../../lib/auth/actions';
 import { openCart } from '../../lib/cartEvents';
 import { ROUTES } from '../../lib/routes';
 import { openSearch } from '../../lib/searchEvents';
@@ -36,12 +35,14 @@ function Item({ icon, label, badge }: { icon: ReactNode; label: string; badge?: 
 /**
  * Phones only: Home, Search, Cart and Account within thumb reach, as Ghorer Bazar and Cartup
  * do. The header hides its own cart and search buttons below this breakpoint so nothing shows
- * twice. Account is sign-in or sign-out until an account page exists.
+ * twice. Account opens the account page once signed in, sign-in before.
  */
 export function BottomNav({ cartCount, signedIn }: { cartCount: number; signedIn: boolean }) {
   const t = useTranslations();
   const locale = useLocale();
-  const onHome = usePathname() === ROUTES.home;
+  const pathname = usePathname();
+  const onHome = pathname === ROUTES.home;
+  const onAccount = pathname === ROUTES.account;
   const badge = cartCount > 0 ? formatCount(cartCount, locale) : undefined;
 
   return (
@@ -68,11 +69,9 @@ export function BottomNav({ cartCount, signedIn }: { cartCount: number; signedIn
         />
       </button>
       {signedIn ? (
-        <form action={signOutAction} className="flex flex-1">
-          <button type="submit" className={ITEM}>
-            <Item icon={<LogOut aria-hidden="true" size={20} />} label={t('auth.signOut')} />
-          </button>
-        </form>
+        <Link href={ROUTES.account} aria-current={onAccount ? 'page' : undefined} className={ITEM}>
+          <Item icon={<UserRound aria-hidden="true" size={20} />} label={t('account.nav')} />
+        </Link>
       ) : (
         <Link href={ROUTES.signIn} className={ITEM}>
           <Item icon={<LogIn aria-hidden="true" size={20} />} label={t('header.signIn')} />

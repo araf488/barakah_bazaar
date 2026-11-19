@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '../../../test/intl';
 import { navigationState } from '../../../test/navigation';
 
-vi.mock('../../../lib/auth/actions', () => ({ signOutAction: vi.fn() }));
-
 const { BottomNav } = await import('../BottomNav');
 const { OPEN_CART_EVENT } = await import('../../../lib/cartEvents');
 const { OPEN_SEARCH_EVENT } = await import('../../../lib/searchEvents');
@@ -54,9 +52,12 @@ describe('BottomNav', () => {
     expect(screen.getByText('১২')).toBeInTheDocument();
   });
 
-  it('offers sign-out once signed in', () => {
+  it('opens the account page once signed in', () => {
+    navigationState.pathname = '/en/account';
     renderWithIntl(<BottomNav cartCount={0} signedIn />);
-    expect(nav().getByRole('button', { name: 'Sign out' }).closest('form')).not.toBeNull();
+
+    expect(nav().getByRole('link', { name: 'Account' })).toHaveAttribute('href', '/en/account');
+    expect(nav().getByRole('link', { name: 'Account' })).toHaveAttribute('aria-current', 'page');
     expect(nav().queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 });
