@@ -1,7 +1,9 @@
 import { fireEvent, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../test/intl';
+
+vi.mock('../../../lib/cart/actions', () => ({ addToCartAction: vi.fn() }));
 import { productDetail, variant } from '../../../test/productDetail';
 import { BuyBox } from '../BuyBox';
 
@@ -9,7 +11,7 @@ const VARIANTS = productDetail().variants;
 
 describe('BuyBox', () => {
   it('opens on the default size and shows its price', () => {
-    renderWithIntl(<BuyBox variants={VARIANTS} />);
+    renderWithIntl(<BuyBox slug="ajwa-dates" variants={VARIANTS} />);
 
     expect(screen.getByRole('radio', { name: /500g/ })).toBeChecked();
     expect(screen.getByText('৳1,250.00', { selector: '.font-display' })).toBeInTheDocument();
@@ -17,7 +19,7 @@ describe('BuyBox', () => {
   });
 
   it('updates the price when another size is chosen', () => {
-    renderWithIntl(<BuyBox variants={VARIANTS} />);
+    renderWithIntl(<BuyBox slug="ajwa-dates" variants={VARIANTS} />);
 
     fireEvent.click(screen.getByRole('radio', { name: /250g/ }));
 
@@ -27,14 +29,14 @@ describe('BuyBox', () => {
   });
 
   it('names the size group and each size, in the reader’s language', () => {
-    renderWithIntl(<BuyBox variants={VARIANTS} />, 'bn');
+    renderWithIntl(<BuyBox slug="ajwa-dates" variants={VARIANTS} />, 'bn');
 
     expect(screen.getByRole('group', { name: 'সাইজ বেছে নিন' })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /আজওয়া খেজুর ৫০০ গ্রাম/ })).toBeInTheDocument();
   });
 
   it('offers no choice when there is only one size', () => {
-    renderWithIntl(<BuyBox variants={[variant()]} />);
+    renderWithIntl(<BuyBox slug="ajwa-dates" variants={[variant()]} />);
 
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
     expect(screen.getByText('per 500g')).toBeInTheDocument();
@@ -43,6 +45,7 @@ describe('BuyBox', () => {
   it('shows the compare-at price and the saving when the size is reduced', () => {
     renderWithIntl(
       <BuyBox
+        slug="ajwa-dates"
         variants={[
           variant({
             pricePoysha: 100000,
@@ -58,22 +61,29 @@ describe('BuyBox', () => {
   });
 
   it('shows no saving without a higher compare-at price', () => {
-    renderWithIntl(<BuyBox variants={[variant({ compareAtPricePoysha: 125000 })]} />);
+    renderWithIntl(
+      <BuyBox slug="ajwa-dates" variants={[variant({ compareAtPricePoysha: 125000 })]} />,
+    );
     expect(screen.queryByText(/Save|Was/)).not.toBeInTheDocument();
   });
 
   it('announces price changes', () => {
-    const { container } = renderWithIntl(<BuyBox variants={VARIANTS} />);
+    const { container } = renderWithIntl(<BuyBox slug="ajwa-dates" variants={VARIANTS} />);
     expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent('৳1,250.00');
   });
 
   it('renders nothing for a product with no sizes', () => {
-    const { container } = renderWithIntl(<BuyBox variants={[]} />);
+    const { container } = renderWithIntl(<BuyBox slug="ajwa-dates" variants={[]} />);
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('has no add-to-cart control until the cart exists', () => {
-    renderWithIntl(<BuyBox variants={VARIANTS} />);
-    expect(screen.queryByRole('button', { name: /cart/i })).not.toBeInTheDocument();
+  it('adds the selected size to the cart', () => {
+    const { container } = renderWithIntl(<BuyBox slug="ajwa-dates" variants={VARIANTS} />);
+
+    fireEvent.click(screen.getByRole('radio', { name: /250g/ }));
+
+    expect(screen.getByRole('button', { name: 'Add to cart' })).toBeInTheDocument();
+    expect(container.querySelector('input[name="variantId"]')).toHaveValue('v-250');
+    expect(container.querySelector('input[name="slug"]')).toHaveValue('ajwa-dates');
   });
 });

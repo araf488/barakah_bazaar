@@ -5,6 +5,7 @@ import { getLocale } from 'next-intl/server';
 
 import { redirect } from '../../i18n/navigation';
 import { type AuthResult, authApi, type LoginResponse, sessionTokensOf } from './api';
+import { mergeGuestCart } from '../cart/merge';
 import { callerFromAction } from './caller';
 import { clearSession, SESSION_COOKIE, writeMfaChallenge, writeSession } from './cookies';
 import { type AuthErrorKey, authErrorFor } from './errors';
@@ -61,6 +62,7 @@ const startSession = async (res: LoginResponse): Promise<AuthFormState | 'signed
     return fail('staffPortal');
   }
   writeSession(jar, tokens);
+  await mergeGuestCart(jar, { ...(await callerFromAction()), accessToken: tokens.accessToken });
   return 'signedIn';
 };
 

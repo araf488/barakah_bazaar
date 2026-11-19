@@ -6,6 +6,7 @@ import { useState } from 'react';
 
 import type { ProductVariant } from '../../lib/api/catalog';
 import { defaultVariant, savingPercent } from '../../lib/variants';
+import { AddToCart } from './AddToCart';
 
 function Price({ variant }: { variant: ProductVariant }) {
   const t = useTranslations('pdp');
@@ -37,10 +38,9 @@ function Price({ variant }: { variant: ProductVariant }) {
 
 /**
  * Size choice and the price it sets. Sizes are native radio inputs, so arrow keys, focus and
- * screen readers behave as for any radio group. There is no add-to-cart yet: the cart arrives
- * with its own task, and a button that does nothing would be worse than none.
+ * screen readers behave as for any radio group. Add-to-cart sends the selected size.
  */
-export function BuyBox({ variants }: { variants: ProductVariant[] }) {
+export function BuyBox({ slug, variants }: { slug: string; variants: ProductVariant[] }) {
   const t = useTranslations('pdp');
   const locale = useLocale();
   const [selectedId, setSelectedId] = useState(defaultVariant(variants)?.id);
@@ -82,6 +82,7 @@ export function BuyBox({ variants }: { variants: ProductVariant[] }) {
           </div>
         </fieldset>
       ) : null}
+      <AddToCart slug={slug} variantId={selected.id} />
     </div>
   );
 }

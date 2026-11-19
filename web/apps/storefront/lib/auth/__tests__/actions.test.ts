@@ -15,6 +15,9 @@ vi.mock('../../../i18n/navigation', () => ({
     throw REDIRECTED;
   }),
 }));
+vi.mock('../../cart/merge', () => ({
+  mergeGuestCart: vi.fn(async () => ({ moved: 0, refused: 0 })),
+}));
 vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
   authApi: {
@@ -33,6 +36,7 @@ const actions = await import('../actions');
 const { authApi } = await import('../api');
 const { redirect } = await import('../../../i18n/navigation');
 const { getLocale } = await import('next-intl/server');
+const { mergeGuestCart } = await import('../../cart/merge');
 
 const IDLE = { status: 'idle' } as const;
 const form = (fields: Record<string, string>) => {
@@ -70,6 +74,20 @@ describe('signInAction', () => {
     expect(jar.current.values.get('bb_session')).toBe('at');
     expect(jar.current.values.get('bb_refresh')).toBe('rt');
     expect(redirect).toHaveBeenCalledWith({ href: '/p/ajwa', locale: 'bn' });
+  });
+
+  it('moves the guest cart into the account right after signing in', async () => {
+    vi.mocked(authApi.login).mockResolvedValue({ ok: true, data: SESSION });
+
+    await expect(signIn({ email: 'a@b.co', password: 'pw' })).rejects.toBe(REDIRECTED);
+
+    expect(mergeGuestCart).toHaveBeenCalledWith(jar.current, { ...CALLER, accessToken: 'at' });
+  });
+
+  it('moves no cart for staff, who are turned away', async () => {
+    vi.mocked(authApi.login).mockResolvedValue({ ok: true, data: { ...SESSION, portal: 'ADMIN' } });
+    await signIn({ email: 'ops@b.co', password: 'pw' });
+    expect(mergeGuestCart).not.toHaveBeenCalled();
   });
 
   it('refuses to follow `next` off the site', async () => {

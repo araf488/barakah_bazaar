@@ -4,31 +4,34 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { category } from '../../../test/fixtures';
 import { renderWithIntl } from '../../../test/intl';
 import { restoreLivePages, setLivePages } from '../../../test/livePages';
+import { emptyCart } from '../../../lib/cart/view';
 import { SiteHeader } from '../SiteHeader';
+
+const GUEST_CART = emptyCart('guest');
 
 describe('SiteHeader', () => {
   afterEach(() => restoreLivePages());
 
   it('links the logo home under the current locale', () => {
-    renderWithIntl(<SiteHeader categories={[]} user={null} />);
+    renderWithIntl(<SiteHeader categories={[]} user={null} cart={GUEST_CART} />);
     expect(screen.getByRole('link', { name: 'Barakah Bazaar home' })).toHaveAttribute(
       'href',
       '/en',
     );
   });
 
-  it('offers sign-in, registration and the cart while signed out', () => {
+  it('offers sign-in, registration and the cart drawer while signed out', () => {
     setLivePages('all');
-    renderWithIntl(<SiteHeader categories={[]} user={null} />);
+    renderWithIntl(<SiteHeader categories={[]} user={null} cart={GUEST_CART} />);
 
     expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/en/sign-in');
     expect(screen.getByRole('link', { name: 'Join free' })).toHaveAttribute('href', '/en/register');
-    expect(screen.getByRole('link', { name: 'Cart' })).toHaveAttribute('href', '/en/cart');
+    expect(screen.getByRole('button', { name: 'Open cart, empty' })).toBeInTheDocument();
   });
 
   it('carries the search trigger, the language switch and the category row', () => {
     setLivePages('all');
-    renderWithIntl(<SiteHeader categories={[category()]} user={null} />);
+    renderWithIntl(<SiteHeader categories={[category()]} user={null} cart={GUEST_CART} />);
 
     expect(screen.getByRole('button', { name: 'Search products' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Switch to Bangla' })).toBeInTheDocument();
@@ -37,14 +40,14 @@ describe('SiteHeader', () => {
 
   it('links to no page that does not exist yet', () => {
     setLivePages([]);
-    renderWithIntl(<SiteHeader categories={[category()]} user={null} />);
+    renderWithIntl(<SiteHeader categories={[category()]} user={null} cart={GUEST_CART} />);
 
     expect(screen.getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(['/en', '/bn']);
   });
 
   it('has no admin-portal or flash-deal entry, which the storefront does not serve', () => {
     setLivePages('all');
-    renderWithIntl(<SiteHeader categories={[]} user={null} />);
+    renderWithIntl(<SiteHeader categories={[]} user={null} cart={GUEST_CART} />);
 
     expect(screen.queryByText(/admin/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/flash/i)).not.toBeInTheDocument();
@@ -63,6 +66,7 @@ describe('SiteHeader', () => {
           role: 'CUSTOMER',
           createdAt: '2026-11-01',
         }}
+        cart={GUEST_CART}
       />,
     );
 
@@ -83,6 +87,7 @@ describe('SiteHeader', () => {
           role: 'CUSTOMER',
           createdAt: '2026-11-01',
         }}
+        cart={GUEST_CART}
       />,
     );
     expect(screen.getByText('Hi, karim')).toBeInTheDocument();

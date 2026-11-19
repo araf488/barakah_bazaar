@@ -1,10 +1,11 @@
-import { ShoppingBag } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { Link } from '../../i18n/navigation';
 import type { CategoryNode } from '../../lib/api/catalog';
 import { signOutAction } from '../../lib/auth/actions';
 import type { AuthUser } from '../../lib/auth/api';
+import type { CartView } from '../../lib/cart/view';
+import { CartDrawer } from '../cart/CartDrawer';
 import { LIVE_PAGES, ROUTES } from '../../lib/routes';
 import { BrandMark } from './BrandMark';
 import { CategoryNav } from './CategoryNav';
@@ -74,11 +75,12 @@ function AccountLinks({ user }: { user: AuthUser | null }) {
 export function SiteHeader({
   categories,
   user,
+  cart,
 }: {
   categories: CategoryNode[];
   user: AuthUser | null;
+  cart: CartView;
 }) {
-  const t = useTranslations('header');
   const shell = useTranslations('shell');
 
   return (
@@ -96,15 +98,7 @@ export function SiteHeader({
           <div className="ml-auto flex shrink-0 items-center gap-2 sm:ml-0 lg:gap-4">
             <LocaleSwitcher />
             <AccountLinks user={user} />
-            {LIVE_PAGES.cart ? (
-              <Link
-                href={ROUTES.cart}
-                className="flex min-h-11 items-center gap-2 rounded-full bg-brand px-4 text-sm font-semibold text-white shadow-md shadow-brand/20 transition hover:bg-brand-light active:scale-95"
-              >
-                <ShoppingBag aria-hidden="true" size={18} />
-                <span className="sr-only sm:not-sr-only">{t('cart')}</span>
-              </Link>
-            ) : null}
+            <CartDrawer cart={cart} />
           </div>
         </div>
         <CategoryNav categories={categories} />

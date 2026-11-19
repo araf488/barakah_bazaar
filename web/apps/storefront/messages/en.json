@@ -19,7 +19,6 @@
   "header": {
     "signIn": "Sign in",
     "join": "Join free",
-    "cart": "Cart",
     "categoryNav": "Shop by category",
     "home": "Home",
     "freshDaily": "Fresh daily",
@@ -240,5 +239,42 @@
       "staffPortal": "Staff accounts sign in at the admin portal.",
       "mfaExpired": "That sign-in attempt timed out. Please enter your password again."
     }
+  },
+  "cart": {
+    "open": "Open cart, {count, plural, =0 {empty} one {# item} other {# items}}",
+    "title": "Your cart",
+    "close": "Close cart",
+    "count": "{count, plural, one {# item} other {# items}}",
+    "empty": "Your cart is empty.",
+    "emptyAction": "Browse new arrivals",
+    "loadError": "Your cart could not be loaded right now. Please try again in a moment.",
+    "decrease": "One fewer {name}",
+    "increase": "One more {name}",
+    "remove": "Remove {name}",
+    "quantity": "Quantity",
+    "each": "{price} each",
+    "priceChanged": "Price changed since you added it",
+    "onlyLeft": "Only {count} left",
+    "unavailableLine": "No longer available",
+    "priceNotice": "Some prices changed since you added them. You pay the current price.",
+    "stockNotice": "Some items have less stock than you asked for. Lower the quantity to check out.",
+    "subtotal": "Subtotal",
+    "delivery": "Delivery",
+    "deliveryAtCheckout": "Calculated at checkout",
+    "guestCheckout": "Sign in to check out",
+    "guestNote": "Your cart moves to your account when you sign in.",
+    "checkoutSoon": "Checkout opens with the next update.",
+    "add": "Add to cart",
+    "adding": "Adding…",
+    "added": "Added to your cart",
+    "errors": {
+      "unavailable": "This size is no longer available.",
+      "stock": "There is not enough stock for that quantity.",
+      "guestFull": "A guest cart holds up to 20 different products. Sign in to add more.",
+      "quantity": "Choose a quantity between 1 and 99.",
+      "failed": "That did not work. Please try again."
+    },
+    "fewer": "Decrease quantity",
+    "more": "Increase quantity"
   }
 }

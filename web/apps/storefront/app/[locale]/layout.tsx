@@ -10,6 +10,7 @@ import { SiteHeader } from '../../components/shell/SiteHeader';
 import { routing } from '../../i18n/routing';
 import { fetchTopCategories } from '../../lib/api/catalog';
 import { getCurrentUser } from '../../lib/auth/session';
+import { getCart } from '../../lib/cart/getCart';
 import type { StorefrontLocale } from '../../i18n/messages';
 import { fontVariables } from '../fonts';
 import '../globals.css';
@@ -47,9 +48,10 @@ export async function generateMetadata({ params }: LocaleParams): Promise<Metada
 export default async function LocaleLayout({ children, params }: LocaleLayoutProps) {
   const locale = await requireLocale(params);
   setRequestLocale(locale);
-  const [categories, user, t] = await Promise.all([
+  const [categories, user, cart, t] = await Promise.all([
     fetchTopCategories(),
     getCurrentUser(),
+    getCart(),
     getTranslations({ locale, namespace: 'shell' }),
   ]);
 
@@ -64,7 +66,7 @@ export default async function LocaleLayout({ children, params }: LocaleLayoutPro
             {t('skipToContent')}
           </a>
           <AnnouncementBar />
-          <SiteHeader categories={categories} user={user} />
+          <SiteHeader categories={categories} user={user} cart={cart} />
           <main id={MAIN_CONTENT_ID} tabIndex={-1} className="flex-1 focus:outline-none">
             {children}
           </main>

@@ -47,14 +47,18 @@ const headersFor = (caller: CallerContext): Record<string, string> => ({
   ...(caller.accessToken ? { Authorization: `Bearer ${caller.accessToken}` } : {}),
 });
 
-const call = async <T>(
-  method: 'GET' | 'POST',
+/**
+ * One call to the API on the visitor's behalf, from server code only. `path` is under the API
+ * prefix (`/auth/login`, `/cart/items`). Never throws: a refusal or an unreachable API is a value.
+ */
+export const callApi = async <T>(
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   caller: CallerContext,
   body?: unknown,
 ): Promise<AuthResult<T>> => {
   try {
-    const res = await fetch(`${serverApiBaseUrl()}/auth${path}`, {
+    const res = await fetch(`${serverApiBaseUrl()}${path}`, {
       method,
       headers: headersFor(caller),
       cache: 'no-store',
@@ -66,39 +70,39 @@ const call = async <T>(
     const data = res.status === NO_CONTENT_STATUS ? undefined : await res.json();
     return { ok: true, data: data as T };
   } catch (error) {
-    console.error('Auth API unreachable', error);
+    console.error('API unreachable', error);
     return { ok: false, status: UNREACHABLE_STATUS };
   }
 };
 
 export const authApi = {
   login: (caller: CallerContext, email: string, password: string) =>
-    call<LoginResponse>('POST', '/login', caller, { email, password }),
+    callApi<LoginResponse>('POST', '/auth/login', caller, { email, password }),
   loginMfa: (
     caller: CallerContext,
     mfaToken: string,
     proof: { code: string } | { recoveryCode: string },
-  ) => call<LoginResponse>('POST', '/login/mfa', caller, { mfaToken, ...proof }),
+  ) => callApi<LoginResponse>('POST', '/auth/login/mfa', caller, { mfaToken, ...proof }),
   refresh: (caller: CallerContext, refreshToken: string) =>
-    call<LoginResponse>('POST', '/refresh', caller, { refreshToken }),
-  logout: (caller: CallerContext) => call<undefined>('POST', '/logout', caller),
-  me: (caller: CallerContext) => call<AuthUser>('GET', '/me', caller),
+    callApi<LoginResponse>('POST', '/auth/refresh', caller, { refreshToken }),
+  logout: (caller: CallerContext) => callApi<undefined>('POST', '/auth/logout', caller),
+  me: (caller: CallerContext) => callApi<AuthUser>('GET', '/auth/me', caller),
   register: (
     caller: CallerContext,
     input: { email: string; password: string; fullName: string; preferredLanguage: 'BN' | 'EN' },
-  ) => call<{ status: string }>('POST', '/register', caller, input),
+  ) => callApi<{ status: string }>('POST', '/auth/register', caller, input),
   verifyEmail: (
     caller: CallerContext,
     proof: { token: string } | { email: string; code: string },
-  ) => call<{ emailVerified: boolean }>('POST', '/verify-email', caller, proof),
+  ) => callApi<{ emailVerified: boolean }>('POST', '/auth/verify-email', caller, proof),
   resendVerification: (caller: CallerContext, email: string) =>
-    call<{ status: string }>('POST', '/resend-verification', caller, { email }),
+    callApi<{ status: string }>('POST', '/auth/resend-verification', caller, { email }),
   forgotPassword: (caller: CallerContext, email: string) =>
-    call<{ status: string }>('POST', '/forgot-password', caller, { email }),
+    callApi<{ status: string }>('POST', '/auth/forgot-password', caller, { email }),
   resetPassword: (
     caller: CallerContext,
     input: ({ token: string } | { email: string; code: string }) & { newPassword: string },
-  ) => call<{ passwordReset: boolean }>('POST', '/reset-password', caller, input),
+  ) => callApi<{ passwordReset: boolean }>('POST', '/auth/reset-password', caller, input),
 };
 
 /** A login answer that carries a complete session, narrowed for cookie writing. */

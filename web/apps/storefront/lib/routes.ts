@@ -7,7 +7,6 @@ export const ROUTES = {
   fresh: '/fresh',
   signIn: '/sign-in',
   register: '/register',
-  cart: '/cart',
   account: '/account',
   orders: '/account/orders',
   forgotPassword: '/forgot-password',
@@ -16,7 +15,7 @@ export const ROUTES = {
 } as const;
 
 export type LivePage =
-  'category' | 'product' | 'fresh' | 'signIn' | 'register' | 'cart' | 'account' | 'orders';
+  'category' | 'product' | 'fresh' | 'signIn' | 'register' | 'account' | 'orders';
 
 /**
  * Which pages exist today. A link is rendered only when its destination does, so the shell never
@@ -29,7 +28,6 @@ export const LIVE_PAGES: Record<LivePage, boolean> = {
   fresh: false,
   signIn: true,
   register: true,
-  cart: false,
   account: false,
   orders: false,
 };

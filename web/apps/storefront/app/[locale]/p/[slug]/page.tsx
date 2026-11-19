@@ -93,7 +93,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
             </h1>
             <RatingSummary rating={product.rating} />
           </div>
-          <BuyBox variants={product.variants} />
+          <BuyBox slug={product.slug} variants={product.variants} />
           <HandlingCard handling={product.handling} />
           <ProductDescription product={product} />
         </div>

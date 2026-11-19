@@ -25,6 +25,7 @@ vi.mock('../../fonts', () => ({ fontVariables: 'face-display face-body face-beng
 
 vi.mock('../../../lib/api/catalog', () => ({ fetchTopCategories: vi.fn() }));
 vi.mock('../../../lib/auth/session', () => ({ getCurrentUser: vi.fn() }));
+vi.mock('../../../lib/cart/getCart', () => ({ getCart: vi.fn(async () => CART) }));
 
 const { default: LocaleLayout, generateMetadata, generateStaticParams } = await import('../layout');
 const { setRequestLocale } = await import('next-intl/server');
@@ -50,6 +51,15 @@ const elementsOf = (node: ReactNode): AnyElement[] => {
 };
 
 const CATEGORIES = [category()];
+const CART = {
+  mode: 'guest',
+  status: 'ok',
+  lines: [],
+  itemCount: 0,
+  subtotalFormatted: '৳0.00',
+  hasPriceChanges: false,
+  hasStockIssues: false,
+};
 const USER = {
   id: 'u1',
   email: 'tahmina@example.test',
