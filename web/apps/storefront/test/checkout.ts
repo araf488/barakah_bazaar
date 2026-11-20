@@ -1,4 +1,4 @@
-import type { DeliveryQuote, Order, SlotOccurrence } from '../lib/checkout/api';
+import type { DeliveryQuote, Order, OrderEvent, SlotOccurrence } from '../lib/checkout/api';
 
 export const slot = (overrides: Partial<SlotOccurrence> = {}): SlotOccurrence => ({
   slotId: 'slot-morning',
@@ -39,6 +39,7 @@ export const order = (overrides: Partial<Order> = {}): Order => ({
   totalPoysha: 256000,
   customerNote: null,
   placedAt: '2026-11-19T10:00:00Z',
+  deliveredAt: null,
   items: [
     {
       id: 'oi-1',
@@ -54,3 +55,9 @@ export const order = (overrides: Partial<Order> = {}): Order => ({
   canCancel: true,
   ...overrides,
 });
+
+export const orderEvent = (
+  toStatus: OrderEvent['toStatus'],
+  createdAt: string,
+  overrides: Partial<OrderEvent> = {},
+): OrderEvent => ({ fromStatus: null, toStatus, note: null, createdAt, ...overrides });

@@ -35,6 +35,20 @@ export interface PromotionPreview {
 
 export type PaymentMethod = 'CASH_ON_DELIVERY' | 'BKASH';
 
+/** Where an order is (prisma `OrderStatus`); the API moves it, the storefront only reads it. */
+export type OrderStatus =
+  'PLACED' | 'CONFIRMED' | 'PICKING' | 'DISPATCHED' | 'DELIVERED' | 'CANCELLED' | 'REFUNDED';
+
+export type PaymentStatus = 'PENDING' | 'PAID' | 'REFUNDED' | 'FAILED';
+
+/** One status change in an order's history (detail view only). */
+export interface OrderEvent {
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus;
+  note: string | null;
+  createdAt: string;
+}
+
 export interface OrderItem {
   id: string;
   sku: string;
@@ -49,9 +63,9 @@ export interface OrderItem {
 export interface Order {
   id: string;
   orderNumber: string;
-  status: string;
+  status: OrderStatus;
   paymentMethod: PaymentMethod;
-  paymentStatus: string;
+  paymentStatus: PaymentStatus;
   recipientName: string;
   phone: string;
   division: string;
@@ -66,7 +80,11 @@ export interface Order {
   totalPoysha: number;
   customerNote: string | null;
   placedAt: string;
+  deliveredAt: string | null;
   items: OrderItem[];
+  /** Present on `GET /orders/:id`, absent from the list. */
+  events?: OrderEvent[];
+  /** True while the shopper may still cancel it themselves (placed or confirmed). */
   canCancel: boolean;
 }
 

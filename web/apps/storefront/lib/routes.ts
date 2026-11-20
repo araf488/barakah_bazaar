@@ -30,9 +30,13 @@ export const LIVE_PAGES: Record<LivePage, boolean> = {
   signIn: true,
   register: true,
   account: true,
-  orders: false,
+  orders: true,
   checkout: true,
 };
+
+/** One of the shopper's orders: its history, items and the cancel button while allowed. */
+export const orderPath = (orderId: string): string =>
+  `${ROUTES.orders}/${encodeURIComponent(orderId)}`;
 
 /** The page a just-placed order opens on. */
 export const orderPlacedPath = (orderId: string): string =>

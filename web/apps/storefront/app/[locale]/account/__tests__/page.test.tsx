@@ -74,4 +74,13 @@ describe('account page', () => {
     );
     expect(tree.find((el) => el.type === AddressBook)).toBeUndefined();
   });
+  it('leads to the orders', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(USER);
+    vi.mocked(getAddressBook).mockResolvedValue({ ok: true, addresses: [] });
+
+    const tree = elementsOf(await AccountPage(params));
+
+    const link = tree.find((el) => el.props.href === '/account/orders');
+    expect(link?.props.children).toBe('t:account.ordersLink');
+  });
 });

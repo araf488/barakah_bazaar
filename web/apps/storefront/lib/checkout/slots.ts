@@ -1,3 +1,4 @@
+import { dateLocaleOf, DHAKA_TIME_ZONE } from '../dates';
 import type { SlotOccurrence } from './api';
 
 /** The form value for "no preferred window": the API delivers it whenever the hub is ready. */
@@ -5,9 +6,7 @@ export const NO_SLOT = '';
 
 const SLOT_VALUE_SEPARATOR = '|';
 const MINUTES_PER_HOUR = 60;
-const DHAKA_TIME_ZONE = 'Asia/Dhaka';
 const UTC = 'UTC';
-const DATE_LOCALE: Record<string, string> = { bn: 'bn-BD', en: 'en-GB' };
 
 export interface SlotDay {
   date: string;
@@ -45,7 +44,7 @@ const clockOf = (minutes: number): Date =>
 
 /** "10:00 am – 12:00 pm" in the reader's digits; the minutes are Dhaka wall-clock time. */
 export const formatSlotTime = (startMinute: number, endMinute: number, locale: string): string =>
-  new Intl.DateTimeFormat(DATE_LOCALE[locale] ?? locale, {
+  new Intl.DateTimeFormat(dateLocaleOf(locale), {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
@@ -54,7 +53,7 @@ export const formatSlotTime = (startMinute: number, endMinute: number, locale: s
 
 /** "Fri, 20 Nov" for a yyyy-mm-dd date. */
 export const formatSlotDate = (date: string, locale: string): string =>
-  new Intl.DateTimeFormat(DATE_LOCALE[locale] ?? locale, {
+  new Intl.DateTimeFormat(dateLocaleOf(locale), {
     weekday: 'short',
     day: 'numeric',
     month: 'short',

@@ -2,11 +2,11 @@ import { getTranslations, setRequestLocale } from 'next-intl/server';
 
 import { AddressBook } from '../../../components/account/AddressBook';
 import type { StorefrontLocale } from '../../../i18n/messages';
-import { redirect } from '../../../i18n/navigation';
+import { Link, redirect } from '../../../i18n/navigation';
 import { getAddressBook } from '../../../lib/account/addresses';
 import { signOutAction } from '../../../lib/auth/actions';
 import { getCurrentUser } from '../../../lib/auth/session';
-import { ROUTES } from '../../../lib/routes';
+import { LIVE_PAGES, ROUTES } from '../../../lib/routes';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,8 +23,8 @@ export async function generateMetadata({ params }: Props) {
 }
 
 /**
- * The signed-in customer's page: profile and address book (orders, security and devices come
- * with their own tasks). A visitor who is not signed in is sent to sign in and brought back.
+ * The signed-in customer's page: profile, a way into their orders and the address book (security
+ * and devices come with their own task). A visitor who is not signed in is sent to sign in and brought back.
  */
 export default async function AccountPage({ params }: Props) {
   const { locale } = await params;
@@ -77,6 +77,25 @@ export default async function AccountPage({ params }: Props) {
           ) : null}
         </dl>
       </section>
+      {LIVE_PAGES.orders ? (
+        <section
+          aria-labelledby="orders-title"
+          className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border bg-white p-5"
+        >
+          <div>
+            <h2 id="orders-title" className="font-display text-xl font-semibold text-ink">
+              {t('account.orders')}
+            </h2>
+            <p className="mt-1 text-sm text-subtle">{t('account.ordersHint')}</p>
+          </div>
+          <Link
+            href={ROUTES.orders}
+            className="inline-flex min-h-11 items-center rounded-xl bg-brand px-5 text-sm font-semibold text-white transition hover:bg-brand-light active:scale-[0.98]"
+          >
+            {t('account.ordersLink')}
+          </Link>
+        </section>
+      ) : null}
       <section aria-labelledby="addresses-title">
         <h2 id="addresses-title" className="mb-4 font-display text-2xl font-semibold text-ink">
           {t('account.addresses')}

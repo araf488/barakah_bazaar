@@ -296,7 +296,10 @@
     "phone": "Mobile",
     "phoneUnverified": "Not verified yet",
     "addresses": "Addresses",
-    "nav": "Account"
+    "nav": "Account",
+    "orders": "My orders",
+    "ordersHint": "See where an order is, or cancel one before it is packed.",
+    "ordersLink": "See my orders"
   },
   "address": {
     "add": "Add an address",
@@ -422,7 +425,95 @@
       "deliverTo": "Delivering to",
       "items": "What you ordered",
       "note": "Your note",
-      "continue": "Continue shopping"
+      "continue": "Continue shopping",
+      "track": "Track this order"
     }
+  },
+  "orders": {
+    "title": "My orders",
+    "filtersLabel": "Show orders",
+    "filters": {
+      "all": "All",
+      "DISPATCHED": "On the way",
+      "DELIVERED": "Delivered",
+      "CANCELLED": "Cancelled"
+    },
+    "status": {
+      "PLACED": "Placed",
+      "CONFIRMED": "Confirmed",
+      "PICKING": "Being packed",
+      "DISPATCHED": "On the way",
+      "DELIVERED": "Delivered",
+      "CANCELLED": "Cancelled",
+      "REFUNDED": "Refunded"
+    },
+    "stepNote": {
+      "PLACED": "We have your order.",
+      "CONFIRMED": "We checked your order and are getting it ready.",
+      "PICKING": "Your items are being picked and packed.",
+      "DISPATCHED": "A rider has your order and is on the way.",
+      "DELIVERED": "Handed over at your door.",
+      "CANCELLED": "This order was cancelled.",
+      "REFUNDED": "The money for this order was returned."
+    },
+    "placedOn": "Placed {date}",
+    "items": "{count, plural, one {# item} other {# items}}",
+    "more": "+{count} more",
+    "open": "See order {number}",
+    "empty": "You have not ordered anything yet.",
+    "emptyFiltered": "No orders in this list yet.",
+    "showAll": "See all orders",
+    "startShopping": "Fill your basket",
+    "loadError": "We could not load your orders. Please try again in a moment.",
+    "retry": "Try again",
+    "pagesLabel": "Order pages",
+    "newer": "Newer orders",
+    "older": "Older orders",
+    "pageOf": "Page {page} of {total}",
+    "detail": {
+      "back": "All orders",
+      "title": "Order",
+      "tracking": "Where your order is",
+      "items": "What you ordered",
+      "deliverTo": "Delivering to",
+      "payment": "Payment",
+      "paymentMethod": {
+        "CASH_ON_DELIVERY": "Cash on delivery",
+        "BKASH": "bKash"
+      },
+      "paymentStatus": {
+        "PENDING": "Not paid yet",
+        "PAID": "Paid",
+        "REFUNDED": "Refunded",
+        "FAILED": "Payment did not go through"
+      },
+      "note": "Your note",
+      "reason": "Reason"
+    },
+    "cancel": {
+      "open": "Cancel this order",
+      "hint": "You can cancel until we start packing it.",
+      "title": "Cancel order {number}?",
+      "reasonLabel": "Why are you cancelling? (optional)",
+      "confirm": "Yes, cancel the order",
+      "keep": "Keep my order",
+      "cancelling": "Cancelling…",
+      "done": "Your order is cancelled.",
+      "errors": {
+        "tooLate": "It is too late to cancel: this order is already being packed or is on its way.",
+        "changed": "This order just changed. Check where it is above, then try again if you still can.",
+        "gone": "We could not find this order.",
+        "signedOut": "Your session has ended. Sign in again to cancel.",
+        "unavailable": "We could not reach the shop just now. Please try again in a moment.",
+        "failed": "The order could not be cancelled. Please try again."
+      }
+    },
+    "stepState": {
+      "done": "done",
+      "current": "now",
+      "upcoming": "still to come",
+      "stopped": "stopped here"
+    },
+    "loading": "Loading your orders"
   }
 }
