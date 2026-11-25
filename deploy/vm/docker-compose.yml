@@ -1,0 +1,76 @@
+# Production stack for barakahstore.org on the shared VM (1 vCPU, ~1 GB RAM, also serving
+# mediguideapp.com). Lives in /opt/barakah. See deploy/vm/RUNBOOK.md.
+#
+# Both services publish on 127.0.0.1 only: nginx is the single public entrance (443), and
+# Postgres is reached from CI through an SSH tunnel to 127.0.0.1:5432, never from the internet.
+#
+# Interpolated from /opt/barakah/.env (written by setup.sh, updated by deploy.sh):
+#   BARAKAH_IMAGE, POSTGRES_PASSWORD, APP_DB_PASSWORD
+# PG_HOST_PORT / APP_HOST_PORT exist only to rehearse the stack on a machine where 5432 or 3100
+# is taken; on the VM they are unset.
+name: barakah
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: barakah-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: barakah_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in /opt/barakah/.env}
+      POSTGRES_DB: barakah
+      # Read by postgres-init/01-roles.sh on first start only.
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set in /opt/barakah/.env}
+    # Sized for a small shared VM: the whole database is far smaller than the RAM it would
+    # otherwise reserve. Revisit when the VM grows.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=30
+      - -c
+      - wal_buffers=4MB
+    ports:
+      - '127.0.0.1:${PG_HOST_PORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U barakah_admin -d barakah']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '3' }
+
+  app:
+    # The image CI built, smoke-tested and shipped; deploy.sh sets the tag.
+    image: ${BARAKAH_IMAGE:?set by deploy.sh}
+    container_name: barakah-app
+    restart: unless-stopped
+    env_file: ./app.env
+    environment:
+      # Caps the V8 heap below the container limit so Node collects garbage instead of being
+      # killed by the kernel when the VM is short of memory.
+      NODE_OPTIONS: --max-old-space-size=288
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${APP_HOST_PORT:-3100}:3000'
+    mem_limit: 448m
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '3' }
+
+volumes:
+  pgdata:

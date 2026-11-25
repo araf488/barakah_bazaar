@@ -190,7 +190,8 @@ jobs:
     needs: image
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Shipping a ~1 GB image over SSH and waiting for readiness takes longer than a hook.
+    timeout-minutes: 25
     # Resolves the branch's environment, which is what makes GitHub inject that
     # environment's secrets and apply its protection rules. Those rules are repository
     # settings, not this file: `prod` must be created with required reviewers before
@@ -200,6 +201,12 @@ jobs:
     # more-indented continuation lines, which would embed literal newlines in the
     # expression that selects which environment's secrets are injected.
     environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name == 'stg' && 'stage' || 'dev' }}
+    # packages: read lets this job pull the image the image job published, to ship it to a VM.
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_REF: ${{ needs.image.outputs.image-ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -210,6 +217,58 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # A VM host (deploy/vm/RUNBOOK.md) is the first adopted host: prod runs on the VM that also
+      # serves mediguideapp.com. Same presence pattern as the database and hook checks below.
+      - name: Check for a VM host
+        id: vmcheck
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+        run: |
+          if [ -n "$VM_HOST" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The host key is pinned from a secret (ssh-keyscan output captured once by the owner), never
+      # trusted on first use: a deploy key and the database tunnel go over this connection.
+      - name: Prepare SSH to the VM
+        if: steps.vmcheck.outputs.configured == 'true'
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host vm\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  ServerAliveInterval 15\n' \
+            "$VM_HOST" "$VM_USER" > ~/.ssh/config
+          ssh vm true
+
+      # The VM never holds a registry credential: the runner pulls with this job's token and
+      # streams the image over SSH. The stack files come from this commit, so a compose change
+      # ships with the code that needs it; app.env and .env on the VM are never touched.
+      - name: Ship the image and stack files to the VM
+        if: steps.vmcheck.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker pull "$IMAGE_REF"
+          docker save "$IMAGE_REF" | gzip -1 | ssh vm 'gunzip | docker load'
+          rsync -a deploy/vm/docker-compose.yml deploy/vm/deploy.sh vm:/opt/barakah/
+          rsync -a deploy/vm/postgres-init/ vm:/opt/barakah/postgres-init/
+
+      # Postgres on the VM listens on its loopback only. Migrations reach it through this tunnel,
+      # so this environment's DIRECT_URL points at 127.0.0.1:15432 on the runner.
+      - name: Open the database tunnel
+        if: steps.vmcheck.outputs.configured == 'true'
+        run: ssh -f -N -o ExitOnForwardFailure=yes -L 15432:127.0.0.1:5432 vm
 
       # dev's Supabase project is local-only: the free tier only affords two
       # hosted projects (stage, prod), so dev's GitHub Environment has no
@@ -243,6 +302,14 @@ jobs:
         env:
           DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
+      # A VM runs its own Postgres, reached only through the tunnel above. Switching it to new code
+      # without migrating would serve the new code on the old schema, so refuse instead.
+      - name: A VM host needs its database
+        if: steps.vmcheck.outputs.configured == 'true' && steps.dbcheck.outputs.configured == 'false'
+        run: |
+          echo "VM_HOST is set but DIRECT_URL is not; see deploy/vm/RUNBOOK.md step 4."
+          exit 1
+
       - name: No database configured for this environment
         if: steps.dbcheck.outputs.configured == 'false'
         run: echo "No DIRECT_URL configured for this environment — skipping migrations and RLS."
@@ -250,6 +317,28 @@ jobs:
       # Secrets cannot be tested in `if:` directly, so presence is resolved into a
       # step output first (same pattern as the database check above). The URL is
       # only ever read from the environment and is never printed.
+      # After the migrations, so the new code never runs against the old schema. deploy.sh waits for
+      # the readiness check (database reachable) and puts the previous image back if it fails.
+      - name: Switch the VM to the new image
+        if: steps.vmcheck.outputs.configured == 'true'
+        run: ssh vm "bash /opt/barakah/deploy.sh '$IMAGE_REF'"
+
+      # Through Cloudflare and nginx, as a shopper reaches it. PUBLIC_BASE_URL is an environment
+      # variable (not a secret), e.g. https://barakahstore.org; unset skips this check.
+      - name: Check the public site
+        if: steps.vmcheck.outputs.configured == 'true' && vars.PUBLIC_BASE_URL != ''
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+        run: |
+          for attempt in $(seq 1 10); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_BASE_URL/api/v1/health/ready" || true)"
+            if [ "$code" = "200" ]; then echo "$PUBLIC_BASE_URL is ready"; exit 0; fi
+            echo "attempt $attempt: $code"
+            sleep 6
+          done
+          echo "$PUBLIC_BASE_URL did not answer ready"
+          exit 1
+
       - name: Check for a deploy hook
         id: hookcheck
         env:
@@ -263,20 +352,20 @@ jobs:
 
       # Host-agnostic: whichever host is adopted exposes a deploy URL that pulls
       # the image just published. Adopting one is setting this environment's
-      # DEPLOY_HOOK_URL secret, not a pipeline change.
+      # DEPLOY_HOOK_URL secret, not a pipeline change. A VM host takes precedence.
       - name: Trigger the deploy hook
-        if: steps.hookcheck.outputs.configured == 'true'
+        if: steps.vmcheck.outputs.configured == 'false' && steps.hookcheck.outputs.configured == 'true'
         env:
           DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
         run: |
           curl --fail --silent --show-error --max-time 30 -o /dev/null -X POST "$DEPLOY_HOOK_URL"
           echo "deploy hook triggered"
 
-      # Runs only while this environment has no DEPLOY_HOOK_URL secret: the image is
-      # published, but nothing pulls it. Setting the secret replaces this step with
+      # Runs only while this environment has neither a VM host nor a DEPLOY_HOOK_URL secret:
+      # the image is published, but nothing pulls it. Setting the secret replaces this step with
       # the hook above; see the README's Deployment section.
       - name: Report the image awaiting deployment
-        if: steps.hookcheck.outputs.configured == 'false'
+        if: steps.vmcheck.outputs.configured == 'false' && steps.hookcheck.outputs.configured == 'false'
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |

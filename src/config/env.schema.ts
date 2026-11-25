@@ -223,8 +223,6 @@ const DEPLOYED_ENVS = ['staging', 'production'] as const satisfies readonly Base
 /** Values that must be present before the app may serve traffic in any deployed environment. */
 const DEPLOYED_ENV_REQUIRED_KEYS = [
   'DATABASE_URL',
-  'SUPABASE_URL',
-  'SUPABASE_SERVICE_ROLE_KEY',
   // Absent, the app boots with a per-process random signing key: every restart, and every
   // instance behind a load balancer, invalidates tokens the others issued.
   'JWT_SECRET',
@@ -313,6 +311,13 @@ const enforceDeployedEnvRules = (env: BaseEnv, ctx: z.RefinementCtx): void => {
 
   if (env.CORS_ALLOWED_ORIGINS.trim().length === 0) {
     addIssue(ctx, 'CORS_ALLOWED_ORIGINS', EnvValidationMessages.CorsAllowlistEmpty);
+  }
+
+  // Supabase is Storage only and optional: without it uploads are unavailable and health reports
+  // storage as disabled, but the shop still serves. Half a configuration is a typo, though: it
+  // would boot looking configured and fail on the first upload.
+  if ((env.SUPABASE_URL === undefined) !== (env.SUPABASE_SERVICE_ROLE_KEY === undefined)) {
+    addIssue(ctx, 'SUPABASE_URL', EnvValidationMessages.SupabaseHalfConfigured);
   }
 
   // A configured (non-noop) provider with no credentials would boot and then fail every send

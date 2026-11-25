@@ -35,6 +35,14 @@ const productionEnvWithout = (key: keyof typeof productionEnv): Record<string, u
   return env;
 };
 
+/** A copy of an environment with neither Supabase Storage key. */
+const withoutSupabase = (env: Record<string, unknown>): Record<string, unknown> => {
+  const copy = { ...env };
+  delete copy.SUPABASE_URL;
+  delete copy.SUPABASE_SERVICE_ROLE_KEY;
+  return copy;
+};
+
 const stagingEnv = {
   NODE_ENV: 'staging',
   DATABASE_URL: 'postgresql://user:pass@db.example.supabase.co:5432/postgres',
@@ -233,9 +241,16 @@ describe('validateEnv', () => {
       );
     });
 
-    it('requires the service-role key', () => {
+    it('boots without Supabase, which only provides optional Storage', () => {
+      expect(() => validateEnv(withoutSupabase(productionEnv))).not.toThrow();
+    });
+
+    it('refuses half a Supabase configuration', () => {
       expect(() => validateEnv(productionEnvWithout('SUPABASE_SERVICE_ROLE_KEY'))).toThrow(
-        /SUPABASE_SERVICE_ROLE_KEY is required/,
+        'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set together, or both left unset',
+      );
+      expect(() => validateEnv(productionEnvWithout('SUPABASE_URL'))).toThrow(
+        'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set together, or both left unset',
       );
     });
 
@@ -333,15 +348,10 @@ describe('validateEnv', () => {
       );
     });
 
-    it('requires SUPABASE_URL', () => {
+    it('boots without Supabase, and refuses half of it', () => {
+      expect(() => validateEnv(withoutSupabase(stagingEnv))).not.toThrow();
       expect(() => validateEnv(stagingEnvWithout('SUPABASE_URL'))).toThrow(
-        /SUPABASE_URL is required when NODE_ENV=staging/,
-      );
-    });
-
-    it('requires the service-role key', () => {
-      expect(() => validateEnv(stagingEnvWithout('SUPABASE_SERVICE_ROLE_KEY'))).toThrow(
-        /SUPABASE_SERVICE_ROLE_KEY is required when NODE_ENV=staging/,
+        'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set together, or both left unset',
       );
     });
 

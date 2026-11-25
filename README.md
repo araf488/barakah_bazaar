@@ -657,13 +657,15 @@ to `dev`, `stg` and `main`:
 | -------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `verify` | PR and push | Backend lint, unit, e2e (throwaway Postgres service), build; then web lint, typecheck, test, build; then builds the image and runs `scripts/smoke-web.sh` against it. 30-minute timeout. No secrets. |
 | `image`  | push        | Publishes the one image to `ghcr.io/araf488/barakah_bazaar`, tagged immutably `sha-<short-sha>` plus a moving `dev` / `stg` / `prod` tag.                                                            |
-| `deploy` | push        | In the branch's GitHub Environment: `db:deploy` and `db:rls` when `DIRECT_URL` is set, then the deploy hook below.                                                                                   |
+| `deploy` | push        | In the branch's GitHub Environment: `db:deploy` and `db:rls` when `DIRECT_URL` is set, then the VM deploy (when `VM_HOST` is set) or the deploy hook below.                                          |
 
 The smoke script runs the image in a deployed mode, `SMOKE_NODE_ENV=production`
 (the default, and the image's own) or `staging`, so it meets the same config
 rules and the same Next runtime a host will. It generates the values those modes
 require per run (random `JWT_SECRET` and `TOTP_ENCRYPTION_KEY`, the `.invalid`
-origin for public URLs, CORS and `SUPABASE_URL`); none of them are secrets. CI
+origin for public URLs, CORS and `SUPABASE_URL`); none of them are secrets.
+It also asserts `/api/v1/payments/methods` is public and offers cash on delivery
+alone under the default noop payment gateway. CI
 runs it once per mode. It asserts `/api/v1/health` is 200 and reports the
 requested environment, `/` is HTML from Next, `/admin/` is HTML from the SPA, an
 unknown `/api/v1` path is a JSON 404, and `/api/v1/auth/me` without a token is a
@@ -680,7 +682,17 @@ so `scripts/prune-runtime-modules.sh` deletes that tree by name in the build sta
 and fails the build if a module the runtime loads stops resolving. The image is
 ~854 MB uncompressed (was 1.26 GB).
 
-**The hook model.** No application host is chosen yet, deliberately. If the
+**Production: barakahstore.org on a VM.** `prod` runs on the Vultr VM that also
+serves mediguideapp.com, with Postgres in Docker beside the app and nginx +
+certbot in front, behind Cloudflare. When the environment has a `VM_HOST` secret,
+the deploy job streams the image to the VM over SSH, migrates through an SSH
+tunnel, then runs `deploy/vm/deploy.sh`, which swaps the container, gates on
+`/api/v1/health/ready` and rolls back on failure. One-time setup, secrets and
+operations: [deploy/vm/RUNBOOK.md](deploy/vm/RUNBOOK.md). Supabase is optional
+there (Storage only): without it the app boots and reports storage `disabled`.
+
+**The hook model.** For environments without a VM, no application host is chosen
+yet, deliberately. If the
 environment secret `DEPLOY_HOOK_URL` is set, the deploy job `POST`s to it (the
 deploy-hook mechanism Render, Railway, Koyeb and similar hosts provide); the host
 then pulls the image just published. With no hook set, the job prints the image

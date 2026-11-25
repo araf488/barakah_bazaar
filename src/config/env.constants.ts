@@ -31,6 +31,9 @@ export const EnvValidationMessages = {
   PaymentApiUrlNotHttps: 'PAYMENT_API_URL must begin with https:// in a deployed environment',
   /** Raised when a deployed environment selects a real payment provider with no credentials. */
   PaymentProviderNotConfigured: 'PAYMENT_PROVIDER is set but its credentials are not.',
+  /** Raised when a deployed environment sets only one of the two Supabase Storage keys. */
+  SupabaseHalfConfigured:
+    'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set together, or both left unset',
   /** Raised when Swagger is left enabled in production. Staging may enable it. */
   SwaggerEnabledInProduction: 'SWAGGER_ENABLED must be false in production',
 } as const;

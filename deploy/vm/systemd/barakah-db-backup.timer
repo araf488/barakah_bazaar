@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Barakah Bazaar database backup
+
+[Timer]
+# 03:30 Dhaka time (UTC+6), when the shop is quietest.
+OnCalendar=*-*-* 21:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
