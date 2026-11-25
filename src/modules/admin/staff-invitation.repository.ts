@@ -1,0 +1,345 @@
+import { Injectable } from '@nestjs/common';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import {
+  Prisma,
+  StaffInvitation,
+  StaffInvitationStatus,
+  User,
+  UserRole,
+} from '../../infra/prisma/prisma-client';
+import { PrismaErrorCodes } from '../../common/constants/app.constants';
+import { PrismaService } from '../../infra/prisma/prisma.service';
+import { AuditLogRepository, AuditLogWriteData } from './audit-log.repository';
+
+/** `undefined` means no such row; `null` means the query itself failed. */
+export type InvitationResult = StaffInvitation | null | undefined;
+
+export interface CreateInvitationData {
+  email: string;
+  role: UserRole;
+  tokenHash: string;
+  expiresAt: Date;
+  invitedBy: string;
+}
+
+/** What the invitee supplied when accepting; the email and role come from the invitation. */
+export interface NewStaffAccount {
+  readonly passwordHash: string;
+  readonly fullName: string;
+}
+
+/** `null` means the database faulted. */
+export type AcceptResult =
+  | { readonly kind: 'accepted'; readonly userId: string }
+  | { readonly kind: 'not-pending' }
+  | { readonly kind: 'account-exists' }
+  | null;
+
+/** `null` means the database faulted; `not-pending` means another caller settled it first. */
+export type SettleResult =
+  | { readonly kind: 'settled'; readonly invitation: StaffInvitation }
+  | { readonly kind: 'not-pending' }
+  | null;
+
+/** `null` means the database faulted; `not-pending` means another caller settled it first. */
+export type ResendResult =
+  | { readonly kind: 'resent'; readonly invitation: StaffInvitation }
+  | { readonly kind: 'not-pending' }
+  | null;
+
+export interface InvitationPage {
+  items: StaffInvitation[];
+  total: number;
+}
+
+@Injectable()
+export class StaffInvitationRepository {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditLog: AuditLogRepository,
+    @InjectPinoLogger(StaffInvitationRepository.name) private readonly logger: PinoLogger,
+  ) {}
+
+  /**
+   * Creates the invitation and its audit row in ONE transaction.
+   *
+   * An invitation is a pending permission grant, so the same rule as a price change applies:
+   * one that exists without a record of who sent it must not be possible.
+   */
+  async createAudited(
+    data: CreateInvitationData,
+    audit: (created: StaffInvitation) => AuditLogWriteData,
+  ): Promise<StaffInvitation | null> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.staffInvitation.create({ data });
+        await this.auditLog.appendWithin(tx, audit(created));
+        return created;
+      });
+    } catch (error) {
+      // A duplicate token hash lands here. It is astronomically unlikely with 32 bytes of
+      // entropy, and the unique index is what makes it an error rather than a silent overwrite.
+      this.logger.error(
+        { err: error, email: data.email },
+        'Exception occurred in StaffInvitationRepository.createAudited',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Moves an invitation out of PENDING, with its audit row, in one transaction.
+   *
+   * The `status: PENDING` in the where clause is the concurrency guard: two acceptances of
+   * the same token race, and the loser updates nothing and gets `not-pending` rather than closing an
+   * invitation twice.
+   */
+  async settleAudited(
+    id: string,
+    // Unchecked: the checked variant hides acceptedBy/revokedBy behind their relations, and
+    // this write only ever sets the scalar it already has an id for.
+    data: Prisma.StaffInvitationUncheckedUpdateManyInput,
+    audit: (updated: StaffInvitation) => AuditLogWriteData,
+  ): Promise<SettleResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const affected = await tx.staffInvitation.updateMany({
+          where: { id, status: StaffInvitationStatus.PENDING },
+          data,
+        });
+
+        if (affected.count === 0) {
+          // Someone else settled it first. Not an error, but not this caller's write either.
+          throw new InvitationNoLongerPendingError();
+        }
+
+        const updated = await tx.staffInvitation.findUniqueOrThrow({ where: { id } });
+        await this.auditLog.appendWithin(tx, audit(updated));
+        return { kind: 'settled', invitation: updated } as const;
+      });
+    } catch (error) {
+      if (error instanceof InvitationNoLongerPendingError) {
+        // Expected outcome of a race, not a fault. Logged at info so a genuine spike is
+        // still visible without filling the error log.
+        this.logger.info({ invitationId: id }, 'Invitation was already settled by someone else');
+        return { kind: 'not-pending' };
+      }
+
+      this.logger.error(
+        { err: error, invitationId: id },
+        'Exception occurred in StaffInvitationRepository.settleAudited',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Rotates a pending invitation's token and deadline, with its audit row, in one transaction.
+   *
+   * Guarded by `status: PENDING` exactly like `settleAudited`: a resend racing an acceptance or
+   * a revoke updates nothing and gets `not-pending`, so a closed invitation is never given a live
+   * token. A fault is `null`, kept distinct so the caller does not report it as a lost race.
+   */
+  async resendAudited(
+    id: string,
+    data: { tokenHash: string; expiresAt: Date },
+    audit: (updated: StaffInvitation) => AuditLogWriteData,
+  ): Promise<ResendResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const affected = await tx.staffInvitation.updateMany({
+          where: { id, status: StaffInvitationStatus.PENDING },
+          data,
+        });
+
+        if (affected.count === 0) {
+          throw new InvitationNoLongerPendingError();
+        }
+
+        const updated = await tx.staffInvitation.findUniqueOrThrow({ where: { id } });
+        await this.auditLog.appendWithin(tx, audit(updated));
+        return { kind: 'resent', invitation: updated } as const;
+      });
+    } catch (error) {
+      if (error instanceof InvitationNoLongerPendingError) {
+        this.logger.info({ invitationId: id }, 'Invitation was already settled by someone else');
+        return { kind: 'not-pending' };
+      }
+
+      // The new token hash is deliberately not logged.
+      this.logger.error(
+        { err: error, invitationId: id },
+        'Exception occurred in StaffInvitationRepository.resendAudited',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Accepts an invitation by creating the invitee's account: closes the invitation, creates
+   * the verified staff user with the invited role, and writes the audit row in ONE transaction.
+   *
+   * The invitation and the account it grants must never disagree: a closed invitation with no
+   * account is a spent token and nothing to show for it. A brand-new account has no sessions,
+   * so there is no session cache to invalidate.
+   *
+   * The `staff_invitations_settled_has_actor` CHECK constraint requires an ACCEPTED row to carry
+   * both `accepted_by` and `accepted_at`, and `accepted_by` is the id of the user this
+   * transaction creates. So the status cannot change until the user exists. The first write is
+   * therefore a claim: a no-op `updatedAt` write guarded by `status = PENDING`. It takes the row
+   * lock and checks the row is still pending; a concurrent accept blocks on that lock, then
+   * re-evaluates the predicate under READ COMMITTED, matches no row and gets `not-pending`. The
+   * status, `acceptedAt` and `acceptedBy` are then written together in one update, after the
+   * user is created, so the CHECK holds at every statement.
+   *
+   * The claim also matches the token hash the caller read the invitation by. A resend rotates
+   * that hash, so it kills the old link even mid-accept: an accept that read the row before the
+   * resend committed claims nothing and gets `not-pending`.
+   */
+  async acceptCreatingAccount(
+    invitation: StaffInvitation,
+    account: NewStaffAccount,
+    audit: (updated: StaffInvitation, user: User) => AuditLogWriteData,
+  ): Promise<AcceptResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const now = new Date();
+        // Claim: lock the row and check it is pending; the status waits until acceptedBy exists.
+        const claimed = await tx.staffInvitation.updateMany({
+          where: {
+            id: invitation.id,
+            status: StaffInvitationStatus.PENDING,
+            tokenHash: invitation.tokenHash,
+          },
+          data: { updatedAt: now },
+        });
+
+        if (claimed.count === 0) {
+          throw new InvitationNoLongerPendingError();
+        }
+
+        const user = await tx.user.create({
+          data: {
+            email: invitation.email,
+            role: invitation.role,
+            passwordHash: account.passwordHash,
+            fullName: account.fullName,
+            emailVerifiedAt: now,
+            isActive: true,
+          },
+        });
+        const updated = await tx.staffInvitation.update({
+          where: { id: invitation.id },
+          data: {
+            status: StaffInvitationStatus.ACCEPTED,
+            acceptedAt: now,
+            acceptedBy: user.id,
+          },
+        });
+        await this.auditLog.appendWithin(tx, audit(updated, user));
+
+        return { kind: 'accepted', userId: user.id } as const;
+      });
+    } catch (error) {
+      if (error instanceof InvitationNoLongerPendingError) {
+        this.logger.info(
+          { invitationId: invitation.id },
+          'Invitation was already settled by someone else',
+        );
+        return { kind: 'not-pending' };
+      }
+
+      // `users.email` is the only unique constraint this transaction can hit (phone is unset, the
+      // invitation write touches no unique column, the audit insert has only a PK), so the error
+      // is not narrowed by `meta.target`.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PrismaErrorCodes.UniqueConstraint
+      ) {
+        // The address registered between the invitation being sent and being accepted.
+        this.logger.info(
+          { invitationId: invitation.id },
+          'Invitation accept found an existing account; nothing created',
+        );
+        return { kind: 'account-exists' };
+      }
+
+      // The account's password hash is deliberately not logged.
+      this.logger.error(
+        { err: error, invitationId: invitation.id },
+        'Exception occurred in StaffInvitationRepository.acceptCreatingAccount',
+      );
+      return null;
+    }
+  }
+
+  /** Looks an invitation up by the hash of the token that was emailed. */
+  async findByTokenHash(tokenHash: string): Promise<InvitationResult> {
+    try {
+      return (await this.prisma.staffInvitation.findUnique({ where: { tokenHash } })) ?? undefined;
+    } catch (error) {
+      // The hash is not logged: it is the stored half of a live credential.
+      this.logger.error(
+        { err: error },
+        'Exception occurred in StaffInvitationRepository.findByTokenHash',
+      );
+      return null;
+    }
+  }
+
+  async findById(id: string): Promise<InvitationResult> {
+    try {
+      return (await this.prisma.staffInvitation.findUnique({ where: { id } })) ?? undefined;
+    } catch (error) {
+      this.logger.error(
+        { err: error, invitationId: id },
+        'Exception occurred in StaffInvitationRepository.findById',
+      );
+      return null;
+    }
+  }
+
+  /** The open invitation for an address, if there is one. */
+  async findOpenForEmail(email: string): Promise<InvitationResult> {
+    try {
+      return (
+        (await this.prisma.staffInvitation.findFirst({
+          where: { email, status: StaffInvitationStatus.PENDING },
+          orderBy: { createdAt: 'desc' },
+        })) ?? undefined
+      );
+    } catch (error) {
+      this.logger.error(
+        { err: error, email },
+        'Exception occurred in StaffInvitationRepository.findOpenForEmail',
+      );
+      return null;
+    }
+  }
+
+  async findPage(
+    where: Prisma.StaffInvitationWhereInput,
+    skip: number,
+    take: number,
+  ): Promise<InvitationPage | null> {
+    try {
+      const [items, total] = await this.prisma.$transaction([
+        this.prisma.staffInvitation.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take,
+        }),
+        this.prisma.staffInvitation.count({ where }),
+      ]);
+
+      return { items, total };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in StaffInvitationRepository.findPage');
+      return null;
+    }
+  }
+}
+
+/** Thrown inside the transaction to roll it back when a race lost. Never leaves this file. */
+class InvitationNoLongerPendingError extends Error {}

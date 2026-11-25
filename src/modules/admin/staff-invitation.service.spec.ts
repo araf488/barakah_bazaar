@@ -1,0 +1,501 @@
+import { HttpStatus } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { PinoLogger } from 'nestjs-pino';
+import { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { StaffInvitationStatus, UserRole } from '../../infra/prisma/prisma-client';
+import { createMockConfig, createMockLogger } from '../../../test/support/mocks';
+import { userFixture } from '../../../test/support/user-fixtures';
+import { AuthRepository } from '../auth/auth.repository';
+import { EmailSender } from '../notification/ports/email-sender.port';
+import { StaffInvitationRepository } from './staff-invitation.repository';
+import { StaffInvitationService } from './staff-invitation.service';
+
+const superAdmin: AuthenticatedUser = {
+  userId: 'user-1',
+  sessionId: 'session-1',
+  email: 'boss@barakahbazaar.com.bd',
+  role: UserRole.SUPER_ADMIN,
+};
+
+const hourFromNow = () => new Date(Date.now() + 60 * 60 * 1000);
+const hourAgo = () => new Date(Date.now() - 60 * 60 * 1000);
+
+const invitation = (overrides = {}) => ({
+  id: 'inv-1',
+  email: 'ops@barakahbazaar.com.bd',
+  role: UserRole.OPS,
+  tokenHash: 'hash',
+  status: StaffInvitationStatus.PENDING,
+  expiresAt: hourFromNow(),
+  invitedBy: 'user-1',
+  acceptedBy: null,
+  acceptedAt: null,
+  revokedBy: null,
+  revokedAt: null,
+  createdAt: new Date('2026-08-31T00:00:00.000Z'),
+  updatedAt: new Date('2026-08-31T00:00:00.000Z'),
+  ...overrides,
+});
+
+/** A stand-in that is NOT NoopEmailSender, so the token-echo branch stays off. */
+class RealEmailSender implements EmailSender {
+  send = jest.fn<Promise<boolean>, [unknown]>().mockResolvedValue(true);
+}
+
+describe('StaffInvitationService', () => {
+  let repository: {
+    createAudited: jest.Mock;
+    settleAudited: jest.Mock;
+    resendAudited: jest.Mock;
+    findById: jest.Mock;
+    findOpenForEmail: jest.Mock;
+    findPage: jest.Mock;
+  };
+  let users: { findById: jest.Mock; findByEmail: jest.Mock };
+  let email: RealEmailSender;
+  let logger: jest.Mocked<PinoLogger>;
+  let service: StaffInvitationService;
+
+  const build = (sender: EmailSender = email, provider = 'resend') =>
+    new StaffInvitationService(
+      repository as unknown as StaffInvitationRepository,
+      users as unknown as AuthRepository,
+      sender,
+      createMockConfig({
+        EMAIL_PROVIDER: provider,
+        APP_PUBLIC_BASE_URL: 'https://admin.example.com',
+      }),
+      logger,
+    );
+
+  beforeEach(() => {
+    repository = {
+      createAudited: jest.fn().mockResolvedValue(invitation()),
+      settleAudited: jest.fn().mockResolvedValue({ kind: 'settled', invitation: invitation() }),
+      resendAudited: jest.fn().mockImplementation((_id, data) =>
+        Promise.resolve({
+          kind: 'resent',
+          invitation: invitation({ tokenHash: data.tokenHash, expiresAt: data.expiresAt }),
+        }),
+      ),
+      findById: jest.fn(),
+      findOpenForEmail: jest.fn().mockResolvedValue(undefined),
+      findPage: jest.fn(),
+    };
+    users = {
+      findById: jest
+        .fn()
+        .mockResolvedValue(userFixture({ id: 'user-1', role: UserRole.SUPER_ADMIN })),
+      findByEmail: jest.fn().mockResolvedValue(undefined),
+    };
+    email = new RealEmailSender();
+    logger = createMockLogger();
+    service = build();
+  });
+
+  describe('invite', () => {
+    it('stores only the hash of the token, never the token itself', async () => {
+      await service.invite(superAdmin, {
+        email: 'ops@barakahbazaar.com.bd',
+        role: UserRole.OPS,
+      });
+
+      const stored = repository.createAudited.mock.calls[0][0] as { tokenHash: string };
+      const emailed = (email.send.mock.calls[0][0] as { body: string }).body;
+
+      expect(stored).not.toHaveProperty('token');
+      expect(stored.tokenHash).toHaveLength(64);
+      expect(emailed).not.toContain(stored.tokenHash);
+      expect(createHash('sha256').update(extractToken(emailed)).digest('hex')).toBe(
+        stored.tokenHash,
+      );
+    });
+
+    it('emails a link built from APP_PUBLIC_BASE_URL, with the token only inside it', async () => {
+      await service.invite(superAdmin, { email: 'ops@barakahbazaar.com.bd', role: UserRole.OPS });
+
+      const emailed = (email.send.mock.calls[0][0] as { body: string }).body;
+      const token = extractToken(emailed);
+
+      expect(emailed).toContain('https://admin.example.com/accept-invitation?token=');
+      expect(token).not.toBe('');
+      // The raw token appears exactly once, and only as the link's query value.
+      expect(emailed.split(token)).toHaveLength(2);
+      expect(emailed).toContain(`https://admin.example.com/accept-invitation?token=${token}\n`);
+    });
+
+    it('emails the role, the link and the validity in days, with no sign-in-and-enter-a-code step', async () => {
+      await service.invite(superAdmin, { email: 'ops@barakahbazaar.com.bd', role: UserRole.OPS });
+
+      const sent = email.send.mock.calls[0][0] as { to: string; subject: string; body: string };
+      const token = extractToken(sent.body);
+
+      expect(sent.to).toBe('ops@barakahbazaar.com.bd');
+      expect(sent.subject).toBe('You have been invited to the Barakah Bazaar backoffice');
+      expect(sent.body).toBe(
+        'You have been invited to join the Barakah Bazaar backoffice as OPS.\n\n' +
+          'Open this link to choose your password and create your account:\n\n' +
+          `  https://admin.example.com/accept-invitation?token=${token}\n\n` +
+          'The invitation is valid for 7 days. If you were not expecting this, ignore it.',
+      );
+      // The removed flow told the invitee to sign in first and type a code.
+      expect(sent.body.toLowerCase()).not.toContain('sign in');
+      expect(sent.body.toLowerCase()).not.toContain('code');
+    });
+
+    it('lowercases the address so one email cannot hold two invitations by case', async () => {
+      await service.invite(superAdmin, {
+        email: 'OPS@BarakahBazaar.com.bd',
+        role: UserRole.OPS,
+      });
+
+      expect(repository.createAudited.mock.calls[0][0].email).toBe('ops@barakahbazaar.com.bd');
+      expect(users.findByEmail).toHaveBeenCalledWith('ops@barakahbazaar.com.bd');
+    });
+
+    it('sets a deadline a week out', async () => {
+      await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      const { expiresAt } = repository.createAudited.mock.calls[0][0] as { expiresAt: Date };
+      const days = Math.round((expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+
+      expect(days).toBe(7);
+    });
+
+    it('never returns the token when a real email provider is configured', async () => {
+      const result = await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      expect(result.ok && result.data.token).toBeNull();
+    });
+
+    it('returns the token only while EMAIL_PROVIDER is noop, so the flow works with no mailbox', async () => {
+      const result = await build(email, 'noop').invite(superAdmin, {
+        email: 'a@b.com',
+        role: UserRole.OPS,
+      });
+
+      expect(result.ok && result.data.token).toEqual(expect.any(String));
+    });
+
+    it('withholds the token whenever a provider is configured, even if the send fails', async () => {
+      // The safe direction. An invitation nobody received is recoverable; a bearer credential
+      // in an API response is not.
+      email.send.mockResolvedValue(false);
+
+      const result = await build(email, 'resend').invite(superAdmin, {
+        email: 'a@b.com',
+        role: UserRole.OPS,
+      });
+
+      expect(result.ok && result.data.token).toBeNull();
+      expect(result.ok && result.data.emailSent).toBe(false);
+    });
+
+    it('refuses an address that already has an account', async () => {
+      users.findByEmail.mockResolvedValue(userFixture());
+
+      const result = await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'That email already has an account. Change its role instead of inviting it.',
+      });
+      expect(repository.createAudited).not.toHaveBeenCalled();
+    });
+
+    it('refuses a second invitation while one is still open', async () => {
+      repository.findOpenForEmail.mockResolvedValue(invitation());
+
+      const result = await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'That email already has an open invitation. Revoke it before sending another.',
+      });
+    });
+
+    it('allows a fresh invitation once the previous one has expired', async () => {
+      repository.findOpenForEmail.mockResolvedValue(invitation({ expiresAt: hourAgo() }));
+
+      const result = await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses the invitation when its audit row cannot be written', async () => {
+      repository.createAudited.mockResolvedValue(null);
+
+      const result = await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      expect(result.ok).toBe(false);
+      expect(email.send).not.toHaveBeenCalled();
+    });
+
+    it('keeps the invitation when the email fails, and says so', async () => {
+      email.send.mockRejectedValue(new Error('smtp down'));
+
+      const result = await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      expect(result.ok).toBe(true);
+      expect(result.ok && result.data.emailSent).toBe(false);
+    });
+
+    it('never logs the token, even on failure', async () => {
+      email.send.mockRejectedValue(new Error('smtp down'));
+
+      await service.invite(superAdmin, { email: 'a@b.com', role: UserRole.OPS });
+
+      const logged = JSON.stringify(logger.error.mock.calls);
+      const stored = repository.createAudited.mock.calls[0][0] as { tokenHash: string };
+
+      expect(logged).not.toContain(stored.tokenHash);
+    });
+  });
+
+  describe('revoke', () => {
+    it('closes an open invitation', async () => {
+      repository.findById.mockResolvedValue(invitation());
+      repository.settleAudited.mockResolvedValue({
+        kind: 'settled',
+        invitation: invitation({ status: StaffInvitationStatus.REVOKED }),
+      });
+
+      const result = await service.revoke(superAdmin, 'inv-1');
+
+      expect(result.ok).toBe(true);
+      expect(repository.settleAudited.mock.calls[0][1]).toMatchObject({
+        status: StaffInvitationStatus.REVOKED,
+        revokedBy: 'user-1',
+      });
+    });
+
+    it('refuses to revoke one that was already accepted', async () => {
+      repository.findById.mockResolvedValue(invitation({ status: StaffInvitationStatus.ACCEPTED }));
+
+      const result = await service.revoke(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
+      });
+      expect(repository.settleAudited).not.toHaveBeenCalled();
+    });
+
+    it('reports the race as a conflict when someone else settled it first', async () => {
+      repository.findById.mockResolvedValue(invitation());
+      repository.settleAudited.mockResolvedValue({ kind: 'not-pending' });
+
+      const result = await service.revoke(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
+      });
+    });
+
+    it('reports 503, not a conflict, when the write faults', async () => {
+      repository.findById.mockResolvedValue(invitation());
+      repository.settleAudited.mockResolvedValue(null);
+
+      const result = await service.revoke(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message:
+          'The change could not be recorded in the audit trail and was not applied. Please try again.',
+      });
+    });
+
+    it('reports 404 for an invitation that does not exist', async () => {
+      repository.findById.mockResolvedValue(undefined);
+
+      const result = await service.revoke(superAdmin, 'inv-1');
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.NOT_FOUND);
+    });
+  });
+
+  describe('resend', () => {
+    beforeEach(() => {
+      repository.findById.mockResolvedValue(invitation());
+    });
+
+    it('stores the hash of the emailed token, and it is not the old hash', async () => {
+      await service.resend(superAdmin, 'inv-1');
+
+      const stored = repository.resendAudited.mock.calls[0][1] as { tokenHash: string };
+      const emailed = (email.send.mock.calls[0][0] as { body: string }).body;
+
+      expect(repository.resendAudited.mock.calls[0][0]).toBe('inv-1');
+      expect(stored.tokenHash).toBe(
+        createHash('sha256').update(extractToken(emailed)).digest('hex'),
+      );
+      expect(stored.tokenHash).not.toBe('hash');
+    });
+
+    it('extends the deadline exactly a week out', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-10-01T00:00:00.000Z'));
+      try {
+        await service.resend(superAdmin, 'inv-1');
+      } finally {
+        jest.useRealTimers();
+      }
+
+      const { expiresAt } = repository.resendAudited.mock.calls[0][1] as { expiresAt: Date };
+
+      expect(expiresAt.toISOString()).toBe('2026-10-08T00:00:00.000Z');
+    });
+
+    it('audits the resend with the old and new deadline, without the token hash', async () => {
+      const oldDeadline = new Date('2026-10-02T00:00:00.000Z');
+      const newDeadline = new Date('2026-10-09T00:00:00.000Z');
+      repository.findById.mockResolvedValue(invitation({ expiresAt: oldDeadline }));
+      await service.resend(superAdmin, 'inv-1');
+
+      const audit = repository.resendAudited.mock.calls[0][2] as (row: unknown) => {
+        action: string;
+        actorId: string;
+        entityId: string;
+        before: { expiresAt: string };
+        after: { expiresAt: string };
+      };
+      const written = audit(invitation({ tokenHash: 'newhash', expiresAt: newDeadline }));
+
+      expect(written.action).toBe('staff.invitation_resent');
+      expect(written.actorId).toBe('user-1');
+      expect(written.entityId).toBe('inv-1');
+      expect(written.before.expiresAt).toBe('2026-10-02T00:00:00.000Z');
+      expect(written.after.expiresAt).toBe('2026-10-09T00:00:00.000Z');
+      expect(JSON.stringify(written)).not.toContain('hash');
+    });
+
+    it('can resend an invitation whose deadline has passed', async () => {
+      repository.findById.mockResolvedValue(invitation({ expiresAt: hourAgo() }));
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok).toBe(true);
+      expect(email.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses one that was already accepted, without rotating anything', async () => {
+      repository.findById.mockResolvedValue(invitation({ status: StaffInvitationStatus.ACCEPTED }));
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
+      });
+      expect(repository.resendAudited).not.toHaveBeenCalled();
+      expect(email.send).not.toHaveBeenCalled();
+    });
+
+    it('reports 404 for an unknown id', async () => {
+      repository.findById.mockResolvedValue(undefined);
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.NOT_FOUND);
+    });
+
+    it('reports 503 when the lookup fails', async () => {
+      repository.findById.mockResolvedValue(null);
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('reports a conflict, and sends no email, when someone settled it first', async () => {
+      repository.resendAudited.mockResolvedValue({ kind: 'not-pending' });
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'This invitation is no longer open.',
+      });
+      expect(email.send).not.toHaveBeenCalled();
+    });
+
+    it('reports 503, not a conflict, and sends no email, when the write faults', async () => {
+      repository.resendAudited.mockResolvedValue(null);
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message:
+          'The change could not be recorded in the audit trail and was not applied. Please try again.',
+      });
+      expect(email.send).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 when the repository throws', async () => {
+      repository.resendAudited.mockRejectedValue(new Error('boom'));
+
+      const result = await service.resend(superAdmin, 'inv-1');
+
+      expect(result.ok === false && result.status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('returns the token only while email is disabled', async () => {
+      const real = await service.resend(superAdmin, 'inv-1');
+      const noop = await build(email, 'noop').resend(superAdmin, 'inv-1');
+
+      expect(real.ok && real.data.token).toBeNull();
+      expect(noop.ok && noop.data.token).toEqual(expect.any(String));
+      expect(noop.ok && noop.data.token).not.toBe('');
+    });
+  });
+
+  describe('list', () => {
+    it('filters by status when asked', async () => {
+      repository.findPage.mockResolvedValue({ items: [], total: 0 });
+
+      await service.list({ status: StaffInvitationStatus.PENDING });
+
+      expect(repository.findPage.mock.calls[0][0]).toEqual({
+        status: StaffInvitationStatus.PENDING,
+      });
+    });
+
+    it('never returns a token hash', async () => {
+      repository.findPage.mockResolvedValue({ items: [invitation()], total: 1 });
+
+      const result = await service.list({});
+
+      expect(result.ok && JSON.stringify(result.data)).not.toContain('tokenHash');
+    });
+
+    it('marks an expired row expired without changing its status', async () => {
+      repository.findPage.mockResolvedValue({
+        items: [invitation({ expiresAt: hourAgo() })],
+        total: 1,
+      });
+
+      const result = await service.list({});
+
+      expect(result.ok && result.data.items[0]).toMatchObject({
+        status: StaffInvitationStatus.PENDING,
+        isExpired: true,
+      });
+    });
+  });
+});
+
+/** Pulls the token back out of the link in the rendered email body. */
+function extractToken(body: string): string {
+  const match = /\?token=(\S+)\n/.exec(body);
+  return match ? match[1] : '';
+}

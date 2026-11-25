@@ -6,14 +6,14 @@ export class UserProfileDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
 
-  @ApiProperty({ format: 'uuid', description: 'Supabase Auth user id' })
-  supabaseUserId!: string;
-
-  @ApiPropertyOptional({ nullable: true })
-  email?: string | null;
+  @ApiProperty({ description: 'The login credential. Every account has one.' })
+  email!: string;
 
   @ApiPropertyOptional({ nullable: true })
   phone?: string | null;
+
+  @ApiProperty({ description: 'Whether the number above was proved with a texted code.' })
+  phoneVerified!: boolean;
 
   @ApiPropertyOptional({ nullable: true })
   fullName?: string | null;

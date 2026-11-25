@@ -1,0 +1,301 @@
+# Auth module
+
+**Status:** in use — password login, TOTP second factor, sessions, refresh rotation, session
+management, registration, email verification, password reset/change, phone verification and
+phone sign-in are live.
+
+This module is the whole of identity. It stores the credentials, issues the tokens, and
+answers every "who is this and may they" question from this database. **No third party takes
+part in an access decision.** Supabase remains as file storage; nothing it issues is trusted
+here, and a Supabase outage cannot sign anybody in or out.
+
+## Owned tables
+
+- `users` ✅ — shared with the user and admin modules, but the credential columns
+  (`password_hash`, `totp_secret_encrypted`, `email_verified_at`) belong to this module alone
+- `sessions` ✅ — one row per signed-in device; no RLS policy at all, which is a deny
+- `auth_settings` ✅ — a single row of deadlines and policy, editable without a deploy
+- `mfa_recovery_codes` ✅ — hashes only; no RLS policy
+- `email_verifications` ✅ — hashed link token + code; no RLS policy
+- `password_resets` ✅ — the same shape in its own table, so a verification token can never be
+  redeemed as a reset; no RLS policy
+- `phone_verifications` ✅ — a signed-in customer proving a number; hashed code only
+- `phone_login_challenges` ✅ — a sign-in code for a verified number; hashed code only. A
+  separate table from the one above, so a verification code can never be redeemed as a sign-in
+
+## The two-stage guard
+
+`SessionAuthGuard` sits in the global `APP_GUARD` slot, after the throttler and before
+`RolesGuard`. Every route is authenticated unless it carries `@Public()`, so a forgotten
+decorator denies rather than permits.
+
+**Stage 1 — CPU only.** Verify the access token's signature, `exp`, `iss`, `aud`,
+`typ === "access"` and its `bnd` device-binding claim against the presented `X-Device-Id`. A
+forged, expired, malformed, wrong-audience or wrong-device token dies here without touching
+Postgres. The `typ` check is what stops a refresh token being presented as a bearer token.
+
+**Stage 2 — one indexed lookup** of `sessions` by the verified `sid`, joined to `users`.
+
+Both stages answer 401 with the same message, so a response never reveals whether a
+well-formed token corresponded to a real session. Every 401 from the guard carries
+`WWW-Authenticate: Bearer`, so a client interceptor can recognise an authentication failure
+without parsing a body that is deliberately uninformative. Verification allows 30 seconds of
+clock tolerance on `exp` and `iat`: handset clocks drift, and logging someone out because
+their phone is forty seconds fast is an unexplainable failure.
+
+### Why the row is read on every request
+
+Because the alternative is that a demotion or a disabled account takes effect whenever a token
+happens to expire, and "revoke access now" is the one thing an operator needs to work
+immediately. The role and `isActive` come from the joined `users` row — **never from a token
+claim** — so:
+
+- disabling an account rejects its very next request;
+- a role change applies on the next request, with no re-login;
+- revoking a session stops it on the next request, and `POST /auth/logout-all` stops every
+  session the account has.
+
+The cost is one indexed primary-key lookup per authenticated request. `SESSION_CACHE_ENABLED`
+puts a short-lived Redis entry in front of it; revocation, role changes and password changes
+invalidate that entry explicitly, so the TTL is a backstop and never the mechanism.
+
+## Device binding, and what it does not buy
+
+Every session is pinned to a client-generated install id sent as `X-Device-Id`. The id is
+recorded in the session row and baked into the access token's `bnd` claim, and the two are
+checked in different places for different reasons:
+
+- **Stage 1** compares `bnd` against the presented header. A mismatch **revokes the session**
+  and answers 401. Refusing alone would be too small a response: a token separated from its
+  device id is one that leaked, and ending the session turns a silent compromise into a logout
+  its owner can see. The cost is real and deliberate — the genuine device is signed out too.
+- **Stage 2** compares the presented id against the session row. Reaching here means the token
+  verified against _this_ device's binding while the row belongs to another, which nothing
+  legitimate does, so the session is revoked there as well.
+
+Two things are deliberately **not** revoked. A request with **no** `X-Device-Id` at all
+revokes nothing — nothing was compared, and a client that forgets the header must not sign its
+user out. And a token this API did not sign revokes nothing, whatever session id it names:
+the binding check runs only after the signature, issuer, audience and expiry have been
+accepted, so a forged token can never reach the branch that names a session. Without that
+ordering this control would itself be a way to sign other people out, and there is a test
+holding it in place (`revokes nothing for a token this API did not sign, even when it names a
+real session`).
+
+**Be honest about the limit.** `X-Device-Id` is supplied by the client, so an attacker who has
+stolen a token from a device can usually steal the id alongside it and replay both. What
+binding actually buys is narrower and still worth having: a token leaked _without_ its device
+id — through a log, a proxy, a copied `curl` command, a shared crash report — is inert.
+
+It is a blast-radius control, not an anti-theft control. Treat it as such: it does not replace
+short access-token lifetimes or refresh rotation. What it does add, now that a mismatch ends
+the session, is that a leak becomes **visible** — the owner is signed out, and staff
+revocations land in the audit trail as `auth.session_revoked` with reason `device_mismatch`.
+
+There is deliberately **no IP binding**. It was built, reviewed and deleted: behind a reverse
+proxy Express reports the proxy's own constant address unless the app is configured to trust
+it, so the check was inert where it mattered, and mobile clients change networks constantly, so
+where it did work it signed real users out for no attacker cost. `ipAddress` is still recorded
+on each session and shown, truncated, in the listing — as evidence for the person reading it,
+not as a control.
+
+## Sessions the user can see and end
+
+`GET /auth/sessions` returns the caller's live sessions, newest first: `id`, `deviceId` as
+given, `userAgent`, a truncated IP, `createdAt`, `lastUsedAt`, and `current: true` for exactly
+one row. The listing carries **no token material of any kind** — not the refresh hash, not the
+previous one — and is built field by field rather than by spreading the row, so a column added
+to the table later cannot leak into a response by accident.
+
+IPs are truncated before they leave: IPv4 loses its last octet (a /24), IPv6 keeps only its
+first four groups (a /64, the conventional subscriber-line boundary), and an address this API
+cannot classify is redacted to `null` rather than emitted whole.
+
+`DELETE /auth/sessions/:id` ends one session the caller owns. A session that does not exist and
+one belonging to somebody else answer with the **same 404** — a 403 would confirm to whoever
+holds an id that it is real, which is exactly what someone enumerating ids wants to learn.
+
+## The client integration contract
+
+Three separate client repositories implement this, and these rules are recorded nowhere else
+in this codebase. Skipping one produces an infinite refresh loop or a spurious logout, and
+both look like server faults from the outside.
+
+1. **Refresh pre-emptively, not reactively.** `exp` is readable from the access token without
+   asking the server — it is not a secret — so renew at roughly the 25-minute mark of a
+   30-minute token and most users never generate a 401 at all. No server signal exists for
+   this, and none will be added: inventing one would leak token state.
+2. **Single-flight the refresh.** One in-flight refresh per client; queue the other requests
+   and replay them with the new token. The server's reuse grace window exists because this
+   cannot be relied upon — multiple tabs each run their own interceptor — but a client that
+   does this correctly never touches the window.
+3. **On a 401, attempt refresh exactly once, then stop.** A second failure means the session
+   is genuinely gone: clear local state and route to login. Retrying past that is precisely
+   what turns one expired session into an infinite loop.
+4. **Send `X-Device-Id` on every request**, not only on login and refresh. A request without
+   it is rejected in stage 1, and a client that sends it only sometimes produces failures that
+   look random.
+
+The device id must be **generated once per install and persisted** — not per launch, not per
+tab. A new id every launch means a new session row every launch, and the user's session list
+fills with devices they cannot recognise.
+
+## Refresh rotation
+
+Every refresh mints a new token and keeps the previous hash for a short grace window. Inside
+the window, presenting the previous token returns the current generation unchanged: that is a
+concurrent refresh, not an attack. Outside it, presenting a rotated token is a replay, and the
+session is revoked — a stolen refresh token therefore gets one use and costs the thief the
+session.
+
+The rotation stamp comes from the clock of the instance that rotated, so behind a load
+balancer it can lie slightly in the future. A stamp up to `RotationClockSkewToleranceMs`
+(5 seconds) ahead counts as "just now", so racing refreshes served by two hosts do not sign
+the user out. A stamp further ahead is treated as a replay. The tolerance never lengthens the
+window for a stamp in the past. Instances still need NTP: skew above 5 seconds turns ordinary
+concurrent refreshes back into revocations.
+
+`expiresAt` slides forward on each refresh; `absoluteExpiresAt` never moves. Both deadlines,
+and the grace window, come from `auth_settings` and differ by role, so staff sessions can be
+made short-lived without touching a customer's.
+
+A settings change reaches **new** decisions within `AUTH_SETTINGS_CACHE_SECONDS` (default 60): new
+sign-ins and refreshes. A session already issued keeps its `absoluteExpiresAt`, so shortening an
+absolute window does not shorten it; the idle deadline is re-derived on the next touch but stays
+capped by that stored absolute deadline. `staffMfaRequired` is read at sign-in and at MFA disable,
+never on refresh or in the guard, so the one thing that ends existing staff sessions is turning it
+back on: `PATCH /admin/auth-settings` then revokes every active non-CUSTOMER session in the same
+transaction, the caller's included (see the admin module README).
+
+## Password reset and change
+
+`POST /auth/forgot-password` → `POST /auth/reset-password` recovers a forgotten password;
+`PATCH /auth/password` changes a known one.
+
+- **A completed reset returns no session.** Staff accounts require a second factor, and a reset
+  that signed the caller in would skip it, which would make reset a complete MFA bypass. A named
+  unit test and an e2e test assert the response is exactly `{ passwordReset: true }`.
+- **Sessions are revoked before the new hash is written** (`PasswordUpdater.replace`). If
+  revocation cannot be confirmed, nothing is written and the answer is 503.
+- A reset revokes every session; a change keeps the calling one (`SessionService.revokeAllExcept`).
+- **A reset or a change clears phone verification.** `AuthRepository.updatePasswordHash` writes
+  `phoneVerifiedAt = null` in the same update as the hash (the number itself stays on the
+  account) and then bumps the session cache. A verified phone is a password-less way in, so a
+  reset made to lock an intruder out must end phone sign-in too; the owner re-verifies with one
+  text. The login-time rehash (`updatePasswordEncoding`) is not a change and leaves it alone.
+- The reset credential lives `PASSWORD_RESET_TTL_MINUTES` (default 60). Completing a reset also
+  verifies the address, since it needed a credential mailed there.
+- `forgot-password` answers the identical 202 for a known address, an unknown one, a disabled
+  account, a pending invitation and a cooldown.
+
+## Phone verification and phone sign-in
+
+Routes (`src/modules/auth/phone/phone.controller.ts`), all under `@RateLimit(AuthIp, AuthPhone)`:
+
+| Route                                   | Auth        | Answer                                         |
+| --------------------------------------- | ----------- | ---------------------------------------------- |
+| `POST /auth/phone/verification`         | signed in   | 202 `{ expiresInSeconds, resendAfterSeconds }` |
+| `POST /auth/phone/verification/confirm` | signed in   | 200 `{ phone, phoneVerified: true }`           |
+| `POST /auth/phone/login`                | `@Public()` | 202, same body always                          |
+| `POST /auth/phone/login/verify`         | `@Public()` | 200, the same body as `POST /auth/login`       |
+
+The phone is validated with `BangladeshPhone.isValid` and normalised with
+`BangladeshPhone.normalize` before any lookup, limit or write, so `01712345678` and
+`+8801712345678` share one account match, one cooldown, one daily count and one throttle key.
+
+**Verifying.** The number is refused with 409 when another account holds it
+(`PhoneInUse`) or when it is already this account's verified number (`PhoneAlreadyVerified`).
+The caller's own unverified legacy number is allowed. Confirming writes `users.phone` and
+`users.phoneVerifiedAt` in one transaction that also consumes the code; a unique violation on
+`users.phone` answers 409 `PhoneInUse`. Wrong code is 400, expired / spent / exhausted is 410.
+Every successful confirm, a first link included, mails the account address a notice ("A phone
+number was linked to your account", last 3 digits only, greeting by the account's name, which
+the confirm transaction's existing user read supplies). It says that resetting the password
+takes the number out of sign-in. The caller's session cache is invalidated after commit.
+
+**Signing in.** `login/verify` hands the customer to `LoginService.completeLogin`, the same
+path a correct password reaches, so the active-account check, the email-verification grace
+and MFA all apply: a customer with TOTP enabled gets `kind: 'mfa'` and finishes on
+`POST /auth/login/mfa`. No new kind of session exists. Only `CUSTOMER` accounts with a
+verified number can sign in this way; redemption re-checks that `users.phone` still equals the
+challenge's number, that it is still verified and that the role is still `CUSTOMER`, so a code
+sent before a number or role change signs nobody in.
+
+**Codes.** 6 digits, valid 300 seconds, stored only as a SHA-256 hash. Each guess claims an
+attempt slot atomically _before_ the compare, so a concurrent burst cannot exceed 5 attempts per
+code; a sixth presentation answers as expired / invalid. A newer code replaces the earlier one.
+
+**Limits.** `created_at` on both code tables is the database default `statement_timestamp()`
+(`dbgenerated` in the schema; Prisma's `now()` would be filled from the application clock). The
+24-hour send counts and the resend cooldown compare it against SQL `now()`, so instance clock
+skew cannot shift those windows; the counts span both tables over a rolling 24 hours, taken
+under a per-number advisory lock. The per-account verification count
+(`phone_verifications` only, by `user_id`) runs in the same transaction under a second advisory
+lock on the user id, always taken after the number lock, so two concurrent requests from one
+account for two different numbers cannot both pass it. The same count is also read lock-free
+before the ownership lookup, so a capped account gets 429 for every number and cannot read 409
+`PhoneInUse` off it; the 409 itself counts nothing, so before the cap an account can still learn
+which numbers are registered until it has spent its 5 daily sends on unregistered numbers. Code expiry is different: it is minted
+from the application clock, and the liveness, consume and stale-row checks use the application's
+`new Date()`.
+
+| Limit                                | Value                                                                             | Env                                  |
+| ------------------------------------ | --------------------------------------------------------------------------------- | ------------------------------------ |
+| Resend cooldown per number           | 60 s, then 429 with the wait                                                      | `PHONE_CODE_RESEND_COOLDOWN_SECONDS` |
+| Sends per number per 24 h            | 5, then 429                                                                       | `PHONE_CODE_DAILY_LIMIT_PER_NUMBER`  |
+| Verification sends per account, 24 h | 5 to any numbers, then 429 `PhoneVerificationAccountLimit`                        | `PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT` |
+| Sends across all numbers per 24 h    | 500, then 503 `SmsUnavailable` (soft: concurrent requests may overshoot slightly) | `SMS_DAILY_LIMIT`                    |
+| HTTP requests per number per minute  | 5, keyed by the normalised `body.phone`                                           | `AUTH_PHONE_RATE_LIMIT`              |
+| HTTP requests per IP per minute      | `ThrottleBuckets.AuthIp`                                                          | `AUTH_RATE_LIMIT`                    |
+
+**Enumeration safety.** `POST /auth/phone/login` answers the identical 202 for an unknown
+number, a staff number, an unverified number, a disabled account and a per-number limit, and
+writes and sends nothing in those cases. The text for an eligible number is sent detached after
+the transaction commits, so response time does not reveal which numbers are registered; a
+gateway failure there is logged and still answers 202. Only conditions that do not depend on
+the number differ: the global daily limit and a database fault answer 503. Once the global limit
+is hit, `'SMS daily limit reached'` is logged at error at most once per 10 minutes per instance
+(`PhoneCodeIssuer.reportDailyLimit`, carrying how many hits it held back), so public requests
+cannot flood the alert channel. `login/verify`
+answers one 401 (`InvalidCredentials`) for an unknown number, no live challenge, an expired,
+spent or wrong code, and a failed redemption re-check. (Verification, being signed in, does say
+409 for a number another account holds.)
+
+**No code in any response**, in any `SMS_PROVIDER` mode: the login route is public, so a
+staging `noop` that echoed codes would let anyone sign in as any customer. Logs carry the last
+3 digits of a number, never a code, a code hash or an SMS body. The one exception is the noop
+gateway under `NODE_ENV=development`, which logs the full number and body at debug so a
+developer can read a code; in any other environment it logs the last 3 digits and the body
+length only.
+
+**SMS gateway.** `SMS_PROVIDER` selects the adapter. `noop` is the default and sends nothing.
+`alpha-sms` posts to Alpha SMS and **requires `SMS_API_URL` and `SMS_API_KEY`**
+(`SMS_SENDER_ID` is optional); in a deployed environment (`NODE_ENV` staging or production)
+startup validation fails when either is missing, so set both in `.env` alongside
+`SMS_PROVIDER=alpha-sms`. `ssl-wireless` is accepted by the schema but has no adapter: every
+send reports failure.
+
+**Retention.** `SessionSweeper` deletes finished (consumed or expired) `phone_verifications`
+and `phone_login_challenges` rows older than 30 days; a live code is never touched.
+
+**Profile.** `phoneVerified` (`users.phone_verified_at IS NOT NULL`) is on `GET /auth/me`,
+`PATCH /users/me` and the `user` of every login response.
+
+## Before writing code here
+
+Copy the shape of the existing files — controller → service → repository, with the mapper
+owning the wire format and constants in `auth.constants.ts`. The rules that apply to every
+module are in the repository README under **Conventions**; the ones this module will get wrong
+if skipped:
+
+1. Every public method on the controller, service and repository wraps its body in
+   `try`/`catch` and logs with the error object first.
+2. **Never log a credential** — no token, password, TOTP code, recovery code or hash of any of
+   them. Log ids, statuses and counts.
+3. Services return `ServiceResponse<T>`; only the controller turns that into an HTTP status,
+   via `unwrapOrThrow`.
+4. A response is built field by field from a DTO, never by spreading a `User` or `Session` row.
+5. Unit tests for every layer touched, in the same commit.
+
+The full design, including the decisions behind each rule above, is in
+[`docs/superpowers/specs/2026-09-02-identity-foundation-design.md`](../../../docs/superpowers/specs/2026-09-02-identity-foundation-design.md).

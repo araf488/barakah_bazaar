@@ -1,3 +1,4 @@
+import { envSchema } from './env.schema';
 import { validateEnv } from './validate-env';
 
 const productionEnv = {
@@ -6,11 +7,48 @@ const productionEnv = {
   SUPABASE_URL: 'https://project.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
   CORS_ALLOWED_ORIGINS: 'https://barakahbazaar.com.bd',
+  JWT_SECRET: 'a'.repeat(32),
+  TOTP_ENCRYPTION_KEY: 'dGhpcnR5LXR3by1ieXRlcy1vZi1rZXktbWF0ZXJpYWwh',
+  APP_PUBLIC_BASE_URL: 'https://api.barakahbazaar.com.bd',
+};
+
+const bkashCredentials = {
+  PAYMENT_PROVIDER: 'bkash',
+  PAYMENT_API_URL: 'https://tokenized.sandbox.bka.sh/v1.2.0-beta',
+  PAYMENT_APP_KEY: 'app-key',
+  PAYMENT_APP_SECRET: 'app-secret',
+  PAYMENT_USERNAME: 'merchant-user',
+  // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture value, not a credential
+  PAYMENT_PASSWORD: 'merchant-pass',
+};
+
+/** The credentials plus the https API origin a deployed bkash environment also needs. */
+const bkashProductionEnv = {
+  ...bkashCredentials,
+  API_PUBLIC_BASE_URL: 'https://api.barakahbazaar.com.bd',
 };
 
 /** productionEnv minus one key, to prove that key is genuinely required. */
 const productionEnvWithout = (key: keyof typeof productionEnv): Record<string, unknown> => {
   const env: Record<string, unknown> = { ...productionEnv };
+  delete env[key];
+  return env;
+};
+
+const stagingEnv = {
+  NODE_ENV: 'staging',
+  DATABASE_URL: 'postgresql://user:pass@db.example.supabase.co:5432/postgres',
+  SUPABASE_URL: 'https://project.supabase.co',
+  SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
+  CORS_ALLOWED_ORIGINS: 'https://stage.barakahbazaar.com.bd',
+  JWT_SECRET: 'a'.repeat(32),
+  TOTP_ENCRYPTION_KEY: 'dGhpcnR5LXR3by1ieXRlcy1vZi1rZXktbWF0ZXJpYWwh',
+  APP_PUBLIC_BASE_URL: 'https://stage-api.barakahbazaar.com.bd',
+};
+
+/** stagingEnv minus one key, to prove that key is genuinely required. */
+const stagingEnvWithout = (key: keyof typeof stagingEnv): Record<string, unknown> => {
+  const env: Record<string, unknown> = { ...stagingEnv };
   delete env[key];
   return env;
 };
@@ -36,6 +74,93 @@ describe('validateEnv', () => {
     it('defaults the SMS provider to noop so tests spend no credits', () => {
       expect(validateEnv({}).SMS_PROVIDER).toBe('noop');
     });
+
+    it('defaults the identity vars, so a fresh clone still boots', () => {
+      const env = validateEnv({});
+
+      expect(env.JWT_SECRET).toBeUndefined();
+      expect(env.JWT_ISSUER).toBe('barakah-bazaar-api');
+      expect(env.JWT_AUDIENCE).toBe('barakah-bazaar');
+      expect(env.TOTP_ENCRYPTION_KEY).toBeUndefined();
+      expect(env.SCRYPT_COST_LOG2).toBe(15);
+      expect(env.SCRYPT_BLOCK_SIZE).toBe(8);
+      expect(env.SCRYPT_PARALLELISM).toBe(3);
+      expect(env.AUTH_RATE_LIMIT).toBe(10);
+      expect(env.AUTH_SETTINGS_CACHE_SECONDS).toBe(60);
+      expect(env.SESSION_TOUCH_INTERVAL_MINUTES).toBe(5);
+      expect(env.APP_PUBLIC_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('declares the SMTP settings, unset apart from the port, ahead of any adapter', () => {
+      // No sender reads these yet. They are validated now so the environment contract is in
+      // one place, and so a deploy that sets them is not rejected.
+      const env = validateEnv({});
+
+      expect(env.EMAIL_SMTP_HOST).toBeUndefined();
+      expect(env.EMAIL_SMTP_PORT).toBe(587);
+      expect(env.EMAIL_SMTP_USER).toBeUndefined();
+      expect(env.EMAIL_SMTP_PASSWORD).toBeUndefined();
+      expect(env.EMAIL_SMTP_SECURE).toBe(false);
+    });
+
+    it('defaults the email sender name and verification ttl, so a fresh clone boots', () => {
+      const env = validateEnv({});
+
+      expect(env.EMAIL_FROM_NAME).toBe('Barakah Bazaar');
+      expect(env.EMAIL_VERIFICATION_TTL_HOURS).toBe(24);
+    });
+
+    it('defaults the password reset ttl to one hour, so a fresh clone boots', () => {
+      expect(validateEnv({}).PASSWORD_RESET_TTL_MINUTES).toBe(60);
+    });
+
+    it('rejects a password reset ttl of zero', () => {
+      expect(() => validateEnv({ PASSWORD_RESET_TTL_MINUTES: '0' })).toThrow();
+    });
+
+    it('rejects a password reset ttl longer than a day, since the credential is account takeover', () => {
+      expect(() => validateEnv({ PASSWORD_RESET_TTL_MINUTES: '1441' })).toThrow();
+    });
+
+    it('defaults the write rate limit, so writes are bounded without configuration', () => {
+      expect(validateEnv({}).WRITE_RATE_LIMIT).toBe(60);
+    });
+
+    it('rejects a write rate limit of zero rather than silently blocking every write', () => {
+      expect(() => validateEnv({ WRITE_RATE_LIMIT: '0' })).toThrow();
+    });
+
+    it('defaults the payment callback rate limit to 60 per minute', () => {
+      expect(validateEnv({}).PAYMENT_CALLBACK_RATE_LIMIT).toBe(60);
+    });
+
+    it('reads a configured payment callback rate limit', () => {
+      expect(validateEnv({ PAYMENT_CALLBACK_RATE_LIMIT: '200' }).PAYMENT_CALLBACK_RATE_LIMIT).toBe(
+        200,
+      );
+    });
+
+    it.each(['0', '-1', '1.5', 'abc'])('rejects %p as a payment callback rate limit', (value) => {
+      expect(() => validateEnv({ PAYMENT_CALLBACK_RATE_LIMIT: value })).toThrow(
+        /PAYMENT_CALLBACK_RATE_LIMIT/,
+      );
+    });
+
+    it('defaults the trusted proxy hops to 0, leaving trust proxy off', () => {
+      expect(validateEnv({}).TRUST_PROXY_HOPS).toBe(0);
+    });
+
+    it.each([
+      ['0', 0],
+      ['1', 1],
+      ['3', 3],
+    ])('reads TRUST_PROXY_HOPS=%p as %d', (value, expected) => {
+      expect(validateEnv({ TRUST_PROXY_HOPS: value }).TRUST_PROXY_HOPS).toBe(expected);
+    });
+
+    it.each(['-1', '1.5', 'abc'])('rejects %p as a trusted proxy hop count', (value) => {
+      expect(() => validateEnv({ TRUST_PROXY_HOPS: value })).toThrow(/TRUST_PROXY_HOPS/);
+    });
   });
 
   describe('coercion', () => {
@@ -49,6 +174,15 @@ describe('validateEnv', () => {
 
     it('treats an empty string as unset rather than an invalid value', () => {
       expect(validateEnv({ SUPABASE_URL: '' }).SUPABASE_URL).toBeUndefined();
+    });
+
+    it('falls back to the default for a coerced numeric field left empty, not zero', () => {
+      // `.env` files carry an empty string, not an absent key, for "unset" — a coerced
+      // numeric field must fall back to its configured default rather than `z.coerce.number()`
+      // reading '' as 0. This is what keeps AuthSettingsService's cache from silently
+      // defaulting to "never cache", which would add a database read to every authenticated
+      // request.
+      expect(validateEnv({ AUTH_SETTINGS_CACHE_SECONDS: '' }).AUTH_SETTINGS_CACHE_SECONDS).toBe(60);
     });
   });
 
@@ -67,6 +201,11 @@ describe('validateEnv', () => {
 
     it('rejects a malformed Supabase URL', () => {
       expect(() => validateEnv({ SUPABASE_URL: 'not-a-url' })).toThrow(/SUPABASE_URL/);
+    });
+
+    it('rejects a SCRYPT_COST_LOG2 outside 12-20', () => {
+      expect(() => validateEnv({ SCRYPT_COST_LOG2: '11' })).toThrow(/SCRYPT_COST_LOG2/);
+      expect(() => validateEnv({ SCRYPT_COST_LOG2: '21' })).toThrow(/SCRYPT_COST_LOG2/);
     });
 
     it('reports every problem in one message', () => {
@@ -112,14 +251,380 @@ describe('validateEnv', () => {
       );
     });
 
-    it('requires a way to verify JWTs', () => {
-      expect(() => validateEnv(productionEnvWithout('SUPABASE_URL'))).toThrow(
-        /JWT verification is unconfigured/,
+    it('requires a stable signing secret, so tokens survive a restart', () => {
+      // Without it the app still boots on a per-process random key — and every instance
+      // behind the load balancer rejects the tokens the others issued.
+      expect(() => validateEnv(productionEnvWithout('JWT_SECRET'))).toThrow(
+        /JWT_SECRET is required when NODE_ENV=production/,
       );
     });
 
-    it('applies none of these rules outside production', () => {
+    it('requires the TOTP encryption key, without which enrolled staff cannot sign in', () => {
+      expect(() => validateEnv(productionEnvWithout('TOTP_ENCRYPTION_KEY'))).toThrow(
+        /TOTP_ENCRYPTION_KEY is required when NODE_ENV=production/,
+      );
+    });
+
+    it('refuses a public base URL that is not https', () => {
+      // Verification and reset links are built from it, and a link carries a credential.
+      // The cleartext URL is the input under test: the assertion is that it is rejected.
+      // eslint-disable-next-line sonarjs/no-clear-text-protocols
+      const insecure = 'http://barakahbazaar.com.bd';
+
+      expect(() => validateEnv({ ...productionEnv, APP_PUBLIC_BASE_URL: insecure })).toThrow(
+        /APP_PUBLIC_BASE_URL must begin with https/,
+      );
+    });
+
+    it('refuses a configured email provider with no credentials', () => {
+      expect(() =>
+        validateEnv({ ...productionEnv, EMAIL_PROVIDER: 'smtp', EMAIL_FROM: undefined }),
+      ).toThrow(/EMAIL_FROM and the EMAIL_SMTP_\* credentials are required/);
+    });
+
+    it('refuses a configured SMS provider with no credentials', () => {
+      expect(() => validateEnv({ ...productionEnv, SMS_PROVIDER: 'alpha-sms' })).toThrow(
+        /SMS_PROVIDER is set but SMS_API_URL and SMS_API_KEY are not\./,
+      );
+    });
+
+    it('refuses a configured SMS provider with only the URL', () => {
+      expect(() =>
+        validateEnv({
+          ...productionEnv,
+          SMS_PROVIDER: 'alpha-sms',
+          SMS_API_URL: 'https://api.sms.net.bd/sendsms',
+        }),
+      ).toThrow(/SMS_API_KEY|SMS_API_URL and SMS_API_KEY/);
+    });
+
+    it('accepts a configured SMS provider with its URL and key', () => {
+      expect(() =>
+        validateEnv({
+          ...productionEnv,
+          SMS_PROVIDER: 'alpha-sms',
+          SMS_API_URL: 'https://api.sms.net.bd/sendsms',
+          SMS_API_KEY: 'key',
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts the noop SMS provider with no credentials', () => {
+      expect(() => validateEnv({ ...productionEnv, SMS_PROVIDER: 'noop' })).not.toThrow();
+    });
+
+    it('stays permissive in development', () => {
       expect(() => validateEnv({ NODE_ENV: 'development', SWAGGER_ENABLED: 'true' })).not.toThrow();
+    });
+
+    it('stays permissive in test, since the whole e2e suite boots with NODE_ENV=test', () => {
+      expect(() => validateEnv({ NODE_ENV: 'test', SWAGGER_ENABLED: 'true' })).not.toThrow();
+    });
+  });
+
+  describe('staging hardening', () => {
+    it('accepts a fully configured staging environment', () => {
+      expect(() => validateEnv(stagingEnv)).not.toThrow();
+    });
+
+    it('requires DATABASE_URL', () => {
+      expect(() => validateEnv(stagingEnvWithout('DATABASE_URL'))).toThrow(
+        /DATABASE_URL is required when NODE_ENV=staging/,
+      );
+    });
+
+    it('requires SUPABASE_URL', () => {
+      expect(() => validateEnv(stagingEnvWithout('SUPABASE_URL'))).toThrow(
+        /SUPABASE_URL is required when NODE_ENV=staging/,
+      );
+    });
+
+    it('requires the service-role key', () => {
+      expect(() => validateEnv(stagingEnvWithout('SUPABASE_SERVICE_ROLE_KEY'))).toThrow(
+        /SUPABASE_SERVICE_ROLE_KEY is required when NODE_ENV=staging/,
+      );
+    });
+
+    it('refuses an empty CORS allowlist', () => {
+      expect(() => validateEnv({ ...stagingEnv, CORS_ALLOWED_ORIGINS: '  ' })).toThrow(
+        /CORS_ALLOWED_ORIGINS must list/,
+      );
+    });
+
+    it('permits Swagger, because QA and the client need the docs page', () => {
+      expect(() => validateEnv({ ...stagingEnv, SWAGGER_ENABLED: 'true' })).not.toThrow();
+    });
+
+    it('names staging, not production, in the missing-key message', () => {
+      let message = '';
+      try {
+        validateEnv(stagingEnvWithout('DATABASE_URL'));
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('NODE_ENV=staging');
+      expect(message).not.toContain('NODE_ENV=production');
+    });
+
+    it('requires the identity secrets here too, not only in production', () => {
+      expect(() => validateEnv(stagingEnvWithout('JWT_SECRET'))).toThrow(
+        /JWT_SECRET is required when NODE_ENV=staging/,
+      );
+      expect(() => validateEnv(stagingEnvWithout('TOTP_ENCRYPTION_KEY'))).toThrow(
+        /TOTP_ENCRYPTION_KEY is required when NODE_ENV=staging/,
+      );
+    });
+
+    it('refuses a public base URL that is not https', () => {
+      // eslint-disable-next-line sonarjs/no-clear-text-protocols
+      const insecure = 'http://stage.barakahbazaar.com.bd';
+
+      expect(() => validateEnv({ ...stagingEnv, APP_PUBLIC_BASE_URL: insecure })).toThrow(
+        /APP_PUBLIC_BASE_URL must begin with https/,
+      );
+    });
+  });
+
+  describe('payment provider', () => {
+    const PAYMENT_KEYS = [
+      'PAYMENT_API_URL',
+      'PAYMENT_APP_KEY',
+      'PAYMENT_APP_SECRET',
+      'PAYMENT_USERNAME',
+      'PAYMENT_PASSWORD',
+    ] as const;
+
+    const without = (key: (typeof PAYMENT_KEYS)[number]): Record<string, unknown> => {
+      const env: Record<string, unknown> = { ...bkashProductionEnv };
+      delete env[key];
+      return env;
+    };
+
+    it('accepts bkash in production with all five credentials and an https API URL', () => {
+      expect(() => validateEnv({ ...productionEnv, ...bkashProductionEnv })).not.toThrow();
+    });
+
+    it.each(PAYMENT_KEYS)('refuses bkash in production without %s', (key) => {
+      expect(() => validateEnv({ ...productionEnv, ...without(key) })).toThrow(
+        /PAYMENT_PROVIDER is set but its credentials are not\./,
+      );
+    });
+
+    it('reports the missing credentials against PAYMENT_API_URL', () => {
+      const result = envSchema.safeParse({
+        ...productionEnv,
+        ...without('PAYMENT_PASSWORD'),
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues).toEqual([
+        expect.objectContaining({
+          path: ['PAYMENT_API_URL'],
+          message: 'PAYMENT_PROVIDER is set but its credentials are not.',
+        }),
+      ]);
+    });
+
+    it('refuses bkash in staging without credentials too', () => {
+      expect(() => validateEnv({ ...stagingEnv, PAYMENT_PROVIDER: 'bkash' })).toThrow(
+        /PAYMENT_PROVIDER is set but its credentials are not\./,
+      );
+    });
+
+    it('accepts the noop provider with no credentials in production', () => {
+      expect(() => validateEnv({ ...productionEnv, PAYMENT_PROVIDER: 'noop' })).not.toThrow();
+    });
+
+    it('accepts bkash with no credentials in development', () => {
+      expect(() =>
+        validateEnv({ NODE_ENV: 'development', PAYMENT_PROVIDER: 'bkash' }),
+      ).not.toThrow();
+    });
+
+    describe('PAYMENT_API_URL scheme', () => {
+      // The cleartext URL is the input under test: the assertion is that it is rejected.
+      // eslint-disable-next-line sonarjs/no-clear-text-protocols
+      const insecureGateway = 'http://tokenized.sandbox.bka.sh/v1.2.0-beta';
+
+      it('refuses an http gateway URL in production with bkash, since it carries the app secret', () => {
+        expect(() =>
+          validateEnv({
+            ...productionEnv,
+            ...bkashProductionEnv,
+            PAYMENT_API_URL: insecureGateway,
+          }),
+        ).toThrow(/PAYMENT_API_URL must begin with https/);
+      });
+
+      it('refuses an http gateway URL in staging with bkash', () => {
+        expect(() =>
+          validateEnv({ ...stagingEnv, ...bkashProductionEnv, PAYMENT_API_URL: insecureGateway }),
+        ).toThrow(/PAYMENT_API_URL must begin with https/);
+      });
+
+      it('reports the issue against PAYMENT_API_URL', () => {
+        const result = envSchema.safeParse({
+          ...productionEnv,
+          ...bkashProductionEnv,
+          PAYMENT_API_URL: insecureGateway,
+        });
+
+        expect(result.error?.issues).toEqual([
+          expect.objectContaining({
+            path: ['PAYMENT_API_URL'],
+            message: 'PAYMENT_API_URL must begin with https:// in a deployed environment',
+          }),
+        ]);
+      });
+
+      it('accepts an http gateway URL in development with bkash', () => {
+        expect(() =>
+          validateEnv({
+            NODE_ENV: 'development',
+            ...bkashCredentials,
+            PAYMENT_API_URL: insecureGateway,
+          }),
+        ).not.toThrow();
+      });
+
+      it('accepts an http gateway URL in production while the provider is noop', () => {
+        expect(() =>
+          validateEnv({
+            ...productionEnv,
+            PAYMENT_PROVIDER: 'noop',
+            PAYMENT_API_URL: insecureGateway,
+          }),
+        ).not.toThrow();
+      });
+    });
+  });
+
+  describe('API_PUBLIC_BASE_URL', () => {
+    // The cleartext URLs are the input under test: the assertion is that they are rejected.
+    // eslint-disable-next-line sonarjs/no-clear-text-protocols
+    const insecure = 'http://api.barakahbazaar.com.bd';
+
+    it('defaults to the local API', () => {
+      expect(validateEnv({}).API_PUBLIC_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('is not required in production while the provider is noop, so existing hosts still boot', () => {
+      expect(() => validateEnv(productionEnv)).not.toThrow();
+      expect(validateEnv(productionEnv).API_PUBLIC_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('is not required in staging while the provider is noop', () => {
+      expect(() => validateEnv(stagingEnv)).not.toThrow();
+    });
+
+    it('refuses the http default in production with bkash', () => {
+      expect(() => validateEnv({ ...productionEnv, ...bkashCredentials })).toThrow(
+        /API_PUBLIC_BASE_URL must begin with https/,
+      );
+    });
+
+    it('refuses an explicit http value in production with bkash', () => {
+      expect(() =>
+        validateEnv({ ...productionEnv, ...bkashCredentials, API_PUBLIC_BASE_URL: insecure }),
+      ).toThrow(/API_PUBLIC_BASE_URL must begin with https/);
+    });
+
+    it('reports the issue against API_PUBLIC_BASE_URL', () => {
+      const result = envSchema.safeParse({ ...productionEnv, ...bkashCredentials });
+
+      expect(result.error?.issues).toEqual([
+        expect.objectContaining({
+          path: ['API_PUBLIC_BASE_URL'],
+          message: 'API_PUBLIC_BASE_URL must begin with https:// in a deployed environment',
+        }),
+      ]);
+    });
+
+    it('refuses an http value in staging with bkash', () => {
+      expect(() =>
+        validateEnv({ ...stagingEnv, ...bkashCredentials, API_PUBLIC_BASE_URL: insecure }),
+      ).toThrow(/API_PUBLIC_BASE_URL must begin with https/);
+    });
+
+    it('accepts an https value in production with bkash', () => {
+      expect(() =>
+        validateEnv({
+          ...productionEnv,
+          ...bkashCredentials,
+          API_PUBLIC_BASE_URL: 'https://api.barakahbazaar.com.bd',
+        }),
+      ).not.toThrow();
+    });
+
+    it('accepts http in development with bkash', () => {
+      expect(() => validateEnv({ NODE_ENV: 'development', ...bkashCredentials })).not.toThrow();
+    });
+  });
+
+  describe('web mount', () => {
+    it('defaults WEB_ENABLED to off, so the API runs alone exactly as before', () => {
+      expect(validateEnv({}).WEB_ENABLED).toBe(false);
+    });
+
+    it('parses WEB_ENABLED=true', () => {
+      expect(validateEnv({ WEB_ENABLED: 'true' }).WEB_ENABLED).toBe(true);
+    });
+
+    it('rejects a WEB_ENABLED value that is not true or false', () => {
+      expect(() => validateEnv({ WEB_ENABLED: 'yes' })).toThrow(/WEB_ENABLED/);
+    });
+
+    it('defaults the internal API base URL to the loopback address on the default port', () => {
+      expect(validateEnv({}).WEB_INTERNAL_API_BASE_URL).toBe('http://127.0.0.1:3000/api/v1');
+    });
+
+    it('builds the default internal API base URL from the configured port', () => {
+      expect(validateEnv({ PORT: '4100' }).WEB_INTERNAL_API_BASE_URL).toBe(
+        'http://127.0.0.1:4100/api/v1',
+      );
+    });
+
+    it('treats an empty internal API base URL as unset and falls back to the default', () => {
+      expect(validateEnv({ WEB_INTERNAL_API_BASE_URL: '' }).WEB_INTERNAL_API_BASE_URL).toBe(
+        'http://127.0.0.1:3000/api/v1',
+      );
+    });
+
+    it('keeps an explicit internal API base URL', () => {
+      expect(
+        validateEnv({ WEB_INTERNAL_API_BASE_URL: 'http://127.0.0.1:8080/backend/v9' })
+          .WEB_INTERNAL_API_BASE_URL,
+      ).toBe('http://127.0.0.1:8080/backend/v9');
+    });
+
+    it('rejects an internal API base URL that is not a URL', () => {
+      expect(() => validateEnv({ WEB_INTERNAL_API_BASE_URL: 'not a url' })).toThrow(
+        /WEB_INTERNAL_API_BASE_URL/,
+      );
+    });
+  });
+
+  describe('phone verification limits', () => {
+    it.each([
+      ['PHONE_CODE_RESEND_COOLDOWN_SECONDS', 60],
+      ['PHONE_CODE_DAILY_LIMIT_PER_NUMBER', 5],
+      ['PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT', 5],
+      ['SMS_DAILY_LIMIT', 500],
+      ['AUTH_PHONE_RATE_LIMIT', 5],
+    ])('defaults %s to %d when absent', (key, expected) => {
+      expect(validateEnv({})[key as keyof ReturnType<typeof validateEnv>]).toBe(expected);
+    });
+
+    it.each([
+      'PHONE_CODE_RESEND_COOLDOWN_SECONDS',
+      'PHONE_CODE_DAILY_LIMIT_PER_NUMBER',
+      'PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT',
+      'SMS_DAILY_LIMIT',
+      'AUTH_PHONE_RATE_LIMIT',
+    ])('rejects 0 and a non-number for %s', (key) => {
+      expect(() => validateEnv({ [key]: '0' })).toThrow();
+      expect(() => validateEnv({ [key]: 'abc' })).toThrow();
     });
   });
 });

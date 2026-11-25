@@ -1,0 +1,290 @@
+# Verify every pull request, publish one image per push, and migrate the
+# branch's environment. Branch ownership: dev -> dev, stg -> stage, main -> prod.
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, stg, main]
+  push:
+    branches: [dev, stg, main]
+
+# Least privilege by default. The image job elevates for itself only.
+permissions:
+  contents: read
+
+concurrency:
+  # Supersede redundant verification runs on a pull request, but never cancel a
+  # push run: those include the deploy job, and interrupting it mid-migration can
+  # leave a failed migration recorded (blocking later deploys) or a table with RLS
+  # enabled and no policies (deny-all). Push runs queue instead.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: "${{ github.event_name == 'pull_request' }}"
+
+env:
+  NODE_VERSION: '22'
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # No `environment:` here, deliberately and permanently. On a public repo this
+    # job runs untrusted fork code; granting it an environment would expose that
+    # environment's secrets. Everything below must run without secrets.
+    services:
+      # For the e2e suite only. Empty on every run, migrated by the suite itself, and
+      # discarded with the runner — the credentials below are throwaway by construction and
+      # are deliberately literal rather than secrets, since this job must run on fork pull
+      # requests where no secret is available. The unit-test step must never reach it: that
+      # suite stays database-free, which `Unit tests` above proves by running first.
+      postgres-test:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: barakah
+          POSTGRES_PASSWORD: barakah
+          POSTGRES_DB: barakah_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U barakah -d barakah_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # `postinstall` runs `prisma generate`, so no separate generate step.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      # No secrets: app.module.ts sets ignoreEnvFile when NODE_ENV=test, and the only
+      # database it touches is the throwaway service above — so this is safe to run on fork
+      # pull requests.
+      - name: End-to-end tests
+        run: npm run test:e2e
+        env:
+          NODE_ENV: test
+          # The service container above, reached on the host port it publishes. Localhost is
+          # also what test/support/auth-fixtures.ts requires before it will migrate anything.
+          TEST_DATABASE_URL: postgresql://barakah:barakah@localhost:5433/barakah_test?schema=public
+          # Matches the Dockerfile. Password hashing runs on libuv's threadpool, which
+          # defaults to 4 threads shared with all file and DNS work; the e2e suite signs in
+          # concurrently and would otherwise measure that contention rather than the app.
+          UV_THREADPOOL_SIZE: 16
+
+      - name: Build
+        run: npm run build
+
+      # Web gates run after the backend ones, sequentially: the full e2e suite is
+      # slow enough that overlapping it with other work risks timeouts.
+      - name: Web lint
+        run: npm run web:lint
+
+      - name: Web typecheck
+        run: npm run web:typecheck
+
+      - name: Web unit tests
+        run: npm run web:test
+
+      - name: Web build
+        run: npm run web:build
+
+      # Building the image here means a broken Dockerfile fails in review, before
+      # the image job publishes anything.
+      # Same pinned actions and default GHA cache scope as the image job, so layers
+      # built here can be reused when the image is published. `load: true` puts the
+      # image in the local daemon for the smoke test; nothing is pushed.
+      # `ignore-error=true` on the cache export: a cache write that fails (a fork
+      # pull request's token, a throttled cache service) must never fail verify.
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Build the container image (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: barakah-bazaar-api:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # Runs the one image (API + storefront + admin) on host port 3000, which is
+      # free here: the e2e Postgres service publishes 5433 only.
+      # SMOKE_DATABASE_URL points the container at that same throwaway service, already
+      # migrated by the e2e step above, so the smoke also proves the image can query
+      # Postgres after scripts/prune-runtime-modules.sh removed the Prisma CLI tree.
+      # host.docker.internal is mapped to the runner by the script (host-gateway).
+      # Once per deployed mode: prod runs NODE_ENV=production, stage runs NODE_ENV=staging.
+      # The script generates the throwaway keys and placeholder origins those modes require.
+      - name: Smoke test the container image (production mode)
+        run: bash scripts/smoke-web.sh barakah-bazaar-api:verify
+        env:
+          SMOKE_NODE_ENV: production
+          SMOKE_DATABASE_URL: postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public
+
+      - name: Smoke test the container image (staging mode)
+        run: bash scripts/smoke-web.sh barakah-bazaar-api:verify
+        env:
+          SMOKE_NODE_ENV: staging
+          SMOKE_DATABASE_URL: postgresql://barakah:barakah@host.docker.internal:5433/barakah_test?schema=public
+
+  image:
+    name: Publish image
+    needs: verify
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-ref: ${{ steps.meta.outputs.image-ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          short_sha="$(echo "$SHA" | cut -c1-7)"
+          case "$REF_NAME" in
+            main) moving="prod" ;;
+            stg)  moving="stg" ;;
+            *)    moving="dev" ;;
+          esac
+          echo "image-ref=${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "tags=${IMAGE_NAME}:sha-${short_sha},${IMAGE_NAME}:${moving}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Resolves the branch's environment, which is what makes GitHub inject that
+    # environment's secrets and apply its protection rules. Those rules are repository
+    # settings, not this file: `prod` must be created with required reviewers before
+    # the first push to main, or the first push auto-creates it with no rules at all
+    # and this job migrates and deploys unreviewed. The same holds for `stage` and stg.
+    # Single line deliberately: a YAML folded scalar (>-) preserves newlines on
+    # more-indented continuation lines, which would embed literal newlines in the
+    # expression that selects which environment's secrets are injected.
+    environment: ${{ github.ref_name == 'main' && 'prod' || github.ref_name == 'stg' && 'stage' || 'dev' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # dev's Supabase project is local-only: the free tier only affords two
+      # hosted projects (stage, prod), so dev's GitHub Environment has no
+      # DIRECT_URL and a runner can never reach it. Skip migrations rather than
+      # fail the job red on every push to dev, but never skip silently — a
+      # hosted dev database may exist later, so dev is not excluded from this
+      # job entirely, only from the two steps that need a reachable database.
+      - name: Check for a configured database
+        id: dbcheck
+        env:
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: |
+          if [ -n "$DIRECT_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Ordered, never parallel. migrate deploy is forward-only and idempotent;
+      # 001_enable_rls.sql drops each policy before recreating it, so re-running
+      # it on every deploy is safe.
+      - name: Apply migrations
+        if: steps.dbcheck.outputs.configured == 'true'
+        run: npm run db:deploy
+        env:
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+      - name: Apply row-level security policies
+        if: steps.dbcheck.outputs.configured == 'true'
+        run: npm run db:rls
+        env:
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+      - name: No database configured for this environment
+        if: steps.dbcheck.outputs.configured == 'false'
+        run: echo "No DIRECT_URL configured for this environment — skipping migrations and RLS."
+
+      # Secrets cannot be tested in `if:` directly, so presence is resolved into a
+      # step output first (same pattern as the database check above). The URL is
+      # only ever read from the environment and is never printed.
+      - name: Check for a deploy hook
+        id: hookcheck
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$DEPLOY_HOOK_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Host-agnostic: whichever host is adopted exposes a deploy URL that pulls
+      # the image just published. Adopting one is setting this environment's
+      # DEPLOY_HOOK_URL secret, not a pipeline change.
+      - name: Trigger the deploy hook
+        if: steps.hookcheck.outputs.configured == 'true'
+        env:
+          DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+        run: |
+          curl --fail --silent --show-error --max-time 30 -o /dev/null -X POST "$DEPLOY_HOOK_URL"
+          echo "deploy hook triggered"
+
+      # Runs only while this environment has no DEPLOY_HOOK_URL secret: the image is
+      # published, but nothing pulls it. Setting the secret replaces this step with
+      # the hook above; see the README's Deployment section.
+      - name: Report the image awaiting deployment
+        if: steps.hookcheck.outputs.configured == 'false'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "Image ready: ${{ needs.image.outputs.image-ref }}"
+          case "$REF_NAME" in
+            main) environment_name="prod" ;;
+            stg)  environment_name="stage" ;;
+            *)    environment_name="dev" ;;
+          esac
+          echo "Environment: ${environment_name}"
+          echo "No DEPLOY_HOOK_URL secret is set for this environment, so nothing was deployed — see the README's Deployment section."

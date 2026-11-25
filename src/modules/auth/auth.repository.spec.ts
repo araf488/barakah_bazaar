@@ -1,117 +1,630 @@
 import { PinoLogger } from 'nestjs-pino';
-import { AuthenticatedUser } from '../../common/types/authenticated-user';
-import { UserRole } from '../../infra/prisma/prisma-client';
+import { Language, User, UserRole } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { AuthRepository } from './auth.repository';
+import { SessionCachePort } from './sessions/session-cache.port';
 
-const authenticated: AuthenticatedUser = {
-  supabaseUserId: '11111111-1111-1111-1111-111111111111',
-  email: 'ops@barakahbazaar.com.bd',
-  phone: '+8801711111111',
-  role: UserRole.OPS,
-};
+const userRow = (overrides: Partial<User> = {}): User => ({
+  id: 'user-1',
+  email: 'shopper@example.com',
+  phone: null,
+  fullName: 'Aisha Rahman',
+  // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+  passwordHash: 'scrypt$hash',
+  emailVerifiedAt: null,
+  phoneVerifiedAt: null,
+  passwordChangedAt: null,
+  totpSecretEncrypted: null,
+  totpEnabledAt: null,
+  totpLastUsedStep: null,
+  totpFailedAttempts: 0,
+  totpFirstFailedAt: null,
+  totpLockedUntil: null,
+  role: UserRole.CUSTOMER,
+  preferredLanguage: Language.BN,
+  isActive: true,
+  lastSeenAt: null,
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+  ...overrides,
+});
 
 describe('AuthRepository', () => {
-  let prisma: { user: { upsert: jest.Mock; findUnique: jest.Mock } };
+  let prisma: {
+    user: {
+      findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      findFirst: jest.Mock;
+      update: jest.Mock;
+      updateMany: jest.Mock;
+      create: jest.Mock;
+    };
+    mfaRecoveryCode: {
+      deleteMany: jest.Mock;
+      createMany: jest.Mock;
+      findFirst: jest.Mock;
+      updateMany: jest.Mock;
+    };
+    $transaction: jest.Mock;
+  };
+  let sessionCache: { invalidateUser: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let repository: AuthRepository;
 
   beforeEach(() => {
-    prisma = { user: { upsert: jest.fn(), findUnique: jest.fn() } };
+    prisma = {
+      user: {
+        findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
+        findFirst: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+        create: jest.fn(),
+      },
+      mfaRecoveryCode: {
+        deleteMany: jest.fn(),
+        createMany: jest.fn(),
+        findFirst: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      $transaction: jest.fn(),
+    };
+    sessionCache = { invalidateUser: jest.fn().mockResolvedValue(undefined) };
     logger = createMockLogger();
-    repository = new AuthRepository(prisma as unknown as PrismaService, logger);
+    repository = new AuthRepository(
+      prisma as unknown as PrismaService,
+      sessionCache as unknown as SessionCachePort,
+      logger,
+    );
   });
 
-  describe('upsertFromToken', () => {
-    it('returns the persisted user', async () => {
-      const persisted = { id: 'user-1', supabaseUserId: authenticated.supabaseUserId };
-      prisma.user.upsert.mockResolvedValue(persisted);
+  describe('findById', () => {
+    it('returns the matching user', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
 
-      await expect(repository.upsertFromToken(authenticated)).resolves.toEqual(persisted);
+      await expect(repository.findById('user-1')).resolves.toEqual({ id: 'user-1' });
     });
 
-    it('keys the upsert on the Supabase user id', async () => {
-      prisma.user.upsert.mockResolvedValue({});
+    it('looks the row up by its own id', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
 
-      await repository.upsertFromToken(authenticated);
+      await repository.findById('user-1');
 
-      expect(prisma.user.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { supabaseUserId: '11111111-1111-1111-1111-111111111111' },
-        }),
-      );
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { id: 'user-1' } });
     });
 
-    it('mirrors the role from the token on update', async () => {
-      prisma.user.upsert.mockResolvedValue({});
+    it('returns undefined when no user matches', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
 
-      await repository.upsertFromToken(authenticated);
-
-      const args = prisma.user.upsert.mock.calls[0][0];
-      expect(args.update.role).toBe(UserRole.OPS);
-      expect(args.create.role).toBe(UserRole.OPS);
+      await expect(repository.findById('user-1')).resolves.toBeUndefined();
     });
 
-    it('stamps lastSeenAt on both paths', async () => {
-      prisma.user.upsert.mockResolvedValue({});
+    it('returns null — distinct from undefined — when the database fails', async () => {
+      prisma.user.findUnique.mockRejectedValue(new Error('connection refused'));
 
-      await repository.upsertFromToken(authenticated);
-
-      const args = prisma.user.upsert.mock.calls[0][0];
-      expect(args.create.lastSeenAt).toBeInstanceOf(Date);
-      expect(args.update.lastSeenAt).toBeInstanceOf(Date);
-    });
-
-    it('stores absent claims as null rather than undefined', async () => {
-      prisma.user.upsert.mockResolvedValue({});
-
-      await repository.upsertFromToken({
-        supabaseUserId: authenticated.supabaseUserId,
-        role: UserRole.CUSTOMER,
-      });
-
-      const args = prisma.user.upsert.mock.calls[0][0];
-      expect(args.create.email).toBeNull();
-      expect(args.create.phone).toBeNull();
-    });
-
-    it('returns null instead of throwing when the database fails', async () => {
-      prisma.user.upsert.mockRejectedValue(new Error('connection refused'));
-
-      await expect(repository.upsertFromToken(authenticated)).resolves.toBeNull();
+      await expect(repository.findById('user-1')).resolves.toBeNull();
     });
 
     it('logs the failure with the exception object', async () => {
       const failure = new Error('connection refused');
-      prisma.user.upsert.mockRejectedValue(failure);
+      prisma.user.findUnique.mockRejectedValue(failure);
 
-      await repository.upsertFromToken(authenticated);
+      await repository.findById('user-1');
 
       expect(logger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ err: failure }),
-        'Exception occurred in AuthRepository.upsertFromToken',
+        expect.objectContaining({ err: failure, userId: 'user-1' }),
+        'Exception occurred in AuthRepository.findById',
       );
     });
   });
 
-  describe('findBySupabaseId', () => {
+  describe('findByEmail', () => {
     it('returns the matching user', async () => {
+      prisma.user.findFirst.mockResolvedValue({ id: 'user-1' });
+
+      await expect(repository.findByEmail('ops@barakahbazaar.com.bd')).resolves.toEqual({
+        id: 'user-1',
+      });
+    });
+
+    it('matches case-insensitively', async () => {
+      prisma.user.findFirst.mockResolvedValue({ id: 'user-1' });
+
+      await repository.findByEmail('OPS@BarakahBazaar.com.bd');
+
+      expect(prisma.user.findFirst).toHaveBeenCalledWith({
+        where: { email: { equals: 'OPS@BarakahBazaar.com.bd', mode: 'insensitive' } },
+      });
+    });
+
+    it('returns undefined when no user matches', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(repository.findByEmail('nobody@example.com')).resolves.toBeUndefined();
+    });
+
+    it('returns null — distinct from undefined — when the database fails', async () => {
+      prisma.user.findFirst.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.findByEmail('ops@barakahbazaar.com.bd')).resolves.toBeNull();
+    });
+
+    it('logs the failure with the exception object', async () => {
+      const failure = new Error('connection refused');
+      prisma.user.findFirst.mockRejectedValue(failure);
+
+      await repository.findByEmail('ops@barakahbazaar.com.bd');
+
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: failure }),
+        'Exception occurred in AuthRepository.findByEmail',
+      );
+    });
+  });
+
+  describe('findByPhone', () => {
+    it('looks the user up by the exact normalised number', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
 
-      await expect(repository.findBySupabaseId('abc')).resolves.toEqual({ id: 'user-1' });
+      await expect(repository.findByPhone('+8801712345678')).resolves.toEqual({ id: 'user-1' });
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { phone: '+8801712345678' } });
     });
 
-    it('returns null when no user matches', async () => {
+    it('returns undefined when no user has the number', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
 
-      await expect(repository.findBySupabaseId('abc')).resolves.toBeNull();
+      await expect(repository.findByPhone('+8801712345678')).resolves.toBeUndefined();
     });
 
-    it('returns null instead of throwing when the database fails', async () => {
-      prisma.user.findUnique.mockRejectedValue(new Error('connection refused'));
+    it('returns null, and logs without the number, when the database fails', async () => {
+      const failure = new Error('connection refused');
+      prisma.user.findUnique.mockRejectedValue(failure);
 
-      await expect(repository.findBySupabaseId('abc')).resolves.toBeNull();
+      await expect(repository.findByPhone('+8801712345678')).resolves.toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: failure },
+        'Exception occurred in AuthRepository.findByPhone',
+      );
+    });
+  });
+
+  describe('createCustomer', () => {
+    it('creates a CUSTOMER with the address lowercased', async () => {
+      prisma.user.create.mockResolvedValue(userRow());
+
+      await repository.createCustomer({
+        email: 'Shopper@Example.COM',
+        // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+        passwordHash: 'scrypt$hash',
+        fullName: 'Aisha Rahman',
+        preferredLanguage: Language.BN,
+      });
+
+      expect(prisma.user.create.mock.calls[0][0].data).toMatchObject({
+        email: 'shopper@example.com',
+        role: UserRole.CUSTOMER,
+      });
+    });
+
+    it('reports null when the write fails, and never logs the hash or the address', async () => {
+      prisma.user.create.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        repository.createCustomer({
+          email: 'attacker-supplied@example.com',
+          // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+          passwordHash: 'scrypt$secret-hash',
+          fullName: 'Aisha Rahman',
+          preferredLanguage: Language.BN,
+        }),
+      ).resolves.toBeNull();
+      const logged = JSON.stringify(logger.error.mock.calls);
+      expect(logged).not.toContain('scrypt$secret-hash');
+      expect(logged).not.toContain('attacker-supplied@example.com');
+    });
+  });
+
+  describe('updatePasswordHash', () => {
+    it('writes the new hash, stamps passwordChangedAt and clears phone verification, keeping the phone', async () => {
+      // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+      prisma.user.update.mockResolvedValue({ id: 'user-1', passwordHash: 'scrypt$new' });
+
+      await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: {
+          // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+          passwordHash: 'scrypt$new',
+          passwordChangedAt: expect.any(Date),
+          phoneVerifiedAt: null,
+        },
+      });
+      expect(prisma.user.update.mock.calls[0][0].data).not.toHaveProperty('phone');
+    });
+
+    it('clears phone verification in the same write that changes the password', async () => {
+      await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(prisma.user.update).toHaveBeenCalledTimes(1);
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.updatePasswordHash('user-1', 'scrypt$new')).resolves.toBeNull();
+    });
+
+    it('bumps the session-cache generation after the write commits', async () => {
+      // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+      prisma.user.update.mockResolvedValue({ id: 'user-1', passwordHash: 'scrypt$new' });
+
+      await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(sessionCache.invalidateUser).toHaveBeenCalledWith('user-1');
+    });
+
+    it('does not bump the cache when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await repository.updatePasswordHash('user-1', 'scrypt$new');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updatePasswordEncoding', () => {
+    it('re-encodes the hash only while the row still holds the verified one, leaving passwordChangedAt alone', async () => {
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+
+      await repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new');
+
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+        where: { id: 'user-1', passwordHash: 'scrypt$old' },
+        // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+        data: { passwordHash: 'scrypt$new' },
+      });
+    });
+
+    it('reports true when exactly one row was re-encoded', async () => {
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new'),
+      ).resolves.toBe(true);
+    });
+
+    it('reports false — superseded, nothing written — when a newer hash replaced the verified one', async () => {
+      // The row as a concurrent reset left it: a hash other than the one this login verified.
+      const row = { id: 'user-1', passwordHash: 'scrypt$reset' };
+      prisma.user.updateMany.mockImplementation(
+        (args: { where: { id: string; passwordHash?: string } }) => {
+          const matches =
+            args.where.id === row.id &&
+            (args.where.passwordHash === undefined || args.where.passwordHash === row.passwordHash);
+          return Promise.resolve({ count: matches ? 1 : 0 });
+        },
+      );
+
+      await expect(
+        repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new'),
+      ).resolves.toBe(false);
+    });
+
+    it('reports null rather than throwing when the re-encode fails', async () => {
+      prisma.user.updateMany.mockRejectedValue(new Error('connection refused'));
+
+      await expect(
+        repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new'),
+      ).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation', async () => {
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+
+      await repository.updatePasswordEncoding('user-1', 'scrypt$old', 'scrypt$new');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateEmailVerifiedAt', () => {
+    it('stamps emailVerifiedAt', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1', emailVerifiedAt: new Date() });
+
+      await repository.updateEmailVerifiedAt('user-1');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { emailVerifiedAt: expect.any(Date) },
+      });
+    });
+
+    it('returns null when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.updateEmailVerifiedAt('user-1')).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — confirming an address ends no session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1', emailVerifiedAt: new Date() });
+
+      await repository.updateEmailVerifiedAt('user-1');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('saveTotpSecret', () => {
+    it('stores the encrypted secret', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.saveTotpSecret('user-1', 'sealed');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { totpSecretEncrypted: 'sealed' },
+      });
+    });
+
+    it('returns null when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.saveTotpSecret('user-1', 'sealed')).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — an unconfirmed secret ends no session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.saveTotpSecret('user-1', 'sealed');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('enableTotp', () => {
+    const CHANGED_AT = new Date('2026-10-01T09:00:00.000Z');
+
+    /**
+     * Runs the interactive transaction against the mock itself, and answers `updateMany` from a
+     * one-row table through the predicate the repository actually built — so a write guarded on
+     * a stale `passwordChangedAt` genuinely matches nothing.
+     */
+    const withRow = (row: { id: string; passwordChangedAt: Date | null }): void => {
+      prisma.$transaction.mockImplementation(
+        async (work: (tx: typeof prisma) => Promise<unknown>) => await work(prisma),
+      );
+      prisma.user.updateMany.mockImplementation(
+        (args: { where: { id: string; passwordChangedAt?: Date | null } }) => {
+          const expected = args.where.passwordChangedAt;
+          const stampMatches =
+            expected !== undefined &&
+            (expected?.getTime() ?? null) === (row.passwordChangedAt?.getTime() ?? null);
+          return Promise.resolve({ count: args.where.id === row.id && stampMatches ? 1 : 0 });
+        },
+      );
+      prisma.mfaRecoveryCode.deleteMany.mockResolvedValue({ count: 0 });
+      prisma.mfaRecoveryCode.createMany.mockResolvedValue({ count: 2 });
+      prisma.user.findUniqueOrThrow.mockResolvedValue({ id: row.id, totpEnabledAt: new Date() });
+    };
+
+    it('enables the factor guarded on the checked passwordChangedAt, then replaces the recovery codes', async () => {
+      withRow({ id: 'user-1', passwordChangedAt: CHANGED_AT });
+
+      await expect(
+        repository.enableTotp('user-1', CHANGED_AT, 5, ['hash-a', 'hash-b']),
+      ).resolves.toEqual({ id: 'user-1', totpEnabledAt: expect.any(Date) });
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: 'user-1', passwordChangedAt: CHANGED_AT },
+        data: {
+          totpEnabledAt: expect.any(Date),
+          totpLastUsedStep: 5,
+          totpFailedAttempts: 0,
+          totpLockedUntil: null,
+        },
+      });
+      expect(prisma.mfaRecoveryCode.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+      });
+      expect(prisma.mfaRecoveryCode.createMany).toHaveBeenCalledWith({
+        data: [
+          { userId: 'user-1', codeHash: 'hash-a' },
+          { userId: 'user-1', codeHash: 'hash-b' },
+        ],
+      });
+    });
+
+    it('enables an account whose password has never changed, guarding on null', async () => {
+      withRow({ id: 'user-1', passwordChangedAt: null });
+
+      await expect(repository.enableTotp('user-1', null, 5, ['hash-a'])).resolves.toEqual({
+        id: 'user-1',
+        totpEnabledAt: expect.any(Date),
+      });
+      expect(prisma.user.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'user-1', passwordChangedAt: null } }),
+      );
+    });
+
+    it('returns undefined and stores no recovery codes when the password changed since the check', async () => {
+      withRow({ id: 'user-1', passwordChangedAt: new Date('2026-10-06T08:00:00.000Z') });
+
+      await expect(
+        repository.enableTotp('user-1', CHANGED_AT, 5, ['hash-a', 'hash-b']),
+      ).resolves.toBeUndefined();
+      expect(prisma.mfaRecoveryCode.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.mfaRecoveryCode.createMany).not.toHaveBeenCalled();
+      expect(prisma.user.findUniqueOrThrow).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the transaction fails', async () => {
+      prisma.$transaction.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.enableTotp('user-1', null, 5, ['hash-a'])).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — enrolling MFA ends no other session', async () => {
+      withRow({ id: 'user-1', passwordChangedAt: null });
+
+      await repository.enableTotp('user-1', null, 5, ['hash-a']);
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('disableTotp', () => {
+    it('clears the secret and every recovery code in one transaction', async () => {
+      const user = { id: 'user-1', totpEnabledAt: null };
+      prisma.$transaction.mockImplementation(
+        async (operations: unknown[]) => await Promise.all(operations),
+      );
+      prisma.mfaRecoveryCode.deleteMany.mockResolvedValue({ count: 3 });
+      prisma.user.update.mockResolvedValue(user);
+
+      await expect(repository.disableTotp('user-1')).resolves.toEqual(user);
+      expect(prisma.mfaRecoveryCode.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+      });
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: {
+          totpSecretEncrypted: null,
+          totpEnabledAt: null,
+          totpLastUsedStep: null,
+          totpFailedAttempts: 0,
+          totpLockedUntil: null,
+        },
+      });
+    });
+
+    it('returns null when the transaction fails', async () => {
+      prisma.$transaction.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.disableTotp('user-1')).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — disabling MFA ends no other session', async () => {
+      const user = { id: 'user-1', totpEnabledAt: null };
+      prisma.$transaction.mockImplementation(
+        async (operations: unknown[]) => await Promise.all(operations),
+      );
+      prisma.mfaRecoveryCode.deleteMany.mockResolvedValue({ count: 3 });
+      prisma.user.update.mockResolvedValue(user);
+
+      await repository.disableTotp('user-1');
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recordTotpFailure', () => {
+    it('writes the failed-attempt count, the lockout deadline and when the run began', async () => {
+      const lockedUntil = new Date('2026-01-01T00:15:00.000Z');
+      const firstFailedAt = new Date('2026-01-01T00:00:00.000Z');
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.recordTotpFailure('user-1', 5, lockedUntil, firstFailedAt);
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: {
+          totpFailedAttempts: 5,
+          totpLockedUntil: lockedUntil,
+          totpFirstFailedAt: firstFailedAt,
+        },
+      });
+    });
+
+    it('returns null when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.recordTotpFailure('user-1', 1, null, new Date())).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — a lockout counter gates login, not a live session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.recordTotpFailure('user-1', 5, null, new Date());
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resetTotpState', () => {
+    it('clears the lockout and records the spent step', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.resetTotpState('user-1', 42);
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: {
+          totpFailedAttempts: 0,
+          totpLockedUntil: null,
+          totpFirstFailedAt: null,
+          totpLastUsedStep: 42,
+        },
+      });
+    });
+
+    it('returns null when the write fails', async () => {
+      prisma.user.update.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.resetTotpState('user-1', 42)).resolves.toBeNull();
+    });
+
+    it('does not bump the session-cache generation — clearing a lockout ends no session', async () => {
+      prisma.user.update.mockResolvedValue({ id: 'user-1' });
+
+      await repository.resetTotpState('user-1', 42);
+
+      expect(sessionCache.invalidateUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findUnusedRecoveryCode', () => {
+    it('returns the matching unused code', async () => {
+      prisma.mfaRecoveryCode.findFirst.mockResolvedValue({ id: 'code-1' });
+
+      await expect(repository.findUnusedRecoveryCode('user-1', 'hash')).resolves.toEqual({
+        id: 'code-1',
+      });
+      expect(prisma.mfaRecoveryCode.findFirst).toHaveBeenCalledWith({
+        where: { userId: 'user-1', codeHash: 'hash', usedAt: null },
+      });
+    });
+
+    it('returns undefined when no unused code matches', async () => {
+      prisma.mfaRecoveryCode.findFirst.mockResolvedValue(null);
+
+      await expect(repository.findUnusedRecoveryCode('user-1', 'hash')).resolves.toBeUndefined();
+    });
+
+    it('returns null — distinct from undefined — when the database fails', async () => {
+      prisma.mfaRecoveryCode.findFirst.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.findUnusedRecoveryCode('user-1', 'hash')).resolves.toBeNull();
+    });
+  });
+
+  describe('burnRecoveryCode', () => {
+    it('marks the code used and returns true', async () => {
+      prisma.mfaRecoveryCode.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(repository.burnRecoveryCode('code-1')).resolves.toBe(true);
+      expect(prisma.mfaRecoveryCode.updateMany).toHaveBeenCalledWith({
+        where: { id: 'code-1', usedAt: null },
+        data: { usedAt: expect.any(Date) },
+      });
+    });
+
+    it('returns false when the write fails', async () => {
+      prisma.mfaRecoveryCode.updateMany.mockRejectedValue(new Error('connection refused'));
+
+      await expect(repository.burnRecoveryCode('code-1')).resolves.toBe(false);
     });
   });
 });

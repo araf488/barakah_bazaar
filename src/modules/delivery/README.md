@@ -1,34 +1,185 @@
 # Delivery module
 
-**Status:** planned — Phase 4 (slots, own fleet), Phase 5 (couriers)
+**Status:** pricing, delivery reach and slots implemented. Shipments and courier integration remain Phase 5.
 
-Delivery slots, hub radius rules, courier integration and own-fleet dispatch.
+What it costs to deliver a basket to an address.
 
 ## Owned tables
 
-- `delivery_slots`
-- `shipments`
-- `courier_tracking`
-- `hubs`
+- `delivery_zones`
+- `delivery_zone_rules`
 
-## Design notes
+`delivery_slots` ✅. Still planned: `shipments`, `courier_tracking`, `hubs`.
 
-- Perishables and dry goods have different slot logic: same-day/2-hour windows with an order-by cutoff versus standard 1–3 day delivery.
-- Slot availability depends on the customer's distance from a hub and the product's maxDeliveryDistanceKm.
-- Third-party courier SLAs are not cold-chain; perishable shipments route to own fleet or a hyperlocal partner.
-- Courier APIs: Pathao, RedX, Steadfast. Sync runs as a queued job, never inline in a request.
+## Why this exists
 
-## Before writing code here
+Before it, `OrderService` had `const deliveryFee = 0n` with a comment deferring pricing to
+Phase 4 — so every order in the country shipped free. The column was already on the order, so
+this fills it rather than migrating history.
 
-Copy the shape of `src/modules/catalog` — controller → service → repository,
-with the mapper owning the wire format and constants in `<module>.constants.ts`.
-The rules that apply to every module are in the repository README under
-**Conventions**; the ones this module will get wrong if skipped:
+## Zones are priced, not places
 
-1. Every public method on the controller, service and repository wraps its body
-   in `try`/`catch` and logs with the error object first.
-2. Services return `ServiceResponse<T>`; only the controller turns that into an
-   HTTP status, via `unwrapOrThrow`.
-3. Money is integer poysha (`BigInt`), converted to a number only in the mapper.
-4. Unit tests for every layer this module touches, in the same commit.
-5. Enable RLS on any table added here, in `prisma/rls/`, in the same commit.
+"Inside Dhaka city", "Greater Dhaka", "rest of Bangladesh" are three fees, and each collects
+however many divisions, districts or units belong to it. Modelling it the other way round — a
+fee per district — makes a nationwide price change 64 edits and guarantees they drift.
+
+## Specificity decides
+
+A rule naming a **unit** beats one naming only its **district**, which beats one naming only
+the **division**. That is what lets
+
+> Dhaka division 120, except Dhaka district 80, except Gulshan 60
+
+be three rows rather than a special case. Specificity is **counted**, not inferred from query
+order, and a test runs the same rule set forwards and backwards to prove the answer does not
+move.
+
+All candidate rules come back in one query and the winner is picked in memory. The candidate
+set is tiny, and doing it this way keeps the precedence rule in one readable place instead of
+spread across three round trips.
+
+## It fails closed
+
+When no rule matches and no default zone is configured, `resolveFee` returns a failure and
+**checkout refuses the order**. It does not fall back to zero. A silent zero is a revenue leak
+nobody notices; a refused order is loud and gets fixed the same day.
+
+The practical consequence: **until `apply-delivery-zones.sql` has run, every checkout fails.**
+The seed in that file is not decoration.
+
+## The fee is never taken from the client
+
+The quote endpoint is advisory — it exists so the basket can show a number before the customer
+commits. Checkout resolves the fee again, server-side, from the address actually ordered to. A
+delivery charge the customer can choose is a delivery charge the customer will choose to be
+zero.
+
+## Guarantees the database enforces
+
+| Guarantee                       | How                                                     |
+| ------------------------------- | ------------------------------------------------------- |
+| One place belongs to one zone   | `UNIQUE (division, district, unit) NULLS NOT DISTINCT`  |
+| At most one default zone        | partial unique index `ON (is_default) WHERE is_default` |
+| A unit rule names its district  | `CHECK (unit IS NULL OR district IS NOT NULL)`          |
+| No negative fee                 | `CHECK (fee_poysha >= 0)`                               |
+| No zero free-delivery threshold | `CHECK (free_above_poysha IS NULL OR > 0)`              |
+
+`NULLS NOT DISTINCT` is load-bearing and needs **Postgres 15+**. Postgres treats NULLs as
+distinct in a unique index by default, so without it `('Dhaka', NULL, NULL)` could be inserted
+twice and two zones would both claim the whole division — the most common kind of rule there
+is.
+
+## Places are validated against the geography dataset
+
+Every name in a rule is checked through `GeoService` on write. A typo'd district matches no
+address and quietly bills everyone there the default rate, which is invisible in production.
+
+`seed-zones.spec.ts` goes further and validates the **seed SQL itself** against the dataset, so
+a rename on either side breaks the build rather than the pricing. It caught the seed naming
+`Chittagong`, which is not in the dataset — the district is `Chattogram`.
+
+## Admin
+
+`SUPER_ADMIN` and `OPS`: pricing is money, and OPS runs fulfilment. Every write goes through
+the shared audit trail in one transaction, and a failed audit row refuses the change.
+
+Updating a zone **replaces its whole rule set** rather than diffing it. A partial rule update
+is how a place ends up in two zones or none, and the set is small enough that rewriting it is
+cheaper than reasoning about which half applied.
+
+## Cold chain and delivery reach
+
+`products.max_delivery_distance_km`, `is_perishable`, `storage_type`, `shelf_life_hours` and
+`warehouses.service_radius_km` all existed as columns that **nothing read**. Admin wrote them,
+the catalog returned them, and no decision anywhere consulted them — a frozen item with a 5 km
+limit could be ordered to Manikganj. `delivery-reach.ts` and the checkout rules make the first
+two load-bearing.
+
+Two limits, enforced **differently**, because they mean different things:
+
+| Limit                               | Kind                | Unmeasurable distance              |
+| ----------------------------------- | ------------------- | ---------------------------------- |
+| `warehouses.service_radius_km`      | commercial boundary | **passes**                         |
+| `products.max_delivery_distance_km` | cold-chain safety   | **falls back to a district match** |
+
+That asymmetry is the important decision. Addresses carry coordinates only when the customer
+pasted a map link, so most orders cannot be measured at all.
+
+- Refusing everything unmeasurable would reject orders that succeed today — a regression
+  dressed as a rule. So the hub's commercial radius lets it through.
+- Treating unmeasurable as fine would leave the cold-chain limit decorative, which is exactly
+  the state being replaced. So a perishable falls back to "same district as the hub" — the
+  coarsest honest proxy for _close enough to arrive cold_, and the only one needing no
+  coordinates.
+
+Warehouse selection now takes the destination: a hub must have the stock **and** be able to
+reach the address. When every hub is ruled out by a perishable rather than by stock, the
+refusal **names the item**, because the customer's only useful action is to remove it.
+
+### Still decorative
+
+`storage_type` and `shelf_life_hours` are written and read but drive nothing. Warehouses have
+no storage-capability field, so nothing stops a frozen line being picked from an ambient-only
+hub, and shelf life does not seed batch expiry. Both need a schema change; neither is bluffed
+here.
+
+## Delivery slots
+
+A slot is a **template**, not an occurrence: _"Morning 9–11, every day, 20 orders"_ describes
+every day it runs. Occurrences are computed for the next few days rather than stored, because a
+table of pre-generated dates needs a job to keep extending it — and the shop stops taking
+orders the day that job stops, a failure invisible until it is urgent.
+
+Capacity belongs to the **hub**, because it is a van and a driver, and both live at a warehouse.
+It is counted **per window per day**: one van doing Tuesday morning is a different van from the
+one doing Wednesday morning. The count comes from live orders, so cancelled and refunded ones
+release their place — a van not delivering an order has room for another.
+
+**The cutoff** is the "order by 8am for same-day doi" rule: a two-hour window needs the picking
+done before the van leaves. A cutoff that has just landed counts as closed, not closing.
+
+**`supportsPerishable` is the last link in the cold chain.** A basket with anything perishable
+may only take a window with cold transport, however convenient the others look. Warehouse
+storage and delivery distance are already enforced; the van was the remaining gap, and the
+easiest one to forget.
+
+Choosing a slot is **optional**. An order without one is delivered whenever the hub gets to it,
+which is how dry goods have always worked — so adding this changed nothing about existing
+behaviour.
+
+### Endpoints
+
+| Route                                   | Who              | What                                                           |
+| --------------------------------------- | ---------------- | -------------------------------------------------------------- |
+| `GET /orders/delivery-slots?addressId=` | customer         | Windows available for **their current basket** to that address |
+| `GET /admin/delivery/zones/slots`       | SUPER_ADMIN, OPS | Every window across all hubs                                   |
+| `POST` / `PATCH` `…/slots[/:id]`        | SUPER_ADMIN, OPS | Create and edit windows, audited                               |
+
+The customer endpoint lives on the **order** controller, not this module's. Answering it needs
+the basket, the address and the hub that would pack them — the same three things checkout uses,
+resolved by the same code. A copy in the delivery module would be a second set of rules to
+drift out of step with the one that actually books.
+
+It is declared **before** `GET /orders/:id`, and a test enforces that: Nest matches in
+declaration order, so after the wildcard it would hit the uuid route and 400 on `ParseUUIDPipe`
+— a dead endpoint every other test would pass straight over.
+
+When no hub can serve the basket to that address, the endpoint **refuses with the reason**
+rather than returning an empty list. Empty reads as "no windows today"; unreachable is a
+different problem with a different fix.
+
+### Re-checked at checkout
+
+Availability is computed when the customer opens the page. Between then and pressing pay, the
+cutoff can pass and the last place can go, so checkout runs the check again — against the same
+computation rather than a second copy of the rules, and against the hub that will actually pack
+the order. A window belonging to another hub is refused: it would book a van in the wrong city,
+which no capacity count would catch, because the count would be right.
+
+## Conventions this module follows
+
+1. Every public method wraps its body in `try`/`catch` and logs with the error object first.
+2. Services return `ServiceResponse<T>`; only the controller turns that into an HTTP status.
+3. Money is integer poysha (`BigInt`), widened only in the mapper.
+4. Unit tests for every layer this module touches.
+5. RLS enabled and forced on both tables, with **no policy at all** — a deny.

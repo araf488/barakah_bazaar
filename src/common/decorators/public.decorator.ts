@@ -2,7 +2,7 @@ import { SetMetadata } from '@nestjs/common';
 import { MetadataKeys } from '../constants/app.constants';
 
 /**
- * Opts a route out of the globally applied SupabaseAuthGuard.
+ * Opts a route out of the globally applied SessionAuthGuard.
  *
  * Authentication is on by default, so anything reachable without a token —
  * catalog browsing, health probes, payment webhooks — must say so explicitly.

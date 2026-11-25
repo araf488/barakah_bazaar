@@ -1,14 +1,14 @@
 import { Global, Module } from '@nestjs/common';
 import { SupabaseAdminService } from './supabase-admin.service';
-import { SupabaseJwtVerifier } from './supabase-jwt.verifier';
 
 /**
- * Global because the auth guard (registered app-wide) needs the verifier and
- * several modules will need signed upload URLs.
+ * Global because several modules will need signed upload URLs. Supabase is storage only —
+ * authentication is this API's own, and nothing Supabase issues takes part in an access
+ * decision.
  */
 @Global()
 @Module({
-  providers: [SupabaseAdminService, SupabaseJwtVerifier],
-  exports: [SupabaseAdminService, SupabaseJwtVerifier],
+  providers: [SupabaseAdminService],
+  exports: [SupabaseAdminService],
 })
 export class SupabaseModule {}

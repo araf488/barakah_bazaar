@@ -1,12 +1,59 @@
-import { Controller, Get, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator';
 import { ErrorMessages } from '../../common/constants/error-messages.constants';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
+import { ThrottleBuckets } from '../../config/throttler.config';
+import { AuthConstants } from './auth.constants';
+import { AuthEventsService } from './auth-events.service';
+import { AuthMapper } from './auth.mapper';
+import { requireDeviceId, userAgentOf } from './request-context';
 import { AuthService } from './auth.service';
+import { LoginDto, LoginResponseDto, MfaVerifyDto, RefreshDto } from './dto/login.dto';
+import {
+  MfaDisableDto,
+  MfaEnableDto,
+  MfaEnableResponseDto,
+  MfaSetupDto,
+  MfaSetupResponseDto,
+} from './dto/mfa.dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordAcceptedDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  ResetPasswordResponseDto,
+} from './dto/password.dto';
+import { RegisterDto, RegistrationAcceptedDto } from './dto/register.dto';
+import { LogoutAllResponseDto, SessionSummaryDto } from './dto/session.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
+import {
+  ResendVerificationDto,
+  VerifyEmailDto,
+  VerifyEmailResponseDto,
+} from './dto/verification.dto';
+import { PasswordDependencies } from './password.dependencies';
+import { RegistrationDependencies } from './registration.dependencies';
+import { SessionService } from './sessions/session.service';
+import { SignInDependencies } from './sign-in.dependencies';
 
 @ApiTags('Auth')
 @ApiBearerAuth()
@@ -14,13 +61,185 @@ import { UserProfileDto } from './dto/user-profile.dto';
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
+    private readonly signInDependencies: SignInDependencies,
+    private readonly sessionService: SessionService,
+    private readonly registrationDependencies: RegistrationDependencies,
+    private readonly passwordDependencies: PasswordDependencies,
     @InjectPinoLogger(AuthController.name) private readonly logger: PinoLogger,
   ) {}
 
   /**
-   * Returns the caller's profile, provisioning the local user row on first
-   * call. Clients hit this immediately after a Supabase sign-in to exchange a
-   * token for the application-side identity.
+   * Creates a customer account. `@Public()`, necessarily: the caller has no account yet.
+   *
+   * Enumeration-safe: this answers identically — same status, same body — whether or not the
+   * submitted address already has an account, and whatever password policy failure or database
+   * fault the service hit along the way collapses to the same shape here too. See
+   * `RegistrationService.register` for how that indistinguishability is produced; this handler
+   * must not reintroduce a difference by mapping the two cases apart.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('register')
+  @ApiOperation({ summary: 'Create a customer account' })
+  @ApiResponse({ status: HttpStatus.ACCEPTED, type: RegistrationAcceptedDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid payload or weak password' })
+  async register(@Body() dto: RegisterDto): Promise<RegistrationAcceptedDto> {
+    try {
+      unwrapOrThrow(await this.registrationDependencies.registration.register(dto));
+      return { status: AuthConstants.RegistrationPendingStatus };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.register');
+      throw error;
+    }
+  }
+
+  /**
+   * Verifies a link token, or an email plus a typed-in code, and marks the account's email
+   * confirmed. `@Public()`: the caller has no session until this succeeds.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.OK)
+  @Post('verify-email')
+  @ApiOperation({ summary: 'Verify an email address' })
+  @ApiResponse({ status: HttpStatus.OK, type: VerifyEmailResponseDto })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid or expired credential' })
+  async verifyEmail(@Body() dto: VerifyEmailDto): Promise<VerifyEmailResponseDto> {
+    try {
+      unwrapOrThrow(
+        await this.registrationDependencies.emailVerification.verify({
+          token: dto.token,
+          email: dto.email,
+          code: dto.code,
+        }),
+      );
+      return { emailVerified: true };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.verifyEmail');
+      throw error;
+    }
+  }
+
+  /**
+   * Resends a verification credential. `@Public()`, same as `register`: the caller has no
+   * session to present.
+   *
+   * Enumeration-safe in the same way `register` is: the identical `RegistrationAcceptedDto`
+   * body comes back whether the address is unknown, already verified, mid-cooldown, or freshly
+   * mailed again — see `EmailVerificationService.resend`. The account bucket in `@RateLimit`
+   * keys on this submitted email, which is exactly the axis a resend flood runs along, and it
+   * is also what protects the 300-a-day sending quota.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('resend-verification')
+  @ApiOperation({ summary: 'Resend a verification email' })
+  @ApiResponse({ status: HttpStatus.ACCEPTED, type: RegistrationAcceptedDto })
+  async resendVerification(@Body() dto: ResendVerificationDto): Promise<RegistrationAcceptedDto> {
+    try {
+      unwrapOrThrow(await this.registrationDependencies.emailVerification.resend(dto.email));
+      return { status: AuthConstants.RegistrationPendingStatus };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.resendVerification');
+      throw error;
+    }
+  }
+
+  /**
+   * Mails a password-reset credential to an address that has an account. `@Public()`: the
+   * caller has forgotten the password that would get them a session.
+   *
+   * Enumeration-safe: the identical 202 body comes back for a known address, an unknown one, a
+   * disabled account and a cooldown — see `PasswordResetService.request`. The account bucket
+   * keys on the submitted email, which is the axis a mail flood against one victim runs along.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('forgot-password')
+  @ApiOperation({ summary: 'Request a password reset email' })
+  @ApiResponse({ status: HttpStatus.ACCEPTED, type: ForgotPasswordAcceptedDto })
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<ForgotPasswordAcceptedDto> {
+    try {
+      unwrapOrThrow(await this.passwordDependencies.passwordReset.request(dto.email));
+      return { status: AuthConstants.PasswordResetRequestedStatus };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.forgotPassword');
+      throw error;
+    }
+  }
+
+  /**
+   * Redeems a reset link token, or an email plus a typed-in code, and sets the new password.
+   *
+   * **Returns no session, and must never be changed to.** A staff account requires a second
+   * factor; a reset that signed the caller in would skip it. The caller signs in afterwards and
+   * passes TOTP as usual.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.OK)
+  @Post('reset-password')
+  @ApiOperation({ summary: 'Set a new password with a reset link or code' })
+  @ApiResponse({ status: HttpStatus.OK, type: ResetPasswordResponseDto })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Invalid credential or weak password',
+  })
+  @ApiResponse({ status: HttpStatus.TOO_MANY_REQUESTS, description: 'Too many wrong codes' })
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<ResetPasswordResponseDto> {
+    try {
+      unwrapOrThrow(
+        await this.passwordDependencies.passwordReset.reset({
+          token: dto.token,
+          email: dto.email,
+          code: dto.code,
+          newPassword: dto.newPassword,
+        }),
+      );
+      return { passwordReset: true };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.resetPassword');
+      throw error;
+    }
+  }
+
+  /**
+   * Changes the caller's password. Requires the current one, which is what makes a separate
+   * step-up mechanism unnecessary. Every *other* session ends; this one survives.
+   */
+  @RateLimit(ThrottleBuckets.AuthIp)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Patch('password')
+  @ApiOperation({ summary: 'Change the password, signing out every other device' })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Wrong current password' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Weak new password' })
+  async changePassword(
+    @Body() dto: ChangePasswordDto,
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(
+        await this.passwordDependencies.passwordChange.change(
+          authenticated.userId,
+          authenticated.sessionId,
+          dto.currentPassword,
+          dto.newPassword,
+        ),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.changePassword');
+      throw error;
+    }
+  }
+
+  /**
+   * Returns the caller's own profile. The local row already exists — SessionAuthGuard
+   * resolved and validated it before this handler ever runs.
    */
   @Get('me')
   @ApiOperation({ summary: "Get the current user's profile" })
@@ -37,5 +256,327 @@ export class AuthController {
       this.logger.error({ err: error }, 'Exception occurred in AuthController.me');
       throw error;
     }
+  }
+
+  /**
+   * Verifies a password and, depending on the account, either signs the device in or hands
+   * back an intermediate token: `mfa` when a second factor is already enrolled, `enrolment`
+   * when staff policy requires one that has not been set up yet.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.OK)
+  @Post('login')
+  @ApiOperation({ summary: 'Sign in with an email and password' })
+  @ApiResponse({ status: HttpStatus.OK, type: LoginResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Wrong password or unknown email' })
+  @ApiResponse({ status: HttpStatus.FORBIDDEN, description: 'Disabled or unverified account' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Missing X-Device-Id' })
+  async login(@Body() dto: LoginDto, @Req() request: Request): Promise<LoginResponseDto> {
+    try {
+      const deviceId = AuthController.requireDeviceId(request);
+      const result = unwrapOrThrow(
+        await this.signInDependencies.login.login(
+          dto,
+          deviceId,
+          AuthController.userAgent(request),
+          request.ip ?? null,
+        ),
+      );
+      return AuthMapper.toLoginResponse(result);
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.login');
+      throw error;
+    }
+  }
+
+  /**
+   * Completes a login that returned `kind: 'mfa'`: exchanges the `mfaToken` plus a TOTP code
+   * or a recovery code for a session.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.OK)
+  @Post('login/mfa')
+  @ApiOperation({ summary: 'Complete a login with a second factor' })
+  @ApiResponse({ status: HttpStatus.OK, type: LoginResponseDto })
+  @ApiResponse({
+    status: HttpStatus.UNAUTHORIZED,
+    description: 'Invalid token, code or recovery code',
+  })
+  @ApiResponse({ status: HttpStatus.TOO_MANY_REQUESTS, description: 'Too many wrong codes' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Missing X-Device-Id' })
+  async verifyMfa(@Body() dto: MfaVerifyDto, @Req() request: Request): Promise<LoginResponseDto> {
+    try {
+      const deviceId = AuthController.requireDeviceId(request);
+      const session = unwrapOrThrow(
+        await this.signInDependencies.mfa.verifyLogin(
+          dto.mfaToken,
+          { code: dto.code, recoveryCode: dto.recoveryCode },
+          deviceId,
+          AuthController.userAgent(request),
+          request.ip ?? null,
+        ),
+      );
+      return AuthMapper.toSessionResponse(session);
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.verifyMfa');
+      throw error;
+    }
+  }
+
+  /**
+   * Rotates a refresh token for a new access token.
+   *
+   * Client contract: persist only the `refreshToken` this call returns, and only when it
+   * differs from the one you sent — presenting the *same* token again if two refreshes ever
+   * race is expected and returns the previous generation's token unchanged (see
+   * `SessionService.refresh`); persisting that echoed value over a token another request
+   * already rotated away from signs you out at the next refresh.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp, ThrottleBuckets.AuthAccount)
+  @HttpCode(HttpStatus.OK)
+  @Post('refresh')
+  @ApiOperation({ summary: 'Rotate a refresh token for a new access token' })
+  @ApiResponse({ status: HttpStatus.OK, type: LoginResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Unusable refresh token' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Missing X-Device-Id' })
+  async refresh(@Body() dto: RefreshDto, @Req() request: Request): Promise<LoginResponseDto> {
+    try {
+      const deviceId = AuthController.requireDeviceId(request);
+      const session = unwrapOrThrow(
+        await this.sessionService.refresh(
+          dto.refreshToken,
+          deviceId,
+          AuthController.userAgent(request),
+          request.ip ?? null,
+        ),
+      );
+      return AuthMapper.toSessionResponse(session);
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.refresh');
+      throw error;
+    }
+  }
+
+  /**
+   * Issues a TOTP secret against the `enrolmentToken` that `POST /auth/login` hands to a staff
+   * account which must enrol before it can sign in.
+   *
+   * `@Public()`, and necessarily so: the caller has no session — being unable to obtain one
+   * without a second factor is precisely why they are here. The enrolment token is the
+   * credential, it is bound to the same device as the login that produced it, and it lives five
+   * minutes.
+   *
+   * Calling this again replaces an unconfirmed secret, which is what a caller who lost the QR
+   * code before scanning it needs. It cannot overwrite a *confirmed* factor by itself —
+   * `login` only issues an enrolment token to an account that has none enabled.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp)
+  @HttpCode(HttpStatus.OK)
+  @Post('mfa/setup')
+  @ApiOperation({ summary: 'Begin second-factor enrolment' })
+  @ApiResponse({ status: HttpStatus.OK, type: MfaSetupResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Invalid or expired token' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Missing X-Device-Id' })
+  async mfaSetup(@Body() dto: MfaSetupDto, @Req() request: Request): Promise<MfaSetupResponseDto> {
+    try {
+      const deviceId = AuthController.requireDeviceId(request);
+      return unwrapOrThrow(
+        await this.signInDependencies.mfa.setupForEnrolment(dto.enrolmentToken, deviceId),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaSetup');
+      throw error;
+    }
+  }
+
+  /**
+   * Confirms the secret `mfa/setup` issued and turns the factor on, returning the ten recovery
+   * codes. This is the only time they are readable — only their hashes are stored.
+   *
+   * The caller signs in again afterwards: this deliberately does not issue a session. Enrolling
+   * proves possession of the factor, not of the password, and the password was verified in a
+   * login whose token expires in five minutes. Handing back a session here would make enrolment
+   * a second way to authenticate.
+   */
+  @Public()
+  @RateLimit(ThrottleBuckets.AuthIp)
+  @HttpCode(HttpStatus.OK)
+  @Post('mfa/enable')
+  @ApiOperation({ summary: 'Confirm second-factor enrolment and collect recovery codes' })
+  @ApiResponse({ status: HttpStatus.OK, type: MfaEnableResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Invalid token or code' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Setup has not run yet' })
+  async mfaEnable(
+    @Body() dto: MfaEnableDto,
+    @Req() request: Request,
+  ): Promise<MfaEnableResponseDto> {
+    try {
+      const deviceId = AuthController.requireDeviceId(request);
+      const result = unwrapOrThrow(
+        await this.signInDependencies.mfa.enableForEnrolment(
+          dto.enrolmentToken,
+          deviceId,
+          dto.code,
+        ),
+      );
+      return { recoveryCodes: [...result.recoveryCodes] };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaEnable');
+      throw error;
+    }
+  }
+
+  /**
+   * Turns the caller's second factor off. Bearer, not an enrolment token: you must be signed in
+   * to give up a factor you already hold.
+   *
+   * Refused for staff while `staffMfaRequired` is set — `MfaService.disable` owns that rule, so
+   * turning the setting off is the only way to lift it.
+   */
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post('mfa/disable')
+  @ApiOperation({ summary: 'Turn off the second factor' })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Wrong password or code' })
+  @ApiResponse({ status: HttpStatus.FORBIDDEN, description: 'Staff may not disable it' })
+  async mfaDisable(
+    @Body() dto: MfaDisableDto,
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(
+        await this.signInDependencies.mfa.disableForUser(
+          authenticated.userId,
+          dto.password,
+          dto.code,
+        ),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.mfaDisable');
+      throw error;
+    }
+  }
+
+  /**
+   * Ends the session the caller is using right now. Idempotent — see `SessionService.revoke`.
+   */
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post('logout')
+  @ApiOperation({ summary: 'End the current session' })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED })
+  async logout(@CurrentUser() user: AuthenticatedUser | undefined): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(
+        await this.sessionService.revoke(
+          authenticated.sessionId,
+          AuthEventsService.actorFrom(authenticated),
+        ),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.logout');
+      throw error;
+    }
+  }
+
+  /**
+   * Ends every live session the caller has — including the one making this request.
+   * `SessionService.revokeAll` makes no exception for the calling session ("ends every live
+   * session a user has"), and this route does not add one: it is a full sign-out everywhere,
+   * not "everywhere but here". The reported count is whatever the service actually revoked.
+   */
+  @HttpCode(HttpStatus.OK)
+  @Post('logout-all')
+  @ApiOperation({ summary: 'End every session for the caller, including this one' })
+  @ApiResponse({ status: HttpStatus.OK, type: LogoutAllResponseDto })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED })
+  async logoutAll(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<LogoutAllResponseDto> {
+    try {
+      const authenticated = AuthController.require(user);
+      const revoked = unwrapOrThrow(
+        await this.sessionService.revokeAll(
+          authenticated.userId,
+          AuthEventsService.actorFrom(authenticated),
+        ),
+      );
+      return { revoked };
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.logoutAll');
+      throw error;
+    }
+  }
+
+  /**
+   * The caller's own live sessions, newest first — "where am I signed in".
+   */
+  @Get('sessions')
+  @ApiOperation({ summary: "List the caller's live sessions" })
+  @ApiResponse({ status: HttpStatus.OK, type: [SessionSummaryDto] })
+  @ApiResponse({ status: HttpStatus.UNAUTHORIZED })
+  async listSessions(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+  ): Promise<SessionSummaryDto[]> {
+    try {
+      const authenticated = AuthController.require(user);
+      const sessions = unwrapOrThrow(await this.sessionService.listForUser(authenticated.userId));
+      return sessions.map((session) =>
+        AuthMapper.toSessionSummary(session, authenticated.sessionId),
+      );
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in AuthController.listSessions');
+      throw error;
+    }
+  }
+
+  /**
+   * Ends one session the caller owns. A session that does not exist, or exists but belongs to
+   * someone else, answers 404 either way — see `SessionService.revokeOwned`.
+   */
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Delete('sessions/:id')
+  @ApiOperation({ summary: "End one of the caller's own sessions" })
+  @ApiResponse({ status: HttpStatus.NO_CONTENT })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND })
+  async deleteSession(
+    @CurrentUser() user: AuthenticatedUser | undefined,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
+    try {
+      const authenticated = AuthController.require(user);
+      unwrapOrThrow(await this.sessionService.revokeOwned(authenticated.userId, id));
+    } catch (error) {
+      this.logger.error(
+        { err: error, sessionId: id },
+        'Exception occurred in AuthController.deleteSession',
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * `@CurrentUser()` is undefined only on `@Public()` routes; none of the session routes are,
+   * so this is a guard-order safety net rather than an expected path.
+   */
+  private static require(user: AuthenticatedUser | undefined): AuthenticatedUser {
+    if (!user) {
+      throw new UnauthorizedException(ErrorMessages.MissingAccessToken);
+    }
+    return user;
+  }
+
+  private static requireDeviceId(request: Request): string {
+    return requireDeviceId(request);
+  }
+
+  private static userAgent(request: Request): string | null {
+    return userAgentOf(request);
   }
 }

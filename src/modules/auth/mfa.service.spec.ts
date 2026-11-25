@@ -1,0 +1,1154 @@
+import { HttpStatus } from '@nestjs/common';
+import { AuthEventsService } from './auth-events.service';
+import { PinoLogger } from 'nestjs-pino';
+import { createMockLogger } from '../../../test/support/mocks';
+import { ErrorMessages } from '../../common/constants/error-messages.constants';
+import { Language, User, UserRole } from '../../infra/prisma/prisma-client';
+import { AuthConstants, AuthMessages } from './auth.constants';
+import { AuthRepository } from './auth.repository';
+import { MfaCryptoSupport, MfaService } from './mfa.service';
+import {
+  AUTH_SETTINGS_DEFAULTS,
+  AuthSettingsService,
+  ResolvedAuthSettings,
+} from './settings/auth-settings.service';
+import { SessionService } from './sessions/session.service';
+import { AccessTokenService } from './tokens/access-token.service';
+
+const NOW = new Date('2026-09-03T00:00:00.000Z');
+
+const userRow = (overrides: Partial<User> = {}): User => ({
+  id: 'user-1',
+  email: 'customer@example.com',
+  phone: null,
+  fullName: 'Rahim Uddin',
+  // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a fixture hash, not a credential
+  passwordHash: 'scrypt$32768$8$3$c2FsdA==$aGFzaA==',
+  emailVerifiedAt: new Date('2026-01-01T00:00:00.000Z'),
+  phoneVerifiedAt: null,
+  passwordChangedAt: null,
+  totpSecretEncrypted: 'sealed-secret',
+  totpEnabledAt: new Date('2026-01-01T00:00:00.000Z'),
+  totpLastUsedStep: 10,
+  totpFailedAttempts: 0,
+  totpFirstFailedAt: null,
+  totpLockedUntil: null,
+  role: UserRole.CUSTOMER,
+  preferredLanguage: Language.BN,
+  isActive: true,
+  lastSeenAt: null,
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+  ...overrides,
+});
+
+const settingsRow = (overrides: Partial<ResolvedAuthSettings> = {}): ResolvedAuthSettings => ({
+  ...AUTH_SETTINGS_DEFAULTS,
+  ...overrides,
+});
+
+const DEVICE_ID = 'device-1';
+
+describe('MfaService', () => {
+  let repository: {
+    findById: jest.Mock;
+    saveTotpSecret: jest.Mock;
+    enableTotp: jest.Mock;
+    disableTotp: jest.Mock;
+    recordTotpFailure: jest.Mock;
+    resetTotpState: jest.Mock;
+    findUnusedRecoveryCode: jest.Mock;
+    burnRecoveryCode: jest.Mock;
+  };
+  let crypto: {
+    cipher: { encrypt: jest.Mock; decrypt: jest.Mock };
+    totp: { generateSecret: jest.Mock; buildUri: jest.Mock; verify: jest.Mock };
+    hasher: { verify: jest.Mock };
+  };
+  let tokens: { verify: jest.Mock };
+  let sessions: { issue: jest.Mock };
+  let settings: { current: jest.Mock };
+  let events: {
+    recordLogin: jest.Mock;
+    recordNewDevice: jest.Mock;
+    recordLoginFailed: jest.Mock;
+    recordMfaFailed: jest.Mock;
+    recordLogout: jest.Mock;
+    recordSessionRevoked: jest.Mock;
+  };
+  let logger: jest.Mocked<PinoLogger>;
+  let service: MfaService;
+
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
+
+    repository = {
+      findById: jest.fn(),
+      saveTotpSecret: jest.fn(),
+      enableTotp: jest.fn(),
+      disableTotp: jest.fn(),
+      recordTotpFailure: jest.fn(),
+      resetTotpState: jest.fn(),
+      findUnusedRecoveryCode: jest.fn(),
+      burnRecoveryCode: jest.fn(),
+    };
+    crypto = {
+      cipher: {
+        encrypt: jest.fn().mockReturnValue('sealed-secret'),
+        decrypt: jest.fn().mockReturnValue('plain-secret'),
+      },
+      totp: {
+        generateSecret: jest.fn().mockReturnValue('plain-secret'),
+        buildUri: jest.fn().mockReturnValue('otpauth://totp/...'),
+        verify: jest.fn().mockReturnValue({ ok: true, step: 11 }),
+      },
+      hasher: { verify: jest.fn().mockResolvedValue(true) },
+    };
+    tokens = {
+      verify: jest.fn().mockResolvedValue({
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'customer@example.com',
+          type: 'mfa',
+          credentialStamp: 0,
+        },
+      }),
+    };
+    sessions = {
+      issue: jest.fn().mockResolvedValue({
+        ok: true,
+        data: {
+          accessToken: 'access',
+          expiresAt: new Date(),
+          refreshToken: 'refresh',
+          refreshExpiresAt: new Date(),
+          user: userRow(),
+        },
+      }),
+    };
+    settings = { current: jest.fn().mockResolvedValue(settingsRow()) };
+    events = {
+      recordLogin: jest.fn().mockResolvedValue(undefined),
+      recordNewDevice: jest.fn().mockResolvedValue(undefined),
+      recordLoginFailed: jest.fn().mockResolvedValue(undefined),
+      recordMfaFailed: jest.fn().mockResolvedValue(undefined),
+      recordLogout: jest.fn().mockResolvedValue(undefined),
+      recordSessionRevoked: jest.fn().mockResolvedValue(undefined),
+    };
+    logger = createMockLogger();
+
+    service = new MfaService(
+      repository as unknown as AuthRepository,
+      crypto as unknown as MfaCryptoSupport,
+      tokens as unknown as AccessTokenService,
+      sessions as unknown as SessionService,
+      settings as unknown as AuthSettingsService,
+      events as unknown as AuthEventsService,
+      logger,
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  describe('setup', () => {
+    it('generates, encrypts and stores a new secret', async () => {
+      repository.saveTotpSecret.mockResolvedValue(userRow());
+
+      const result = await service.setup(userRow());
+
+      expect(result).toEqual({
+        ok: true,
+        data: { secret: 'plain-secret', otpauthUri: 'otpauth://totp/...' },
+      });
+      expect(crypto.cipher.encrypt).toHaveBeenCalledWith('plain-secret');
+      expect(repository.saveTotpSecret).toHaveBeenCalledWith('user-1', 'sealed-secret');
+    });
+
+    it('reports 503 when the write fails', async () => {
+      repository.saveTotpSecret.mockResolvedValue(null);
+
+      const result = await service.setup(userRow());
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: ErrorMessages.ServiceUnavailable,
+      });
+    });
+
+    it('never logs the generated secret', async () => {
+      repository.saveTotpSecret.mockRejectedValue(new Error('boom'));
+
+      await service.setup(userRow());
+
+      const logged = JSON.stringify(logger.error.mock.calls);
+      expect(logged).not.toContain('plain-secret');
+    });
+  });
+
+  describe('enable', () => {
+    it('confirms the secret and returns ten recovery codes', async () => {
+      repository.enableTotp.mockResolvedValue(userRow({ totpEnabledAt: new Date() }));
+
+      const result = await service.enable(userRow(), '123456');
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.recoveryCodes).toHaveLength(AuthConstants.TotpRecoveryCodeCount);
+        expect(new Set(result.data.recoveryCodes).size).toBe(AuthConstants.TotpRecoveryCodeCount);
+      }
+      expect(repository.enableTotp).toHaveBeenCalledWith('user-1', null, 11, expect.any(Array));
+    });
+
+    it('guards the enable on the passwordChangedAt the user was read with', async () => {
+      repository.enableTotp.mockResolvedValue(userRow({ totpEnabledAt: new Date() }));
+      const changedAt = new Date('2026-10-01T09:00:00.000Z');
+
+      await service.enable(userRow({ passwordChangedAt: changedAt }), '123456');
+
+      expect(repository.enableTotp).toHaveBeenCalledWith(
+        'user-1',
+        new Date('2026-10-01T09:00:00.000Z'),
+        11,
+        expect.any(Array),
+      );
+    });
+
+    it('answers 401 with the sign-in message, handing back no codes, when the password changed before the write', async () => {
+      repository.enableTotp.mockResolvedValue(undefined);
+
+      const result = await service.enable(userRow(), '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+    });
+
+    it('answers 503 when the enable write faults', async () => {
+      repository.enableTotp.mockResolvedValue(null);
+
+      const result = await service.enable(userRow(), '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is temporarily unavailable. Please try again shortly.',
+      });
+    });
+
+    it('rejects when no secret has been set up', async () => {
+      crypto.cipher.decrypt.mockReturnValue(null);
+
+      const result = await service.enable(userRow({ totpSecretEncrypted: null }), '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.BAD_REQUEST,
+        message: AuthMessages.MfaSetupRequired,
+      });
+    });
+
+    it('rejects a wrong code without enabling', async () => {
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      const result = await service.enable(userRow(), '000000');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidMfaCode,
+      });
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('verifyLogin', () => {
+    it('issues a session for a correct code', async () => {
+      repository.findById.mockResolvedValue(userRow());
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        'ua',
+        '203.0.113.7',
+      );
+
+      expect(result.ok).toBe(true);
+      expect(sessions.issue).toHaveBeenCalledWith(userRow(), DEVICE_ID, 'ua', '203.0.113.7');
+      expect(repository.resetTotpState).toHaveBeenCalledWith('user-1', 11);
+    });
+
+    it('records a wrong second factor, which is a stronger signal than a wrong password', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      crypto.totp.verify.mockReturnValue({ ok: false });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, 'ua', '203.0.113.7');
+
+      expect(events.recordMfaFailed).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-1' }),
+        expect.objectContaining({ deviceId: DEVICE_ID, userAgent: 'ua', ip: '203.0.113.7' }),
+      );
+    });
+
+    it('records nothing when the code was right', async () => {
+      repository.findById.mockResolvedValue(userRow());
+
+      await service.verifyLogin('mfa-token', { code: '123456' }, DEVICE_ID, 'ua', null);
+
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
+    });
+
+    it('refuses a stale credential stamp, issuing no session', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ passwordChangedAt: new Date('2026-05-01T00:00:00.000Z') }),
+      );
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(sessions.issue).not.toHaveBeenCalled();
+      expect(crypto.totp.verify).not.toHaveBeenCalled();
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
+      expect(repository.resetTotpState).not.toHaveBeenCalled();
+      expect(repository.recordTotpFailure).not.toHaveBeenCalled();
+    });
+
+    it('refuses a stale or missing stamp before any second-factor work, for either credential', async () => {
+      const staleUser = userRow({ passwordChangedAt: new Date('2026-05-01T00:00:00.000Z') });
+      const noStamp = {
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'c@example.com',
+          type: 'mfa',
+        },
+      };
+      // A wrong code and a live recovery code: had the second factor run first, the one would
+      // record an MFA failure and the other would burn the code.
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+      repository.findUnusedRecoveryCode.mockResolvedValue({ id: 'code-1' });
+
+      repository.findById.mockResolvedValue(staleUser);
+      const staleCode = await service.verifyLogin('t', { code: '000000' }, DEVICE_ID, null, null);
+      const staleRecovery = await service.verifyLogin(
+        't',
+        { recoveryCode: 'abc123' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+      tokens.verify.mockResolvedValue(noStamp);
+      repository.findById.mockResolvedValue(userRow());
+      const missingCode = await service.verifyLogin('t', { code: '000000' }, DEVICE_ID, null, null);
+      const missingRecovery = await service.verifyLogin(
+        't',
+        { recoveryCode: 'abc123' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      const expected = {
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      };
+      expect([staleCode, staleRecovery, missingCode, missingRecovery]).toEqual([
+        expected,
+        expected,
+        expected,
+        expected,
+      ]);
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
+      expect(crypto.totp.verify).not.toHaveBeenCalled();
+      expect(repository.findUnusedRecoveryCode).not.toHaveBeenCalled();
+      expect(repository.burnRecoveryCode).not.toHaveBeenCalled();
+      expect(repository.recordTotpFailure).not.toHaveBeenCalled();
+      expect(sessions.issue).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the stamp equals the current passwordChangedAt epoch', async () => {
+      const changedAt = new Date('2026-05-01T00:00:00.000Z');
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'c@example.com',
+          type: 'mfa',
+          credentialStamp: changedAt.getTime(),
+        },
+      });
+      repository.findById.mockResolvedValue(userRow({ passwordChangedAt: changedAt }));
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses a token with no credential stamp, as one from before the stamp existed', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: {
+          userId: 'user-1',
+          sessionId: '',
+          role: UserRole.CUSTOMER,
+          email: 'c@example.com',
+          type: 'mfa',
+        },
+      });
+      repository.findById.mockResolvedValue(userRow());
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(sessions.issue).not.toHaveBeenCalled();
+      expect(crypto.totp.verify).not.toHaveBeenCalled();
+      expect(events.recordMfaFailed).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid or expired mfa token', async () => {
+      tokens.verify.mockResolvedValue({ ok: false });
+
+      const result = await service.verifyLogin(
+        'bad-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidCredentials,
+      });
+      expect(sessions.issue).not.toHaveBeenCalled();
+    });
+
+    it('rejects a token verified as "access" rather than "mfa"', async () => {
+      // AccessTokenService.verify already refuses to return claims for the wrong `typ`; this
+      // asserts MfaService relies on exactly that call rather than skipping it.
+      await service.verifyLogin('some-token', { code: '123456' }, DEVICE_ID, null, null);
+
+      expect(tokens.verify).toHaveBeenCalledWith('some-token', DEVICE_ID, 'mfa');
+    });
+
+    it('rejects a wrong code, incrementing the failure counter', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ totpFailedAttempts: 1, totpFirstFailedAt: new Date(Date.now() - 60_000) }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '000000' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidMfaCode,
+      });
+      expect(repository.recordTotpFailure).toHaveBeenCalledWith(
+        'user-1',
+        2,
+        null,
+        expect.any(Date),
+      );
+      expect(sessions.issue).not.toHaveBeenCalled();
+    });
+
+    it('locks the account once the failure count reaches the ceiling', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({
+          totpFailedAttempts: AuthConstants.TotpMaxFailedAttempts - 1,
+          totpFirstFailedAt: new Date(Date.now() - 60_000),
+        }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, null, null);
+
+      expect(repository.recordTotpFailure).toHaveBeenCalledWith(
+        'user-1',
+        AuthConstants.TotpMaxFailedAttempts,
+        expect.any(Date),
+        expect.any(Date),
+      );
+    });
+
+    it('starts a fresh run when the earlier failures are older than the window', async () => {
+      // The rule is "five within an hour", not "five ever". Without this, five fumbles
+      // spread across months would lock an account nobody was attacking.
+      const longAgo = new Date(
+        Date.now() -
+          (AuthConstants.TotpFailureWindowMinutes + 1) * AuthConstants.MillisecondsPerMinute,
+      );
+      repository.findById.mockResolvedValue(
+        userRow({
+          totpFailedAttempts: AuthConstants.TotpMaxFailedAttempts - 1,
+          totpFirstFailedAt: longAgo,
+        }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, null, null);
+
+      const [, attempts, lockedUntil, firstFailedAt] = repository.recordTotpFailure.mock
+        .calls[0] as [string, number, Date | null, Date | null];
+
+      expect(attempts).toBe(1);
+      expect(lockedUntil).toBeNull();
+      expect(firstFailedAt).not.toEqual(longAgo);
+    });
+
+    it('counts failures that fall inside the window', async () => {
+      const recently = new Date(
+        Date.now() -
+          (AuthConstants.TotpFailureWindowMinutes - 1) * AuthConstants.MillisecondsPerMinute,
+      );
+      repository.findById.mockResolvedValue(
+        userRow({ totpFailedAttempts: 2, totpFirstFailedAt: recently }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, null, null);
+
+      // The run keeps its original start, so the window does not slide forward with each
+      // failure — otherwise a slow drip of wrong codes would never expire.
+      expect(repository.recordTotpFailure).toHaveBeenCalledWith('user-1', 3, null, recently);
+    });
+
+    it('starts a fresh run after a lockout has been served', async () => {
+      // Otherwise the first attempt after serving fifteen minutes re-locks immediately, and
+      // one bad evening becomes a cycle nobody can get out of.
+      repository.findById.mockResolvedValue(
+        userRow({
+          totpFailedAttempts: AuthConstants.TotpMaxFailedAttempts,
+          totpFirstFailedAt: new Date(Date.now() - 60_000),
+          totpLockedUntil: new Date(Date.now() - 1_000),
+        }),
+      );
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      await service.verifyLogin('mfa-token', { code: '000000' }, DEVICE_ID, null, null);
+
+      expect(repository.recordTotpFailure).toHaveBeenCalledWith(
+        'user-1',
+        1,
+        null,
+        expect.any(Date),
+      );
+    });
+
+    it('blocks verification while locked out, without checking the code at all', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ totpLockedUntil: new Date(NOW.getTime() + 60_000) }),
+      );
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.TOO_MANY_REQUESTS,
+        message: AuthMessages.MfaLocked,
+      });
+      expect(crypto.totp.verify).not.toHaveBeenCalled();
+      expect(sessions.issue).not.toHaveBeenCalled();
+    });
+
+    it('allows verification again once the lockout has expired', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ totpLockedUntil: new Date(NOW.getTime() - 1) }),
+      );
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('accepts a valid recovery code and burns it', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      repository.findUnusedRecoveryCode.mockResolvedValue({ id: 'code-1' });
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { recoveryCode: 'abc123' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(repository.burnRecoveryCode).toHaveBeenCalledWith('code-1');
+    });
+
+    it('rejects an already-used or unknown recovery code', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      repository.findUnusedRecoveryCode.mockResolvedValue(undefined);
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { recoveryCode: 'not-a-real-code' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidMfaCode,
+      });
+      expect(repository.burnRecoveryCode).not.toHaveBeenCalled();
+    });
+
+    it('reports 503 when the user lookup fails', async () => {
+      repository.findById.mockResolvedValue(null);
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: ErrorMessages.ServiceUnavailable,
+      });
+    });
+
+    it('rejects a user with no TOTP secret configured', async () => {
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+
+      const result = await service.verifyLogin(
+        'mfa-token',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidCredentials,
+      });
+    });
+
+    it('never logs the presented code', async () => {
+      repository.findById.mockRejectedValue(new Error('boom'));
+
+      await service.verifyLogin('mfa-token', { code: '999999' }, DEVICE_ID, null, null);
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('999999');
+    });
+  });
+
+  describe('disable', () => {
+    it('turns MFA off for a customer with the right password and code', async () => {
+      repository.disableTotp.mockResolvedValue(userRow({ totpEnabledAt: null }));
+
+      const result = await service.disable(userRow(), 'correct password', '123456');
+
+      expect(result).toEqual({ ok: true, data: undefined });
+      expect(repository.disableTotp).toHaveBeenCalledWith('user-1');
+    });
+
+    it('rejects a wrong password before checking anything else', async () => {
+      crypto.hasher.verify.mockResolvedValue(false);
+
+      const result = await service.disable(userRow(), 'wrong password', '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidCredentials,
+      });
+      expect(repository.disableTotp).not.toHaveBeenCalled();
+    });
+
+    it('refuses to disable for staff while staffMfaRequired is set', async () => {
+      settings.current.mockResolvedValue(settingsRow({ staffMfaRequired: true }));
+
+      const result = await service.disable(
+        userRow({ role: UserRole.OPS }),
+        'correct password',
+        '123456',
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.FORBIDDEN,
+        message: AuthMessages.MfaCannotBeDisabledForStaff,
+      });
+      expect(repository.disableTotp).not.toHaveBeenCalled();
+    });
+
+    it('allows staff to disable once staffMfaRequired is turned off', async () => {
+      settings.current.mockResolvedValue(settingsRow({ staffMfaRequired: false }));
+      repository.disableTotp.mockResolvedValue(
+        userRow({ role: UserRole.OPS, totpEnabledAt: null }),
+      );
+
+      const result = await service.disable(
+        userRow({ role: UserRole.OPS }),
+        'correct password',
+        '123456',
+      );
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('rejects a wrong TOTP code', async () => {
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      const result = await service.disable(userRow(), 'correct password', '000000');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: AuthMessages.InvalidMfaCode,
+      });
+      expect(repository.disableTotp).not.toHaveBeenCalled();
+    });
+
+    it('never logs the password', async () => {
+      repository.disableTotp.mockRejectedValue(new Error('boom'));
+
+      await service.disable(userRow(), 'super-secret-password', '123456');
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('super-secret-password');
+    });
+  });
+
+  // The enrolment entry point. Without these three the flow has no way in: a staff account that
+  // `staffMfaRequired` applies to gets an `enrolmentToken` from login and, holding no session,
+  // nothing to spend it on.
+  describe('setupForEnrolment', () => {
+    const enrolmentClaims = {
+      ok: true,
+      claims: {
+        userId: 'user-1',
+        sessionId: '',
+        role: UserRole.OPS,
+        email: 'ops@barakahbazaar.com.bd',
+        type: 'enrolment',
+        credentialStamp: 0,
+      },
+    };
+
+    it('verifies the token as "enrolment", never as "access" or "mfa"', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+      repository.saveTotpSecret.mockResolvedValue(userRow());
+
+      await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(tokens.verify).toHaveBeenCalledWith('enrol-token', DEVICE_ID, 'enrolment');
+    });
+
+    it('issues a secret for an account that has none yet — the whole point of enrolment', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+      repository.saveTotpSecret.mockResolvedValue(userRow());
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result).toEqual({
+        ok: true,
+        data: { secret: 'plain-secret', otpauthUri: 'otpauth://totp/...' },
+      });
+    });
+
+    it('rejects a token that does not verify', async () => {
+      tokens.verify.mockResolvedValue({ ok: false });
+
+      const result = await service.setupForEnrolment('forged', DEVICE_ID);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(repository.saveTotpSecret).not.toHaveBeenCalled();
+    });
+
+    it('refuses a stale or missing credential stamp', async () => {
+      repository.findById.mockResolvedValue(userRow({ passwordChangedAt: new Date(5) }));
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      const stale = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: undefined },
+      });
+      repository.findById.mockResolvedValue(userRow());
+      const missing = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      const expected = {
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      };
+      expect(stale).toEqual(expected);
+      expect(missing).toEqual(expected);
+      expect(repository.saveTotpSecret).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the stamp equals the current passwordChangedAt epoch', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
+      });
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: null, passwordChangedAt: new Date(5) }),
+      );
+      repository.saveTotpSecret.mockResolvedValue(userRow());
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('answers 401 for an account that has since been deleted', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(undefined);
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+    });
+
+    it('answers 503, not 401, when the lookup itself failed', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(null);
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.SERVICE_UNAVAILABLE });
+    });
+
+    it('never logs the enrolment token', async () => {
+      tokens.verify.mockRejectedValue(new Error('boom'));
+
+      await service.setupForEnrolment('enrol-token-secret-value', DEVICE_ID);
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('enrol-token-secret-value');
+    });
+  });
+
+  describe('enableForEnrolment', () => {
+    const enrolmentClaims = {
+      ok: true,
+      claims: {
+        userId: 'user-1',
+        sessionId: '',
+        role: UserRole.OPS,
+        email: 'ops@barakahbazaar.com.bd',
+        type: 'enrolment',
+        credentialStamp: 0,
+      },
+    };
+
+    it('confirms the factor and hands back ten recovery codes', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.enableTotp.mockResolvedValue(true);
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result.ok).toBe(true);
+      expect(
+        (result as { data: { recoveryCodes: readonly string[] } }).data.recoveryCodes,
+      ).toHaveLength(10);
+    });
+
+    it('verifies the token as "enrolment"', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.enableTotp.mockResolvedValue(true);
+
+      await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(tokens.verify).toHaveBeenCalledWith('enrol-token', DEVICE_ID, 'enrolment');
+    });
+
+    it('refuses a stale or missing credential stamp without enabling anything', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+      );
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      const stale = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: undefined },
+      });
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      const missing = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      const expected = {
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      };
+      expect(stale).toEqual(expected);
+      expect(missing).toEqual(expected);
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the stamp equals the current passwordChangedAt epoch', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
+      });
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+      );
+      repository.enableTotp.mockResolvedValue(true);
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('refuses, storing nothing, when a reset lands between the stamp check and the enable write', async () => {
+      tokens.verify.mockResolvedValue({
+        ok: true,
+        claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
+      });
+      // The resolver reads the row before the reset: its stamp matches the token.
+      repository.findById.mockResolvedValue(
+        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+      );
+      // By the write, the reset has stamped a newer passwordChangedAt on the live row.
+      const live = { passwordChangedAt: new Date(9) };
+      repository.enableTotp.mockImplementation((_userId: string, expected: Date | null) =>
+        Promise.resolve(
+          expected?.getTime() === live.passwordChangedAt.getTime()
+            ? userRow({ totpEnabledAt: new Date() })
+            : undefined,
+        ),
+      );
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Those sign-in details are not correct.',
+      });
+      expect(repository.enableTotp).toHaveBeenCalledWith(
+        'user-1',
+        new Date(5),
+        11,
+        expect.any(Array),
+      );
+    });
+
+    it('refuses a wrong code without enabling anything', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '000000');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+
+    it('refuses when setup has not run, so there is no secret to confirm', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.BAD_REQUEST });
+    });
+
+    it('rejects a token that does not verify', async () => {
+      tokens.verify.mockResolvedValue({ ok: false });
+
+      const result = await service.enableForEnrolment('forged', DEVICE_ID, '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+
+    it('never logs the presented code', async () => {
+      tokens.verify.mockRejectedValue(new Error('boom'));
+
+      await service.enableForEnrolment('enrol-token', DEVICE_ID, '424242');
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('424242');
+    });
+  });
+
+  describe('disableForUser', () => {
+    it('turns the factor off for the caller the guard authenticated', async () => {
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.disableTotp.mockResolvedValue(true);
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result.ok).toBe(true);
+      expect(repository.disableTotp).toHaveBeenCalledWith('user-1');
+    });
+
+    it('reads the row rather than trusting the caller for the role check', async () => {
+      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.disableTotp.mockResolvedValue(true);
+
+      await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(repository.findById).toHaveBeenCalledWith('user-1');
+    });
+
+    it('still refuses staff while staffMfaRequired is set', async () => {
+      repository.findById.mockResolvedValue(
+        userRow({ role: UserRole.OPS, totpSecretEncrypted: 'sealed-secret' }),
+      );
+      settings.current.mockResolvedValue(settingsRow({ staffMfaRequired: true }));
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.FORBIDDEN });
+      expect(repository.disableTotp).not.toHaveBeenCalled();
+    });
+
+    it('answers 503, not 401, when the lookup failed', async () => {
+      repository.findById.mockResolvedValue(null);
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.SERVICE_UNAVAILABLE });
+    });
+
+    it('answers 401 when the row is gone by the time this runs', async () => {
+      repository.findById.mockResolvedValue(undefined);
+
+      const result = await service.disableForUser('user-1', 'correct horse battery', '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+    });
+
+    it('never logs the password', async () => {
+      repository.findById.mockRejectedValue(new Error('boom'));
+
+      await service.disableForUser('user-1', 'super-secret-password', '123456');
+
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('super-secret-password');
+    });
+  });
+
+  // Pins a deliberate divergence from the spec as originally written, which required these two
+  // to answer identically. §4.6 was amended on 2026-09-06 to withdraw that: `POST /auth/login`
+  // already discloses a correct password by handing out an mfaToken at all, so merging these
+  // closes nothing, while answering a mistyped code with "Those sign-in details are not correct"
+  // tells the user something false. Without this test, a later reader comparing the code against
+  // an older copy of the spec would "fix" it straight back.
+  describe('the two verifyLogin failures are deliberately distinguishable', () => {
+    it('names the code when the code is wrong, and the credentials when the token is not', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+      const wrongCode = await service.verifyLogin(
+        'mfa-token',
+        { code: '000000' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      tokens.verify.mockResolvedValue({ ok: false });
+      const badToken = await service.verifyLogin(
+        'forged',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(wrongCode).toMatchObject({ message: 'That code is not valid.' });
+      expect(badToken).toMatchObject({ message: 'Those sign-in details are not correct.' });
+    });
+
+    it('still answers both with 401, so only the wording differs', async () => {
+      repository.findById.mockResolvedValue(userRow());
+      crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
+      const wrongCode = await service.verifyLogin(
+        'mfa-token',
+        { code: '000000' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      tokens.verify.mockResolvedValue({ ok: false });
+      const badToken = await service.verifyLogin(
+        'forged',
+        { code: '123456' },
+        DEVICE_ID,
+        null,
+        null,
+      );
+
+      expect(wrongCode).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+      expect(badToken).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+    });
+  });
+});

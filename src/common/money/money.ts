@@ -5,6 +5,20 @@ export const POYSHA_PER_TAKA = 100n;
 
 const GRAMS_PER_KILOGRAM = 1000n;
 const ROUNDING_HALF = 500n;
+const DECIMAL_STRING_PATTERN = /^(\d+)(?:\.(\d{1,2}))?$/;
+const POYSHA_DECIMAL_DIGITS = 2;
+
+/** What the money helpers throw on an input they refuse. Programmer errors, never API text. */
+export const MoneyErrorMessages = {
+  /** `fromTaka` was given NaN or an infinity. */
+  TakaNotFinite: 'Taka amount must be a finite number.',
+  /** `multiply` was given a fractional or negative quantity. */
+  QuantityNotNonNegativeInteger: 'Quantity must be a non-negative integer.',
+  /** `forWeight` was given a fractional or negative weight. */
+  WeightNotNonNegativeInteger: 'Weight in grams must be a non-negative integer.',
+  /** `toDecimalString` was given a negative amount, which has no wire form. */
+  NegativePoysha: 'Poysha amount must not be negative.',
+} as const;
 
 /**
  * Integer-only money helpers.
@@ -17,7 +31,7 @@ export const Money = {
   /** Converts a Taka amount (possibly fractional) to integer poysha. */
   fromTaka(taka: number): bigint {
     if (!Number.isFinite(taka)) {
-      throw new TypeError('Taka amount must be a finite number.');
+      throw new TypeError(MoneyErrorMessages.TakaNotFinite);
     }
     return BigInt(Math.round(taka * Number(POYSHA_PER_TAKA)));
   },
@@ -38,7 +52,7 @@ export const Money = {
   /** Multiplies a unit price by an integer quantity. */
   multiply(poysha: bigint, quantity: number): bigint {
     if (!Number.isInteger(quantity) || quantity < 0) {
-      throw new TypeError('Quantity must be a non-negative integer.');
+      throw new TypeError(MoneyErrorMessages.QuantityNotNonNegativeInteger);
     }
     return poysha * BigInt(quantity);
   },
@@ -54,10 +68,37 @@ export const Money = {
    */
   forWeight(pricePerKilogramPoysha: bigint, grams: number): bigint {
     if (!Number.isInteger(grams) || grams < 0) {
-      throw new TypeError('Weight in grams must be a non-negative integer.');
+      throw new TypeError(MoneyErrorMessages.WeightNotNonNegativeInteger);
     }
     const scaled = pricePerKilogramPoysha * BigInt(grams);
     return (scaled + ROUNDING_HALF) / GRAMS_PER_KILOGRAM;
+  },
+
+  /**
+   * Renders poysha as a plain two-decimal Taka string, e.g. `12345n` → `"123.45"`. Pure
+   * integer arithmetic, so it is exact at any size. For a gateway wire format, not for display.
+   */
+  toDecimalString(poysha: bigint): string {
+    if (poysha < 0n) {
+      throw new RangeError(MoneyErrorMessages.NegativePoysha);
+    }
+    const whole = poysha / POYSHA_PER_TAKA;
+    const fraction = poysha % POYSHA_PER_TAKA;
+    return `${whole}.${fraction.toString().padStart(POYSHA_DECIMAL_DIGITS, '0')}`;
+  },
+
+  /**
+   * Parses a plain decimal Taka string (digits, optionally a dot and one or two decimals) to
+   * poysha, or `null` for anything else. Pure string and integer arithmetic: no `Number`, no
+   * rounding, so `"12.345"` is refused rather than silently rounded.
+   */
+  fromDecimalString(value: string): bigint | null {
+    const match = DECIMAL_STRING_PATTERN.exec(value);
+    if (!match) {
+      return null;
+    }
+    const [, whole, fraction = ''] = match;
+    return BigInt(whole + fraction.padEnd(POYSHA_DECIMAL_DIGITS, '0'));
   },
 
   /** Formats poysha as a localized currency string, e.g. "৳1,250.50". */

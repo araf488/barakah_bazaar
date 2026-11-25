@@ -1,0 +1,70 @@
+@import 'tailwindcss';
+@import '@barakah/tokens/theme.css';
+
+/* Shared components live outside this app; Tailwind only scans the app directory by default. */
+@source '../../../packages/ui/src';
+
+/*
+ * next/font serves each face under a hashed family name, exposed as a `--bb-face-*` variable on
+ * <html> (app/fonts.ts). These point the design's three font roles at those faces. Bengali is
+ * second in every stack so Bangla text and the taka sign render in Hind Siliguri while Latin
+ * text keeps Fraunces or Outfit.
+ */
+@theme inline {
+  --font-display: var(--bb-face-display), var(--bb-face-bengali), Georgia, serif;
+  --font-sans: var(--bb-face-body), var(--bb-face-bengali), system-ui, sans-serif;
+  --font-bengali: var(--bb-face-bengali), var(--bb-face-body), system-ui, sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-cream);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Tailwind v4 resets buttons to the default cursor; every enabled control should say it acts. */
+  a[href],
+  button:not(:disabled),
+  summary,
+  label[for],
+  select:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+
+  :disabled,
+  [aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+
+  /* One focus ring for the whole storefront, in the brand green (12:1 on white). Dark surfaces
+     switch it to gold. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+}
+
+/*
+ * The design leans on motion (a looping marquee, floating hero cards, slide-ins). Visitors who
+ * ask their OS for less motion get each animation's end state at once instead.
+ */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -19,11 +19,16 @@ export const setupSwagger = (app: INestApplication, path: string): void => {
         type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT',
-        description: 'Supabase Auth access token',
+        description: 'Access token from POST /auth/login or /auth/refresh',
       })
       .addTag('Health', 'Liveness and readiness probes')
       .addTag('Auth', 'Session exchange and the current user')
       .addTag('Catalog', 'Public browsing of categories and products')
+      .addTag('Geo', 'Bangladesh division, district, upazila/thana and area lookups')
+      .addTag('Users', 'The current customer: profile and delivery addresses')
+      .addTag('Cart', "The signed-in customer's basket")
+      .addTag('Orders', 'Checkout and order history')
+      .addTag('Admin', 'Backoffice: audit trail, catalog and staff management')
       .build(),
   );
 

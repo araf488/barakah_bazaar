@@ -1,25 +1,40 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
+import { AuthThrottlerGuard } from './common/guards/auth-throttler.guard';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { RolesGuard } from './common/guards/roles.guard';
-import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
+import { SessionAuthGuard } from './common/guards/session-auth.guard';
 import { Env, validateEnv } from './config';
 import { buildLoggerParams } from './config/logger.config';
+import { buildThrottlerOptions } from './config/throttler.config';
 import { PrismaModule } from './infra/prisma/prisma.module';
 import { QueueModule } from './infra/redis/queue.module';
 import { SupabaseModule } from './infra/supabase/supabase.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { CartModule } from './modules/cart/cart.module';
+import { NotificationModule } from './modules/notification/notification.module';
+import { OrderModule } from './modules/order/order.module';
+import { DeliveryModule } from './modules/delivery/delivery.module';
+import { PaymentModule } from './modules/payment/payment.module';
+import { PromotionModule } from './modules/promotion/promotion.module';
+import { ReviewModule } from './modules/review/review.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
+import { UserModule } from './modules/user/user.module';
 
 /**
  * Modular monolith root (plan §2). New feature modules are added to `imports`;
  * they get Prisma, Supabase and the logger for free because those are global.
  *
- * Guard order matters: SupabaseAuthGuard establishes *who* is calling before
- * RolesGuard decides *whether* they may.
+ * Guard order matters: SessionAuthGuard establishes *who* is calling — from this
+ * application's own session, not a third-party token — before RolesGuard decides *whether*
+ * they may.
  */
 @Module({
   imports: [
@@ -42,6 +57,26 @@ import { HealthModule } from './modules/health/health.module';
         }),
     }),
 
+    // Named rate-limit buckets, applied by AuthThrottlerGuard below. 'geocoding' guards the
+    // outbound map-search proxies; 'auth-ip' and 'auth-account' together guard login and MFA
+    // verification against brute force — one keyed by caller IP, the other by the submitted
+    // email, so neither a distributed attempt on one account nor one IP working many accounts
+    // slips past — both only where a route asks with @RateLimit. 'payment-callback' is the looser
+    // per-IP bucket on the bKash browser callback. 'writes' is the baseline
+    // ceiling on every state-changing request, and reads are left unlimited at this layer.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<Env, true>) =>
+        buildThrottlerOptions({
+          GEOCODING_RATE_LIMIT: config.get('GEOCODING_RATE_LIMIT', { infer: true }),
+          AUTH_RATE_LIMIT: config.get('AUTH_RATE_LIMIT', { infer: true }),
+          AUTH_ACCOUNT_RATE_LIMIT: config.get('AUTH_ACCOUNT_RATE_LIMIT', { infer: true }),
+          AUTH_PHONE_RATE_LIMIT: config.get('AUTH_PHONE_RATE_LIMIT', { infer: true }),
+          WRITE_RATE_LIMIT: config.get('WRITE_RATE_LIMIT', { infer: true }),
+          PAYMENT_CALLBACK_RATE_LIMIT: config.get('PAYMENT_CALLBACK_RATE_LIMIT', { infer: true }),
+        }),
+    }),
+
     // Infrastructure
     PrismaModule,
     SupabaseModule,
@@ -51,9 +86,27 @@ import { HealthModule } from './modules/health/health.module';
     HealthModule,
     AuthModule,
     CatalogModule,
+    GeoModule,
+    UserModule,
+    AdminModule,
+    InventoryModule,
+    CartModule,
+    OrderModule,
+    NotificationModule,
+    PaymentModule,
+    DeliveryModule,
+    PromotionModule,
+    ReviewModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: SupabaseAuthGuard },
+    // Ahead of authentication: an unauthenticated flood should be rejected before it costs
+    // a token verification, and the geocoding proxies are @Public(). AuthThrottlerGuard
+    // replaces the library's default ThrottlerGuard purely to fix the Retry-After header on
+    // a 429 (see its class comment); each bucket's own tracker and skipIf, registered in
+    // throttler.config.ts, decide who is counted and where. It runs on every request, but
+    // each bucket applies only where @RateLimit names it.
+    { provide: APP_GUARD, useClass: AuthThrottlerGuard },
+    { provide: APP_GUARD, useClass: SessionAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
   ],

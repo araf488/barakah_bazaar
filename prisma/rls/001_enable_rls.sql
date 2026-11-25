@@ -7,13 +7,21 @@
 --   * RLS is ENABLED on every table, with no exceptions.
 --   * `service_role` — the key held only by this NestJS API — bypasses RLS by
 --     design, so all business writes keep working.
---   * `anon` / `authenticated` get READ-ONLY access to published catalog data,
---     plus owner-scoped reads of their own user row and addresses.
+--   * `anon` / `authenticated` get READ-ONLY access to published catalog data
+--     and published reviews. Nothing owner-scoped: ownership is decided by this
+--     API from its own session row, so those reads go through an endpoint.
 --   * Anything money- or stock-related (orders, payments, inventory) gets NO
 --     policy for anon/authenticated at all. Absence of a policy is a deny.
 --
 -- This file is idempotent: safe to re-run.
+--
+-- Wrapped in a transaction: Postgres DDL is transactional, so the whole file
+-- applies or none of it does. Without this, an interrupted run could leave a
+-- table with RLS enabled and zero policies — which in Postgres means deny-all
+-- for every non-owner role, an outage rather than a safe failure.
 -- ─────────────────────────────────────────────────────────────────────────────
+
+BEGIN;
 
 -- ── 1. Enable RLS everywhere ────────────────────────────────────────────────
 ALTER TABLE public.users            ENABLE ROW LEVEL SECURITY;
@@ -22,11 +30,90 @@ ALTER TABLE public.categories       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.product_variants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.product_images   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_audit_log  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.warehouses         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_batches  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_movements    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_reservations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.carts              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cart_items         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_events       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.staff_invitations    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zones        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zone_rules   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.promotions             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.promotion_redemptions  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reviews                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_slots         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sessions               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.auth_settings          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mfa_recovery_codes     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.email_verifications    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.password_resets        ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for the table owner, so a mistaken owner-role connection from
 -- a client cannot read past the policies.
+--
+-- Everything is forced EXCEPT categories, products, product_variants and
+-- product_images. Those four are the published catalog: their policy grants the
+-- read that FORCE would protect, so forcing them guards nothing while adding a
+-- way for an owner-role migration or backfill to fail confusingly. Every table
+-- holding customer, money, stock or permission data is forced.
 ALTER TABLE public.users     FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.addresses FORCE ROW LEVEL SECURITY;
+
+-- The audit log is forced too: it records who did what to money and stock, so not even a
+-- mistaken owner-role connection from a client may read it. It gets NO anon/authenticated
+-- policy at all — absence of a policy is a deny — and only service_role, held by this API,
+-- can reach it.
+ALTER TABLE public.admin_audit_log FORCE ROW LEVEL SECURITY;
+
+-- Stock is forced too. Section 5 already says money and stock tables get NO anon or
+-- authenticated policy, ever: knowing exactly how many units remain is competitive
+-- information, and a client that can read reservations can infer another customer's basket.
+-- Sellable quantity reaches the storefront through this API, never by direct table read.
+ALTER TABLE public.warehouses         FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory          FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_batches  FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_movements    FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_reservations FORCE ROW LEVEL SECURITY;
+
+-- A basket is the customer's own, so it is forced like their profile and addresses. It gets
+-- an owner-scoped READ policy below; writes stay with this API so pricing and availability
+-- are checked on every change.
+ALTER TABLE public.carts      FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.cart_items FORCE ROW LEVEL SECURITY;
+
+-- Orders are money. Forced, and a customer may read only their own — never another's, and
+-- never the event ledger, which records which staff member touched what.
+ALTER TABLE public.orders       FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items  FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.order_events FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_transactions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.staff_invitations FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zones FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_zone_rules FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.promotions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.promotion_redemptions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.reviews FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_slots FORCE ROW LEVEL SECURITY;
+
+-- sessions, auth_settings, mfa_recovery_codes, email_verifications and password_resets are forced too, and get NO anon/authenticated
+-- policy at all — the same treatment staff_invitations gets. Every row in these tables is either
+-- the stored half of a live credential (a session's refresh token hash, a recovery code hash, or a verification token/code hash) or
+-- the configuration that governs how those credentials behave. There is no legitimate direct-client
+-- read of any of them: sessions, MFA and verification are managed exclusively through this API's auth endpoints.
+ALTER TABLE public.sessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.auth_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.mfa_recovery_codes FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.email_verifications FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.password_resets FORCE ROW LEVEL SECURITY;
 
 -- ── 2. Public catalog reads ─────────────────────────────────────────────────
 -- Storefront and Flutter app may read active catalog rows directly via the
@@ -74,26 +161,77 @@ CREATE POLICY product_images_public_read
   );
 
 -- ── 3. Owner-scoped reads ───────────────────────────────────────────────────
--- A signed-in user may read their own profile row and their own addresses.
--- Writes still go through the API so validation and audit logging happen.
-
+-- There are none left.
+--
+-- Every owner-scoped policy this file used to define matched a row by comparing
+-- users.supabase_user_id to auth.uid(). Both halves of that comparison are gone: no client
+-- holds a Supabase JWT any more, so auth.uid() is always null, and the identity-foundation
+-- contract migration drops the column outright. A policy written against a dropped column is
+-- not merely dead — it would refuse the DROP COLUMN itself — so each one is dropped here,
+-- before the migration runs.
+--
+-- Ownership is decided by this API now, from its own session row, and every customer read of
+-- their own cart, order, notification, profile or address goes through an endpoint. Absence
+-- of a policy is a deny, which is the correct posture for a direct PostgREST connection: it
+-- should be able to read none of this.
 DROP POLICY IF EXISTS users_read_own ON public.users;
-CREATE POLICY users_read_own
-  ON public.users FOR SELECT
-  TO authenticated
-  USING (supabase_user_id = auth.uid());
-
 DROP POLICY IF EXISTS addresses_read_own ON public.addresses;
-CREATE POLICY addresses_read_own
-  ON public.addresses FOR SELECT
+DROP POLICY IF EXISTS carts_read_own ON public.carts;
+DROP POLICY IF EXISTS cart_items_read_own ON public.cart_items;
+DROP POLICY IF EXISTS orders_read_own ON public.orders;
+DROP POLICY IF EXISTS order_items_read_own ON public.order_items;
+DROP POLICY IF EXISTS notifications_read_own ON public.notifications;
+
+DROP POLICY IF EXISTS reviews_read_published ON public.reviews;
+CREATE POLICY reviews_read_published
+  ON public.reviews FOR SELECT
   TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.users u
-      WHERE u.id = addresses.user_id
-        AND u.supabase_user_id = auth.uid()
-    )
-  );
+  USING (status = 'PUBLISHED');
+
+-- The policy is on STATUS, not ownership, and that is the point: an unmoderated review must
+-- not be readable by anyone but staff, including its own author through a direct client. The
+-- author sees their pending review through this API, which returns it to them on create.
+-- moderation_note is a readable column on a published row, so nothing internal may be written
+-- there — the API withholds it either way.
+
+-- promotions gets no policy. A readable table hands every customer the whole code list,
+-- including unlaunched campaigns and codes meant for one segment. Codes are checked one at a
+-- time through the preview endpoint, which is also what enforces the per-customer limit.
+--
+-- promotion_redemptions gets no policy either, and this one is load-bearing rather than
+-- merely private: the row count IS the usage limit, so a client that could insert here could
+-- exhaust a rival's allowance, and one that could delete could redeem a single-use code
+-- forever.
+
+-- delivery_slots gets no policy. Capacity is the interesting part of a slot, and it is
+-- derived from orders rather than stored — so a readable table would show a client every
+-- hub's van schedule while telling it nothing useful. Availability comes from the API, which
+-- computes what is actually left.
+
+-- delivery_zones and delivery_zone_rules get no policy either. Pricing is readable through
+-- the quote endpoint, which resolves ONE fee for ONE address; exposing the table would let a
+-- client read the whole fee schedule, and a writable one would let it set its own delivery
+-- charge to zero.
+
+-- staff_invitations deliberately gets NO policy. Every row is a pending permission grant,
+-- and token_hash is the stored half of a live credential: a client that could read this table
+-- could enumerate open invitations, and one that could write could grant itself a role.
+
+-- sessions, auth_settings, mfa_recovery_codes, email_verifications and password_resets deliberately get NO policy either, for the
+-- same reason as staff_invitations: refresh_token_hash, code_hash and verification token/code hash are each the stored half
+-- of a live credential, and auth_settings is the configuration that decides how long every
+-- credential in the system stays valid. A client that could read sessions could enumerate a
+-- user's devices; one that could read email_verifications could enumerate pending registrations or address changes.
+-- One that could read password_resets could see whose password is being reset, and when.
+-- These are managed exclusively by this API's auth endpoints, never by a direct client read.
+
+-- payment_transactions deliberately gets NO policy. It is the money ledger: it names the
+-- staff member who took the cash, carries gateway references usable in a dispute, and a
+-- forged row here is a forged receipt. Customers see what they paid through this API's
+-- order endpoints, not by reading the books.
+
+-- order_events deliberately gets NO policy: it names the staff member who moved an order,
+-- which is internal. Customers see status through this API, not the ledger behind it.
 
 -- ── 4. Revoke default grants ────────────────────────────────────────────────
 -- Supabase grants anon/authenticated broad table privileges by default. RLS
@@ -107,3 +245,5 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public
 --   1. ALTER TABLE ... ENABLE ROW LEVEL SECURITY;
 --   2. Add a policy ONLY if a client legitimately needs to read those rows.
 --   3. Money and stock tables get no anon/authenticated policy. Ever.
+
+COMMIT;

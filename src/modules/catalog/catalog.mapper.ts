@@ -7,6 +7,7 @@ import {
   ProductImageDto,
   ProductListItemDto,
   ProductVariantDto,
+  ProductRatingDto,
 } from './dto/catalog-response.dto';
 import { ProductWithRelations } from './catalog.repository';
 
@@ -55,6 +56,22 @@ export const CatalogMapper = {
       fromPriceFormatted: Money.format(fromPrice),
       primaryImage: primary ? CatalogMapper.toImageDto(primary) : null,
       handling: CatalogMapper.toHandlingDto(product),
+      rating: CatalogMapper.toRatingDto(product),
+    };
+  },
+
+  /**
+   * The denormalised rating, divided at the edge.
+   *
+   * Sum and count are stored rather than an average so the number cannot drift from the
+   * reviews it summarises; the division happens here, once, for display. A product with no
+   * published reviews reports null rather than 0 — zero stars is a rating, "not yet rated" is
+   * not, and a storefront that renders them the same punishes every new product.
+   */
+  toRatingDto(product: { ratingSum: number; ratingCount: number }): ProductRatingDto {
+    return {
+      average: product.ratingCount === 0 ? null : product.ratingSum / product.ratingCount,
+      count: product.ratingCount,
     };
   },
 

@@ -19,9 +19,9 @@ const SIGNED_UPLOAD_TTL_SECONDS = 300;
  *
  * This key bypasses Row Level Security, which is exactly why it lives only
  * here: it must never reach the storefront, admin portal or Flutter bundle.
- * Used for the Admin API (creating users during the custom phone-OTP flow) and
- * for minting signed upload URLs so large files go straight to Storage instead
- * of streaming through this process.
+ * Storage only — minting signed upload URLs so large files go straight to a bucket instead
+ * of streaming through this process. Supabase issues no identity this API trusts: accounts,
+ * roles and sessions all live in Postgres and are decided here.
  */
 @Injectable()
 export class SupabaseAdminService {
@@ -36,9 +36,7 @@ export class SupabaseAdminService {
 
     if (!url || !serviceRoleKey) {
       this.client = null;
-      this.logger.warn(
-        'Supabase admin client is not configured; Storage uploads and Admin API calls are unavailable',
-      );
+      this.logger.warn('Supabase admin client is not configured; Storage uploads are unavailable');
       return;
     }
 
@@ -90,6 +88,30 @@ export class SupabaseAdminService {
       this.logger.error(
         { err: error, bucket, objectPath },
         'Exception occurred in SupabaseAdminService.createSignedUploadUrl',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * The public URL a stored object is served from.
+   *
+   * Built here rather than accepted from a client: letting the caller supply the URL would
+   * let it point anywhere, turning a product image into an arbitrary-content embed on the
+   * storefront. The caller supplies only the object path we issued it.
+   */
+  getPublicUrl(bucket: string, objectPath: string): string | null {
+    try {
+      if (!this.client) {
+        return null;
+      }
+
+      const { data } = this.client.storage.from(bucket).getPublicUrl(objectPath);
+      return data.publicUrl;
+    } catch (error) {
+      this.logger.error(
+        { err: error, bucket, objectPath },
+        'Exception occurred in SupabaseAdminService.getPublicUrl',
       );
       return null;
     }

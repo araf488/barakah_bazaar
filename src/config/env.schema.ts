@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EnvConstants, EnvValidationMessages, requiredKeyMessage } from './env.constants';
 
 /**
  * Environment contract for the API. Parsed once at boot; a failure here stops
@@ -43,14 +44,13 @@ const baseEnvSchema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   DIRECT_URL: z.string().min(1).optional(),
 
-  // ── Supabase ──────────────────────────────────────────────────────────────
+  // ── Supabase (Storage only) ───────────────────────────────────────────────
+  // No auth keys: this API issues its own tokens and reads roles from its own tables. What
+  // remains is the storage client, which needs a project and the service-role key to sign
+  // uploads.
   SUPABASE_URL: z.url().optional(),
-  SUPABASE_ANON_KEY: z.string().min(1).optional(),
   /** Server-side only. Bypasses RLS — never expose to any client bundle. */
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
-  SUPABASE_JWKS_URL: z.url().optional(),
-  SUPABASE_JWT_SECRET: z.string().min(1).optional(),
-  SUPABASE_JWT_AUDIENCE: z.string().min(1).default('authenticated'),
 
   // ── Redis / BullMQ ────────────────────────────────────────────────────────
   QUEUE_ENABLED: boolFlag('false'),
@@ -58,57 +58,309 @@ const baseEnvSchema = z.object({
   REDIS_PORT: z.coerce.number().int().positive().max(65535).default(6379),
   REDIS_PASSWORD: z.string().min(1).optional(),
   REDIS_TLS: boolFlag('false'),
+  /**
+   * Caches `SessionRepository.findByIdWithUser`, the one database read `SessionService.validate`
+   * runs on every authenticated request. Off by default, same shape as QUEUE_ENABLED: local
+   * development and CI need no Redis. Revocation is never left to the TTL alone — see
+   * `SessionCachePort`.
+   */
+  SESSION_CACHE_ENABLED: boolFlag('false'),
+
+  // ── Email sender ──────────────────────────────────────────────────────────
+  // Defaults to noop, which logs the recipient and reports success. While it is noop the
+  // staff-invitation endpoint returns the raw token in its response so the flow can be
+  // completed in development; with a real provider it never leaves the email.
+  EMAIL_PROVIDER: z.enum(['noop', 'resend', 'smtp']).default('noop'),
+  EMAIL_FROM: z.string().min(1).optional(),
+  /** Display name beside EMAIL_FROM. Without it a relay shows the bare address. */
+  EMAIL_FROM_NAME: z.string().min(1).default('Barakah Bazaar'),
+  EMAIL_SMTP_HOST: z.string().min(1).optional(),
+  EMAIL_SMTP_PORT: z.coerce.number().int().positive().max(65535).default(587),
+  EMAIL_SMTP_USER: z.string().min(1).optional(),
+  EMAIL_SMTP_PASSWORD: z.string().min(1).optional(),
+  /** Implicit TLS on connect (port 465). Leave false for STARTTLS on 587. */
+  EMAIL_SMTP_SECURE: boolFlag('false'),
+  /** How long an emailed verification credential stays valid. */
+  EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().positive().max(168).default(24),
+  /**
+   * How long an emailed password-reset credential stays valid. An hour, not the verification's
+   * day: a leaked reset credential is account takeover. Capped at a day so one mistyped value
+   * cannot leave such a credential live for a week.
+   */
+  PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().positive().max(1440).default(60),
+
+  // ── Payment gateway ───────────────────────────────────────────────────────
+  // Defaults to noop, which REFUSES every charge. Cash on delivery is unaffected: it never
+  // goes through a gateway. See gateways/noop-payment.gateway.ts for why money fails closed
+  // where SMS fails open.
+  PAYMENT_PROVIDER: z.enum(['noop', 'bkash']).default('noop'),
+  PAYMENT_API_URL: z.url().optional(),
+  PAYMENT_APP_KEY: z.string().min(1).optional(),
+  PAYMENT_APP_SECRET: z.string().min(1).optional(),
+  /** bKash merchant username, sent as a header on the token grant. */
+  PAYMENT_USERNAME: z.string().min(1).optional(),
+  /** bKash merchant password, sent as a header on the token grant. */
+  PAYMENT_PASSWORD: z.string().min(1).optional(),
 
   // ── SMS gateway ───────────────────────────────────────────────────────────
   SMS_PROVIDER: z.enum(['noop', 'alpha-sms', 'ssl-wireless']).default('noop'),
   SMS_API_URL: z.url().optional(),
   SMS_API_KEY: z.string().min(1).optional(),
   SMS_SENDER_ID: z.string().min(1).optional(),
+
+  // ── Geocoding (map search on the address form) ────────────────────────────
+  // Defaults to Photon: free, keyless, and the only provider tested against real
+  // Dhaka addresses. `noop` disables map search entirely, which is what the test
+  // suite uses so it never calls a third party.
+  GEOCODING_PROVIDER: z.enum(['noop', 'photon', 'geoapify']).default('photon'),
+  PHOTON_API_URL: z.url().default('https://photon.komoot.io'),
+  GEOAPIFY_API_URL: z.url().default('https://api.geoapify.com'),
+  GEOAPIFY_API_KEY: z.string().min(1).optional(),
+  /** Requests per minute, per IP, allowed against the outbound geocoding proxies. */
+  GEOCODING_RATE_LIMIT: z.coerce.number().int().positive().default(30),
+
+  // ── Identity ──────────────────────────────────────────────────────────────
+  /** HS256 signing secret. Absent, a random one is generated per boot with a warning. */
+  JWT_SECRET: z.string().min(32).optional(),
+  JWT_ISSUER: z.string().min(1).default('barakah-bazaar-api'),
+  JWT_AUDIENCE: z.string().min(1).default('barakah-bazaar'),
+  /** base64, 32 bytes. Encrypts TOTP secrets at rest. */
+  TOTP_ENCRYPTION_KEY: z.string().min(1).optional(),
+  SCRYPT_COST_LOG2: z.coerce.number().int().min(12).max(20).default(15),
+  SCRYPT_BLOCK_SIZE: z.coerce.number().int().min(1).max(32).default(8),
+  SCRYPT_PARALLELISM: z.coerce.number().int().min(1).max(16).default(3),
+  /** Requests per minute, per caller IP, allowed against login, MFA verification and refresh. */
+  AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(10),
+  /**
+   * Requests per minute, per submitted account (email), allowed against the same routes —
+   * bounds a distributed attempt against one account spread across many IPs, which
+   * AUTH_RATE_LIMIT alone cannot see since it counts each IP separately.
+   */
+  AUTH_ACCOUNT_RATE_LIMIT: z.coerce.number().int().positive().default(20),
+  /**
+   * Requests per minute, per submitted phone number, against all four `/auth/phone` routes —
+   * bounds code guessing and SMS spend against one number from many IPs.
+   */
+  AUTH_PHONE_RATE_LIMIT: z.coerce.number().int().positive().default(5),
+  /** Seconds a number must wait before another code (verification or sign-in) may be sent to it. */
+  PHONE_CODE_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(60),
+  /**
+   * Codes one number may be sent per rolling 24 hours, counting verification and sign-in codes
+   * together across both code tables.
+   */
+  PHONE_CODE_DAILY_LIMIT_PER_NUMBER: z.coerce.number().int().positive().default(5),
+  /**
+   * Verification codes one signed-in account may request per rolling 24 hours, whatever numbers
+   * they go to. Stops one account spending the whole SMS_DAILY_LIMIT on strangers' numbers.
+   */
+  PHONE_CODE_DAILY_LIMIT_PER_ACCOUNT: z.coerce.number().int().positive().default(5),
+  /** Total SMS the app may send per day, across all numbers — a ceiling on SMS spend. */
+  SMS_DAILY_LIMIT: z.coerce.number().int().positive().default(500),
+  AUTH_SETTINGS_CACHE_SECONDS: z.coerce.number().int().min(0).default(60),
+  SESSION_TOUCH_INTERVAL_MINUTES: z.coerce.number().int().min(0).default(5),
+  /** Base for verification and reset links. NEVER derived from the request Host header. */
+  APP_PUBLIC_BASE_URL: z.url().default('http://localhost:3000'),
+  /**
+   * Public origin of THIS API, used to build the URL a payment gateway sends the customer's
+   * browser back to. NEVER derived from the request Host header. Must be https in a deployed
+   * environment, but only once a real PAYMENT_PROVIDER is selected.
+   */
+  API_PUBLIC_BASE_URL: z.url().default('http://localhost:3000'),
+
+  // ── API rate limiting ─────────────────────────────────────────────────────
+  /**
+   * Requests per minute, per caller, per endpoint, allowed against any state-changing
+   * method — POST, PATCH, PUT, DELETE. Reads are deliberately unlimited here: a storefront
+   * browses far faster than it writes, and the abuse worth stopping at the app layer (order
+   * spam, review flooding, repeated credential changes) is all writes. An endpoint needing a
+   * tighter bound names its own bucket instead; the `auth-ip`/`auth-account` pair already does.
+   */
+  WRITE_RATE_LIMIT: z.coerce.number().int().positive().default(60),
+  /**
+   * Requests per minute, per caller IP, allowed against the bKash callback — the browser
+   * redirect that brings a customer back from paying. Looser than AUTH_RATE_LIMIT on purpose:
+   * many mobile subscribers share one carrier NAT address, a throttled callback is a payment
+   * never executed (a lost sale), and a forged callback is harmless because an unknown
+   * paymentID never reaches bKash.
+   */
+  PAYMENT_CALLBACK_RATE_LIMIT: z.coerce.number().int().positive().default(60),
+  /**
+   * Reverse-proxy hops in front of this process (load balancer, ingress). 0 — the default —
+   * leaves Express's `trust proxy` off, so `req.ip` is the socket peer. Behind N proxies set N,
+   * or every per-IP bucket counts the proxy's address and all callers share one limit. Never
+   * set it higher than the real hop count: each extra hop lets a client forge its IP with
+   * X-Forwarded-For.
+   */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
+
+  // ── Web surfaces (storefront + admin SPA) ────────────────────────────────
+  /**
+   * Mounts the built storefront (Next.js) and admin SPA in this process. Off by default, so
+   * the unit and e2e suites and `npm run start:dev` run the API alone, exactly as before. The
+   * Docker image turns it on; startup then fails if either build output is missing.
+   */
+  WEB_ENABLED: boolFlag('false'),
+  /**
+   * Base URL the storefront's server-side fetches use to reach this API. Absent, it is
+   * derived from PORT as `http://127.0.0.1:${PORT}/${API_PREFIX}/${API_VERSION}`.
+   */
+  WEB_INTERNAL_API_BASE_URL: z.url().optional(),
 });
 
-export type Env = z.infer<typeof baseEnvSchema>;
+type BaseEnv = z.infer<typeof baseEnvSchema>;
 
-/** Values that must be present before the app may serve production traffic. */
-const PRODUCTION_REQUIRED_KEYS = [
+/** The validated environment, with derived defaults resolved. */
+export type Env = Omit<BaseEnv, 'WEB_INTERNAL_API_BASE_URL'> & {
+  WEB_INTERNAL_API_BASE_URL: string;
+};
+
+/**
+ * Environments that serve real traffic. Staging is included because QA and the
+ * client hit it, so it gets production-grade configuration checks.
+ */
+const DEPLOYED_ENVS = ['staging', 'production'] as const satisfies readonly BaseEnv['NODE_ENV'][];
+
+/** Values that must be present before the app may serve traffic in any deployed environment. */
+const DEPLOYED_ENV_REQUIRED_KEYS = [
   'DATABASE_URL',
   'SUPABASE_URL',
   'SUPABASE_SERVICE_ROLE_KEY',
-] as const satisfies readonly (keyof Env)[];
+  // Absent, the app boots with a per-process random signing key: every restart, and every
+  // instance behind a load balancer, invalidates tokens the others issued.
+  'JWT_SECRET',
+  // Absent, TOTP secrets cannot be decrypted, so no staff member with MFA enrolled can sign in.
+  'TOTP_ENCRYPTION_KEY',
+] as const satisfies readonly (keyof BaseEnv)[];
 
-const addIssue = (ctx: z.RefinementCtx, path: keyof Env, message: string): void => {
+/** Required once a real email provider is selected; the noop default needs none of them. */
+const EMAIL_PROVIDER_REQUIRED_KEYS = [
+  'EMAIL_FROM',
+  'EMAIL_SMTP_HOST',
+  'EMAIL_SMTP_USER',
+  'EMAIL_SMTP_PASSWORD',
+] as const satisfies readonly (keyof BaseEnv)[];
+
+/** Required once a real SMS provider is selected; the noop default needs neither. */
+const SMS_PROVIDER_REQUIRED_KEYS = [
+  'SMS_API_URL',
+  'SMS_API_KEY',
+] as const satisfies readonly (keyof BaseEnv)[];
+
+/** Required once a real payment provider is selected; the noop default needs none of them. */
+const PAYMENT_PROVIDER_REQUIRED_KEYS = [
+  'PAYMENT_API_URL',
+  'PAYMENT_APP_KEY',
+  'PAYMENT_APP_SECRET',
+  'PAYMENT_USERNAME',
+  'PAYMENT_PASSWORD',
+] as const satisfies readonly (keyof BaseEnv)[];
+
+const isDeployedEnv = (nodeEnv: BaseEnv['NODE_ENV']): boolean =>
+  (DEPLOYED_ENVS as readonly string[]).includes(nodeEnv);
+
+const addIssue = (ctx: z.RefinementCtx, path: keyof BaseEnv, message: string): void => {
   ctx.addIssue({ code: 'custom', path: [path], message });
 };
 
-/** Production-only hardening, kept out of the base schema so dev stays cheap. */
-const enforceProductionRules = (env: Env, ctx: z.RefinementCtx): void => {
+/**
+ * Payment rules for a deployed environment with a real provider selected; the noop default
+ * needs none of this, so a host that never configured payments still boots.
+ */
+const enforcePaymentProviderRules = (env: BaseEnv, ctx: z.RefinementCtx): void => {
+  if (env.PAYMENT_PROVIDER === 'noop') {
+    return;
+  }
+
+  // Same reasoning as email and SMS: a bkash provider missing any credential would boot and
+  // then refuse every online payment at request time.
+  if (PAYMENT_PROVIDER_REQUIRED_KEYS.some((key) => env[key] === undefined)) {
+    addIssue(ctx, 'PAYMENT_API_URL', EnvValidationMessages.PaymentProviderNotConfigured);
+  }
+
+  // The gateway sends the customer's browser back to this origin with a payment id in the
+  // query string. Only the bKash callback is built from it, hence only checked here.
+  if (!env.API_PUBLIC_BASE_URL.startsWith(EnvConstants.HttpsScheme)) {
+    addIssue(ctx, 'API_PUBLIC_BASE_URL', EnvValidationMessages.ApiPublicBaseUrlNotHttps);
+  }
+
+  // Every call to the gateway goes here, and the token grant carries the app secret and the
+  // merchant password as headers. A missing URL is already reported as missing credentials.
+  if (
+    env.PAYMENT_API_URL !== undefined &&
+    !env.PAYMENT_API_URL.startsWith(EnvConstants.HttpsScheme)
+  ) {
+    addIssue(ctx, 'PAYMENT_API_URL', EnvValidationMessages.PaymentApiUrlNotHttps);
+  }
+};
+
+/**
+ * Rules every deployed environment must satisfy, kept out of the base schema so
+ * development and test stay cheap to run.
+ */
+const enforceDeployedEnvRules = (env: BaseEnv, ctx: z.RefinementCtx): void => {
+  if (!isDeployedEnv(env.NODE_ENV)) {
+    return;
+  }
+
+  const missing = DEPLOYED_ENV_REQUIRED_KEYS.filter((key) => env[key] === undefined);
+  missing.forEach((key) => addIssue(ctx, key, requiredKeyMessage(key, env.NODE_ENV)));
+
+  // Links in verification and reset emails are built from this. Over plain http a token in
+  // the query string travels in clear text, and it is a credential.
+  if (!env.APP_PUBLIC_BASE_URL.startsWith(EnvConstants.HttpsScheme)) {
+    addIssue(ctx, 'APP_PUBLIC_BASE_URL', EnvValidationMessages.PublicBaseUrlNotHttps);
+  }
+
+  if (env.CORS_ALLOWED_ORIGINS.trim().length === 0) {
+    addIssue(ctx, 'CORS_ALLOWED_ORIGINS', EnvValidationMessages.CorsAllowlistEmpty);
+  }
+
+  // A configured (non-noop) provider with no credentials would boot and then fail every send
+  // at request time instead of at start-up, where the operator can actually see it.
+  const emailProviderMissingCredentials = EMAIL_PROVIDER_REQUIRED_KEYS.some(
+    (key) => env[key] === undefined,
+  );
+  if (env.EMAIL_PROVIDER !== 'noop' && emailProviderMissingCredentials) {
+    addIssue(ctx, 'EMAIL_FROM', EnvValidationMessages.EmailProviderNotConfigured);
+  }
+
+  // Same reasoning as email: fail at start-up, not on the first customer's code request.
+  const smsProviderMissingCredentials = SMS_PROVIDER_REQUIRED_KEYS.some(
+    (key) => env[key] === undefined,
+  );
+  if (env.SMS_PROVIDER !== 'noop' && smsProviderMissingCredentials) {
+    addIssue(ctx, 'SMS_API_URL', EnvValidationMessages.SmsProviderNotConfigured);
+  }
+
+  enforcePaymentProviderRules(env, ctx);
+};
+
+/**
+ * Production-only hardening. Staging deliberately keeps Swagger available so QA
+ * and the client can read the API contract.
+ */
+const enforceProductionOnlyRules = (env: BaseEnv, ctx: z.RefinementCtx): void => {
   if (env.NODE_ENV !== 'production') {
     return;
   }
 
-  const missing = PRODUCTION_REQUIRED_KEYS.filter((key) => env[key] === undefined);
-  missing.forEach((key) => addIssue(ctx, key, `${key} is required when NODE_ENV=production`));
-
-  if (!env.SUPABASE_JWT_SECRET && !env.SUPABASE_JWKS_URL && !env.SUPABASE_URL) {
-    addIssue(
-      ctx,
-      'SUPABASE_JWKS_URL',
-      'JWT verification is unconfigured: set SUPABASE_JWKS_URL, SUPABASE_URL or SUPABASE_JWT_SECRET',
-    );
-  }
-
   if (env.SWAGGER_ENABLED) {
-    addIssue(ctx, 'SWAGGER_ENABLED', 'SWAGGER_ENABLED must be false in production');
-  }
-
-  if (env.CORS_ALLOWED_ORIGINS.trim().length === 0) {
-    addIssue(
-      ctx,
-      'CORS_ALLOWED_ORIGINS',
-      'CORS_ALLOWED_ORIGINS must list the storefront and admin origins',
-    );
+    addIssue(ctx, 'SWAGGER_ENABLED', EnvValidationMessages.SwaggerEnabledInProduction);
   }
 };
 
+/** Fills defaults that depend on other values, which a per-field `.default()` cannot express. */
+const resolveDerivedDefaults = (env: BaseEnv): Env => ({
+  ...env,
+  WEB_INTERNAL_API_BASE_URL:
+    env.WEB_INTERNAL_API_BASE_URL ??
+    `${EnvConstants.LoopbackHttpOrigin}:${env.PORT}/${env.API_PREFIX}/${env.API_VERSION}`,
+});
+
 export const envSchema = z
   .preprocess(emptyToUndefined, baseEnvSchema)
-  .superRefine(enforceProductionRules);
+  .superRefine((env, ctx) => {
+    enforceDeployedEnvRules(env, ctx);
+    enforceProductionOnlyRules(env, ctx);
+  })
+  .transform(resolveDerivedDefaults);

@@ -1,6 +1,8 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { UserRole } from '../src/infra/prisma/prisma-client';
+import { AccessTokenService } from '../src/modules/auth/tokens/access-token.service';
 
 // `ConfigModule.forRoot()` reads the environment and validates it eagerly, at
 // the moment app.module.ts is imported — not when the module is instantiated.
@@ -12,10 +14,10 @@ process.env.NODE_ENV = 'test';
 process.env.LOG_LEVEL = 'silent';
 process.env.SWAGGER_ENABLED = 'false';
 process.env.QUEUE_ENABLED = 'false';
+// Never let the suite call a third-party geocoder.
+process.env.GEOCODING_PROVIDER = 'noop';
 delete process.env.DATABASE_URL;
 delete process.env.SUPABASE_URL;
-delete process.env.SUPABASE_JWKS_URL;
-delete process.env.SUPABASE_JWT_SECRET;
 delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 /**
@@ -40,6 +42,9 @@ describe('Degraded boot (no Supabase, no database)', () => {
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     );
     await app.init();
+    // Listen once: an unlistened server makes supertest listen per request and close the
+    // shared server when the first of a concurrent burst finishes, resetting its siblings.
+    await app.listen(0);
   }, 30_000);
 
   afterAll(async () => {
@@ -60,12 +65,25 @@ describe('Degraded boot (no Supabase, no database)', () => {
       expect(response.body.checks.database).toBe('down');
     });
 
-    it('reports the unconfigured dependencies as disabled, not down', async () => {
+    it('reports the unconfigured third parties as disabled, not down', async () => {
       const response = await request(app.getHttpServer()).get('/api/v1/health');
 
-      expect(response.body.checks.authentication).toBe('disabled');
       expect(response.body.checks.storage).toBe('disabled');
       expect(response.body.checks.queue).toBe('disabled');
+      // Every third-party capability defaults to noop, so a fresh clone reports all of them
+      // deliberately off rather than broken.
+      expect(response.body.checks.sms).toBe('disabled');
+      expect(response.body.checks.email).toBe('disabled');
+      expect(response.body.checks.payment).toBe('disabled');
+    });
+
+    it('reports authentication as down, not disabled, with no JWT_SECRET configured', async () => {
+      // Unlike the third parties above, this is not a deliberately-off feature: the app still
+      // boots and issues working sessions on a random per-boot secret, but every one of them
+      // dies silently on the next restart. That is a real operational hazard, not a noop.
+      const response = await request(app.getHttpServer()).get('/api/v1/health');
+
+      expect(response.body.checks.authentication).toBe('down');
     });
 
     it('fails the readiness probe, so a deploy gate would hold', async () => {
@@ -86,24 +104,155 @@ describe('Degraded boot (no Supabase, no database)', () => {
         'The service is temporarily unavailable. Please try again shortly.',
       );
     });
+
+    it('serves the geography lookups without a token and without a database', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/divisions');
+
+      // 200, not 503: the dataset is vendored, so the address form works even with no
+      // Supabase project and no Postgres.
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveLength(8);
+    });
+
+    it('serves the Dhaka city thanas the address form needs', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/districts/Dhaka/units');
+
+      expect(response.status).toBe(200);
+      const units = response.body as { nameEn: string }[];
+
+      expect(units.map((unit) => unit.nameEn)).toEqual(
+        expect.arrayContaining(['Gulshan', 'Motijheel', 'Savar']),
+      );
+    });
+
+    it('reports map search as disabled rather than calling a third party', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/search?q=gulshan');
+
+      expect(response.status).toBe(503);
+      expect(response.body.message).toBe('Map search is not available right now.');
+    });
+
+    it('rejects a too-short map search before reaching any provider', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/search?q=a');
+
+      expect(response.status).toBe(400);
+    });
+
+    it('rejects an out-of-range coordinate', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/geo/reverse?lat=999&lng=0');
+
+      expect(response.status).toBe(400);
+    });
+
+    it('resolves a pasted Google Maps link without any provider configured', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/geo/resolve-link')
+        .send({ link: 'https://www.google.com/maps/@23.7925,90.4078,17z' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.latitude).toBeCloseTo(23.7925, 3);
+      // No geocoder in this suite, so there is no description — the paste still works.
+      expect(response.body.label).toBeNull();
+    });
+
+    it('refuses a pasted link that points outside Google — SSRF guard', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/geo/resolve-link')
+        .send({ link: 'http://169.254.169.254/latest/meta-data/' });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('answers 404 with the contract message for an unknown division', async () => {
+      const response = await request(app.getHttpServer()).get(
+        '/api/v1/geo/divisions/Narnia/districts',
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.body.message).toBe('Narnia is not a division of Bangladesh.');
+    });
   });
 
   describe('protected routes stay protected', () => {
-    it('refuses /auth/me with no token', async () => {
-      const response = await request(app.getHttpServer()).get('/api/v1/auth/me');
+    const MISSING_TOKEN = 'Authentication is required to access this resource.';
+    const INVALID_TOKEN = 'Your session is invalid or has expired. Please sign in again.';
+
+    // 401, not 503: SessionAuthGuard's stage one — verifying the access token — runs on CPU
+    // alone and needs neither Supabase nor a database, so "no credential presented" is a
+    // definite answer even with every piece of infrastructure down. The point of each case is
+    // that the request never reaches the service, and that it is not a 404, which would mean
+    // the route was never registered at all.
+    it.each([
+      ['the current profile', '/api/v1/auth/me'],
+      ['the address book', '/api/v1/users/me/addresses'],
+      ['the admin audit trail', '/api/v1/admin/audit-log'],
+      ['the staff user list', '/api/v1/admin/users'],
+      ['warehouse stock', '/api/v1/admin/inventory'],
+      ['the customer basket', '/api/v1/cart'],
+      ['my orders', '/api/v1/orders'],
+      ['the staff order queue', '/api/v1/admin/orders'],
+    ])('refuses %s with no token', async (_label, path) => {
+      const response = await request(app.getHttpServer()).get(path);
+
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe(MISSING_TOKEN);
+    });
+
+    it('refuses a profile update with no token', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/v1/users/me')
+        .send({ fullName: 'Rahim Uddin' });
+
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe(MISSING_TOKEN);
+    });
+
+    it('routes the default-promotion endpoint rather than 404ing it', async () => {
+      const response = await request(app.getHttpServer()).put(
+        '/api/v1/users/me/addresses/11111111-1111-1111-1111-111111111111/default',
+      );
+
+      // A 404 here would mean the route was never registered; 401 means it was registered
+      // and the auth guard rejected the request first.
+      expect(response.status).toBe(401);
+    });
+
+    it('answers 503, not 401, for a token that verifies but cannot be looked up', async () => {
+      // The second row of the guard's contract, and the only one that needs a real token:
+      // stage one passes on CPU alone, then stage two reaches for the session row and finds
+      // no database. That is an infrastructure fault, not a credential fault, and reporting
+      // it as 401 would send a signed-in user to the login screen during an outage.
+      const tokens = app.get(AccessTokenService);
+      const accessToken = await tokens.sign(
+        {
+          userId: '11111111-1111-1111-1111-111111111111',
+          sessionId: '22222222-2222-2222-2222-222222222222',
+          role: UserRole.CUSTOMER,
+          email: 'shopper@example.com',
+          deviceId: 'device-1',
+        },
+        30,
+      );
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('x-device-id', 'device-1');
 
       expect(response.status).toBe(503);
-      expect(response.body.message).toBe(
-        'Authentication is temporarily unavailable. Please try again later.',
-      );
     });
 
     it('refuses /auth/me with a bearer token it cannot verify', async () => {
       const response = await request(app.getHttpServer())
         .get('/api/v1/auth/me')
-        .set('Authorization', 'Bearer a.forged.token');
+        .set('Authorization', 'Bearer a.forged.token')
+        .set('x-device-id', 'device-1');
 
-      expect(response.status).toBe(503);
+      // Nothing was ever signed with this boot's random fallback JWT secret (JWT_SECRET is
+      // unset in this suite), so a forged token fails verification the same way it would with
+      // a real secret configured — still no database access required.
+      expect(response.status).toBe(401);
+      expect(response.body.message).toBe(INVALID_TOKEN);
     });
   });
 

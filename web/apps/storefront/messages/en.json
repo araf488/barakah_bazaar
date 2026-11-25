@@ -1,0 +1,575 @@
+{
+  "metadata": {
+    "title": "Barakah Bazaar · Halal, wholesome, home-delivered",
+    "description": "Bangladesh's halal-first marketplace: dates and dry fruits, fresh doi and rosmalai, groceries and care products, delivered to your door."
+  },
+  "shell": {
+    "skipToContent": "Skip to content",
+    "homeLink": "Barakah Bazaar home"
+  },
+  "announcement": {
+    "label": "Announcements",
+    "pause": "Pause announcements",
+    "play": "Play announcements",
+    "halal": "A halal-first marketplace for Bangladesh",
+    "fresh": "Doi and rosmalai travel in cold-chain delivery slots",
+    "dates": "Dates, nuts and dry fruits, by the pack or by weight",
+    "cod": "Cash on delivery across our delivery areas"
+  },
+  "header": {
+    "signIn": "Sign in",
+    "join": "Join free",
+    "categoryNav": "Shop by category",
+    "home": "Home",
+    "freshDaily": "Fresh daily",
+    "switchLocale": "Switch to Bangla",
+    "deliveringTo": "Delivering to {place}",
+    "deliveringToLabel": "Delivering to {place}. Manage addresses"
+  },
+  "search": {
+    "open": "Search products",
+    "trigger": "Search dates, doi, fresh fruit…",
+    "dialogLabel": "Product search",
+    "inputLabel": "Search products",
+    "clear": "Clear",
+    "close": "Close search",
+    "suggestionsHeading": "Try searching",
+    "loading": "Searching…",
+    "error": "Search is unavailable right now. Please try again in a moment.",
+    "noResults": "No products match “{query}”",
+    "resultCount": "{count, plural, =0 {No products} one {# product} other {# products}}",
+    "suggestions": {
+      "ajwa": "Ajwa dates",
+      "medjool": "Medjool dates",
+      "doi": "Mishti doi",
+      "rosmalai": "Rosmalai",
+      "cashew": "Cashews"
+    }
+  },
+  "footer": {
+    "about": "Bangladesh's halal-first destination for everyday groceries, fresh food, and health and beauty.",
+    "tagline": "Halal. Wholesome. Home-delivered.",
+    "shop": "Shop",
+    "help": "Help",
+    "trackOrder": "Track your order",
+    "account": "My account",
+    "weAccept": "We accept",
+    "cashOnDelivery": "Cash on delivery",
+    "location": "Dhaka, Bangladesh",
+    "copyright": "© {year} Barakah Bazaar. All rights reserved."
+  },
+  "product": {
+    "fromPrice": "from {price}",
+    "rating": "Rated {average} out of 5 from {count, plural, one {# review} other {# reviews}}",
+    "storage": {
+      "CHILLED": "Chilled",
+      "FROZEN": "Frozen",
+      "AMBIENT": "Perishable"
+    }
+  },
+  "home": {
+    "hero": {
+      "eyebrow": "Halal · Wholesome · Home-delivered",
+      "title": "Halal groceries,<br></br><accent>delivered</accent> to your door.",
+      "body": "Dates and dry fruits, doi and rosmalai, seasonal fruit and everyday groceries, brought to your doorstep.",
+      "search": "Search the bazaar",
+      "imageAlt": "Vegetables and green bananas piled high at a market stall",
+      "cardTitle": "Perishables travel chilled",
+      "cardBody": "Cold-chain delivery slots for doi, rosmalai and fruit"
+    },
+    "categories": {
+      "eyebrow": "Browse by category",
+      "title": "Everything halal,<br></br><accent>all in one place.</accent>"
+    },
+    "products": {
+      "eyebrow": "Newest in the bazaar",
+      "title": "New arrivals",
+      "filters": "Filter new arrivals",
+      "all": "All",
+      "fresh": "Fresh daily",
+      "loading": "Loading products…",
+      "empty": "Nothing in this category yet.",
+      "emptyAll": "No products are listed yet. Please check back soon.",
+      "showAll": "Show all new arrivals",
+      "error": "Products could not be loaded right now. Please refresh the page in a moment."
+    },
+    "facts": {
+      "title": "How your order reaches you",
+      "coldChainTitle": "Cold chain for perishables",
+      "coldChainBody": "Chilled and frozen items only go out in delivery slots with a cold van.",
+      "slotTitle": "Pick your delivery slot",
+      "slotBody": "Choose the day and time that suits you when you check out.",
+      "paymentTitle": "Cash on delivery or bKash",
+      "paymentBody": "Pay the rider in cash, or pay online with bKash."
+    },
+    "promo": {
+      "doiEyebrow": "Kept chilled",
+      "doiTitle": "Doi and<br></br><accent>rosmalai</accent>",
+      "doiBody": "Kept cold from our shelf to your door.",
+      "doiAction": "Search doi",
+      "datesEyebrow": "By the pack or by weight",
+      "datesTitle": "Dates, nuts and<br></br><accent>dry fruits</accent>",
+      "datesBody": "Ajwa, Medjool and more, for everyday snacking and Ramadan.",
+      "datesAction": "Search dates"
+    }
+  },
+  "pdp": {
+    "breadcrumb": "You are here",
+    "chooseVariant": "Choose a size",
+    "perUnit": "per {unit}",
+    "wasPrice": "Was {price}",
+    "saving": "Save {percent}%",
+    "notRated": "Not rated yet",
+    "imageButton": "Show image {index} of {total}",
+    "aboutTitle": "About this product",
+    "noDescription": "The shop has not added a description for this product yet.",
+    "handlingTitle": "Delivery",
+    "coldTitle": "Cold-chain delivery",
+    "coldBody": "{storage, select, CHILLED {Kept chilled} FROZEN {Kept frozen} other {Perishable}}, so it only goes out in delivery slots with a cold van.",
+    "standardTitle": "Regular delivery",
+    "standardBody": "Shelf-stable, so it can go out in any delivery slot.",
+    "shelfLifeHours": "Keeps for {value, plural, one {# hour} other {# hours}}",
+    "shelfLifeDays": "Keeps for {value, plural, one {# day} other {# days}}",
+    "distance": "Delivered within {km} km of our hub",
+    "relatedTitle": "More from {category}",
+    "relatedFallback": "You might also like",
+    "error": "This product could not be loaded right now. Please refresh the page in a moment.",
+    "titleSuffix": "Barakah Bazaar"
+  },
+  "notFound": {
+    "title": "We couldn't find that page",
+    "body": "It may have been removed, or the link may have changed.",
+    "backHome": "Back to the home page"
+  },
+  "auth": {
+    "panel": {
+      "eyebrow": "Halal · Wholesome · Home-delivered",
+      "factHalal": "A halal-first marketplace for Bangladesh",
+      "factCold": "Cold-chain delivery for doi and rosmalai",
+      "factPay": "Pay on delivery or with bKash"
+    },
+    "fields": {
+      "fullName": "Full name",
+      "email": "Email address",
+      "password": "Password",
+      "newPassword": "New password",
+      "confirm": "Confirm password",
+      "code": "6-digit code",
+      "recoveryCode": "Recovery code",
+      "showPassword": "Show password",
+      "hidePassword": "Hide password",
+      "passwordHint": "At least 12 characters."
+    },
+    "signIn": {
+      "title": "Sign in",
+      "heading": "Welcome<br></br><accent>back.</accent>",
+      "intro": "Good to see you again.",
+      "submit": "Sign in",
+      "pending": "Signing in…",
+      "forgot": "Forgot your password?",
+      "noAccount": "New to Barakah Bazaar?",
+      "register": "Create an account"
+    },
+    "mfa": {
+      "title": "Two-step verification",
+      "intro": "Enter the 6-digit code from your authenticator app.",
+      "submit": "Verify and sign in",
+      "pending": "Verifying…",
+      "useRecovery": "Use a recovery code instead",
+      "useCode": "Use an authenticator code instead",
+      "restart": "Start again"
+    },
+    "register": {
+      "title": "Create an account",
+      "heading": "Join the<br></br><accent>family.</accent>",
+      "intro": "One account for orders, addresses and delivery updates.",
+      "submit": "Create account",
+      "pending": "Creating your account…",
+      "haveAccount": "Already have an account?",
+      "signIn": "Sign in"
+    },
+    "verify": {
+      "title": "Confirm your email",
+      "heading": "Almost<br></br><accent>there.</accent>",
+      "sentIntro": "If {email} can be registered, we have sent a confirmation link and a 6-digit code to it.",
+      "linkIntro": "Confirm this email address to finish setting up your account.",
+      "codeIntro": "Enter the 6-digit code from the email we sent you.",
+      "submitLink": "Confirm my email",
+      "submitCode": "Confirm email",
+      "pending": "Confirming…",
+      "resend": "Send a new link",
+      "resendPending": "Sending…",
+      "resent": "If that address has an account waiting for confirmation, a new link is on its way.",
+      "done": "Your email is confirmed. You can sign in now.",
+      "signIn": "Sign in"
+    },
+    "forgot": {
+      "title": "Reset your password",
+      "heading": "Forgot your<br></br><accent>password?</accent>",
+      "intro": "Enter the email address on your account and we will send a reset link and code.",
+      "submit": "Send reset link",
+      "pending": "Sending…",
+      "sent": "If {email} has an account, a reset link and code are on their way. The link expires soon, so use it today.",
+      "back": "Back to sign in"
+    },
+    "reset": {
+      "title": "Choose a new password",
+      "heading": "New<br></br><accent>password.</accent>",
+      "intro": "Choose a password you do not use anywhere else.",
+      "codeIntro": "Enter the email address, the 6-digit code we sent, and your new password.",
+      "submit": "Update password",
+      "pending": "Updating…",
+      "done": "Your password is updated, and every other device has been signed out. Sign in with your new password.",
+      "signIn": "Sign in"
+    },
+    "signOut": "Sign out",
+    "greeting": "Hi, {name}",
+    "errors": {
+      "invalid": "Something in the form is not right. Please check it and try again.",
+      "credentials": "That email and password do not match an account.",
+      "blocked": "This account cannot sign in yet. Confirm your email address first, or contact us if the account was disabled.",
+      "code": "That code did not work. Check it and try again.",
+      "expired": "This link or code has expired or was already used. Ask for a new one.",
+      "tooMany": "Too many attempts. Please wait a minute and try again.",
+      "unavailable": "We cannot reach our servers right now. Please try again in a moment.",
+      "emailInvalid": "Enter a valid email address.",
+      "passwordShort": "Use at least 12 characters.",
+      "passwordLong": "Use 128 characters or fewer.",
+      "passwordMismatch": "The two passwords do not match.",
+      "nameMissing": "Enter your name.",
+      "codeInvalid": "Enter the 6-digit code.",
+      "staffPortal": "Staff accounts sign in at the admin portal.",
+      "mfaExpired": "That sign-in attempt timed out. Please enter your password again."
+    }
+  },
+  "cart": {
+    "open": "Open cart, {count, plural, =0 {empty} one {# item} other {# items}}",
+    "title": "Your cart",
+    "close": "Close cart",
+    "count": "{count, plural, one {# item} other {# items}}",
+    "empty": "Your cart is empty.",
+    "emptyAction": "Browse new arrivals",
+    "loadError": "Your cart could not be loaded right now. Please try again in a moment.",
+    "decrease": "One fewer {name}",
+    "increase": "One more {name}",
+    "remove": "Remove {name}",
+    "quantity": "Quantity",
+    "each": "{price} each",
+    "priceChanged": "Price changed since you added it",
+    "onlyLeft": "Only {count} left",
+    "unavailableLine": "No longer available",
+    "priceNotice": "Some prices changed since you added them. You pay the current price.",
+    "stockNotice": "Some items have less stock than you asked for. Lower the quantity to check out.",
+    "subtotal": "Subtotal",
+    "delivery": "Delivery",
+    "deliveryAtCheckout": "Calculated at checkout",
+    "guestCheckout": "Sign in to check out",
+    "guestNote": "Your cart moves to your account when you sign in.",
+    "add": "Add to cart",
+    "adding": "Adding…",
+    "added": "Added to your cart",
+    "errors": {
+      "unavailable": "This size is no longer available.",
+      "stock": "There is not enough stock for that quantity.",
+      "guestFull": "A guest cart holds up to 20 different products. Sign in to add more.",
+      "quantity": "Choose a quantity between 1 and 99.",
+      "failed": "That did not work. Please try again."
+    },
+    "fewer": "Decrease quantity",
+    "more": "Increase quantity",
+    "quickAdd": "Add {name} to cart",
+    "inCartMany": "{count, plural, other {# in cart}}",
+    "checkout": "Check out",
+    "freeDeliveryShortfall": "Add {amount} more for free delivery to {place}.",
+    "freeDelivery": "Free delivery to {place}.",
+    "free": "Free"
+  },
+  "nav": {
+    "label": "Main menu",
+    "search": "Search",
+    "cart": "Cart"
+  },
+  "account": {
+    "title": "My account",
+    "profile": "Profile",
+    "email": "Email",
+    "phone": "Mobile",
+    "phoneUnverified": "Not verified yet",
+    "addresses": "Addresses",
+    "nav": "Account",
+    "orders": "My orders",
+    "ordersHint": "See where an order is, or cancel one before it is packed.",
+    "ordersLink": "See my orders"
+  },
+  "address": {
+    "add": "Add an address",
+    "newTitle": "New address",
+    "editTitle": "Edit address",
+    "edit": "Edit",
+    "editNamed": "Edit the address for {name}",
+    "remove": "Remove",
+    "removeNamed": "Remove the address for {name}",
+    "makeDefault": "Make default",
+    "makeDefaultNamed": "Make the address for {name} the default",
+    "default": "Default",
+    "save": "Save address",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "empty": "No saved addresses yet. Add one now and checkout takes a single tap.",
+    "loadError": "Your addresses could not be loaded right now. Please refresh in a moment.",
+    "labelField": "Label",
+    "labels": {
+      "Home": "Home",
+      "Office": "Office",
+      "Other": "Other"
+    },
+    "fields": {
+      "recipientName": "Recipient's name",
+      "phone": "Mobile number",
+      "phoneHint": "A Bangladeshi mobile, for example 01712345678.",
+      "division": "Division",
+      "district": "District",
+      "unit": "Upazila or thana",
+      "area": "Area or union (optional)",
+      "unitText": "Upazila, thana or area name",
+      "areaText": "Area (optional)",
+      "choose": "Choose…",
+      "unlisted": "My area is not in the list",
+      "addressLine": "House, road and a landmark",
+      "postCode": "Post code (optional)"
+    },
+    "places": {
+      "loading": "Loading places…",
+      "error": "Places could not be loaded. Check your connection and try again.",
+      "retry": "Try again"
+    },
+    "errors": {
+      "nameMissing": "Enter the recipient's name.",
+      "phoneInvalid": "Enter a Bangladeshi mobile number, such as 01712345678.",
+      "placeMissing": "Choose the division, district and upazila or thana.",
+      "lineMissing": "Enter the house, road or a landmark.",
+      "postCodeInvalid": "A post code has four digits.",
+      "invalid": "That address could not be saved. Check the place and the number, then try again.",
+      "tooMany": "You can save up to 20 addresses. Remove one first.",
+      "notFound": "That address no longer exists.",
+      "signedOut": "Your session ended. Please sign in again.",
+      "failed": "That did not work. Please try again."
+    }
+  },
+  "checkout": {
+    "title": "Checkout",
+    "address": "Deliver to",
+    "manageAddresses": "Manage addresses",
+    "addFirstAddress": "Add the address we should deliver to.",
+    "addressLoadError": "Your addresses could not be loaded right now. Please try again in a moment.",
+    "updating": "Updating delivery for this address…",
+    "slotTitle": "Delivery time",
+    "slotAny": "No preferred time",
+    "slotAnyHint": "Choose this if any time suits you.",
+    "slotFull": "Full",
+    "slotLeft": "{count, plural, one {# place left} other {# places left}}",
+    "slotNone": "No delivery windows are open this week. You can still order with no preferred time.",
+    "paymentTitle": "Payment",
+    "cod": "Cash on delivery",
+    "codHint": "Pay in cash when your order arrives.",
+    "noteLabel": "Note for the delivery (optional)",
+    "noteHint": "A gate code, a landmark, or the best time to call. Up to 500 characters.",
+    "summaryTitle": "Order summary",
+    "items": "{count, plural, one {# item} other {# items}}",
+    "lineQuantity": "{quantity} × {size}",
+    "subtotal": "Items",
+    "delivery": "Delivery",
+    "deliveryFree": "Free",
+    "deliveryUnknown": "Not available",
+    "discount": "Promo {code}",
+    "discountTotal": "Discount",
+    "total": "Total",
+    "freeDeliveryShortfall": "Add {amount} more for free delivery.",
+    "promoLabel": "Promo code",
+    "promoApply": "Apply",
+    "promoApplying": "Checking…",
+    "promoRemove": "Remove promo code {code}",
+    "promoApplied": "{code} applied: {amount} off.",
+    "acceptPrices": "I have seen the new prices and want to pay them.",
+    "priceNotice": "Some prices changed since you added them. The total uses the current prices.",
+    "place": "Place order",
+    "placing": "Placing your order…",
+    "placeHint": "You pay {total} in cash when it arrives.",
+    "empty": "Your cart is empty, so there is nothing to check out yet.",
+    "emptyAction": "Browse new arrivals",
+    "cartLoadError": "Your cart could not be loaded right now. Please try again in a moment.",
+    "errors": {
+      "cartEmpty": "Your cart is empty. Add something before placing an order.",
+      "addressGone": "That address is no longer in your address book. Choose another one.",
+      "pricesChanged": "Some prices changed. Tick the box above the button to accept the new prices.",
+      "stock": "Some items have less stock than your cart asks for. Lower the quantity in your cart.",
+      "noWarehouse": "We cannot deliver this cart to that address right now. Try another address.",
+      "keepCold": "Something in your cart has to stay cold and cannot travel that far. Remove it or choose a closer address.",
+      "noZone": "We do not deliver to that area yet. Try another address.",
+      "slotGone": "That delivery time just filled up. Choose another one.",
+      "promoInvalid": "That promo code is not valid.",
+      "promoMinimum": "Your cart does not reach the minimum for this code.",
+      "promoUsedUp": "This promo code has been fully claimed.",
+      "promoAlreadyUsed": "You have already used this promo code.",
+      "promoNoDiscount": "This code does not reduce this order.",
+      "noAddress": "Choose a delivery address first.",
+      "signedOut": "Your session ended. Sign in again to place the order.",
+      "unavailable": "We could not reach the shop just now. Please try again in a moment.",
+      "failed": "That did not work. Please try again.",
+      "bkashUnavailable": "bKash is not available right now. Choose cash on delivery."
+    },
+    "placed": {
+      "title": "Order placed",
+      "heading": "Thank you, {name}. Your order is placed.",
+      "number": "Order number",
+      "payOnDelivery": "Pay {total} in cash when it arrives.",
+      "deliverTo": "Delivering to",
+      "items": "What you ordered",
+      "note": "Your note",
+      "continue": "Continue shopping",
+      "track": "Track this order"
+    },
+    "bkash": "bKash",
+    "bkashHint": "Pay now on bKash's own page. You come back here when it is done.",
+    "methodLabel": "How would you like to pay?",
+    "placeHintBkash": "Next, bKash opens to take {total}.",
+    "placeBkash": "Place order and pay with bKash"
+  },
+  "orders": {
+    "title": "My orders",
+    "filtersLabel": "Show orders",
+    "filters": {
+      "all": "All",
+      "DISPATCHED": "On the way",
+      "DELIVERED": "Delivered",
+      "CANCELLED": "Cancelled"
+    },
+    "status": {
+      "PLACED": "Placed",
+      "CONFIRMED": "Confirmed",
+      "PICKING": "Being packed",
+      "DISPATCHED": "On the way",
+      "DELIVERED": "Delivered",
+      "CANCELLED": "Cancelled",
+      "REFUNDED": "Refunded"
+    },
+    "stepNote": {
+      "PLACED": "We have your order.",
+      "CONFIRMED": "We checked your order and are getting it ready.",
+      "PICKING": "Your items are being picked and packed.",
+      "DISPATCHED": "A rider has your order and is on the way.",
+      "DELIVERED": "Handed over at your door.",
+      "CANCELLED": "This order was cancelled.",
+      "REFUNDED": "The money for this order was returned."
+    },
+    "placedOn": "Placed {date}",
+    "items": "{count, plural, one {# item} other {# items}}",
+    "more": "+{count} more",
+    "open": "See order {number}",
+    "empty": "You have not ordered anything yet.",
+    "emptyFiltered": "No orders in this list yet.",
+    "showAll": "See all orders",
+    "startShopping": "Fill your basket",
+    "loadError": "We could not load your orders. Please try again in a moment.",
+    "retry": "Try again",
+    "pagesLabel": "Order pages",
+    "newer": "Newer orders",
+    "older": "Older orders",
+    "pageOf": "Page {page} of {total}",
+    "detail": {
+      "back": "All orders",
+      "title": "Order",
+      "tracking": "Where your order is",
+      "items": "What you ordered",
+      "deliverTo": "Delivering to",
+      "payment": "Payment",
+      "paymentMethod": {
+        "CASH_ON_DELIVERY": "Cash on delivery",
+        "BKASH": "bKash"
+      },
+      "paymentStatus": {
+        "PENDING": "Not paid yet",
+        "PAID": "Paid",
+        "REFUNDED": "Refunded",
+        "FAILED": "Payment did not go through"
+      },
+      "note": "Your note",
+      "reason": "Reason"
+    },
+    "cancel": {
+      "open": "Cancel this order",
+      "hint": "You can cancel until we start packing it.",
+      "title": "Cancel order {number}?",
+      "reasonLabel": "Why are you cancelling? (optional)",
+      "confirm": "Yes, cancel the order",
+      "keep": "Keep my order",
+      "cancelling": "Cancelling…",
+      "done": "Your order is cancelled.",
+      "errors": {
+        "tooLate": "It is too late to cancel: this order is already being packed or is on its way.",
+        "changed": "This order just changed. Check where it is above, then try again if you still can.",
+        "gone": "We could not find this order.",
+        "signedOut": "Your session has ended. Sign in again to cancel.",
+        "unavailable": "We could not reach the shop just now. Please try again in a moment.",
+        "failed": "The order could not be cancelled. Please try again."
+      }
+    },
+    "stepState": {
+      "done": "done",
+      "current": "now",
+      "upcoming": "still to come",
+      "stopped": "stopped here"
+    },
+    "loading": "Loading your orders"
+  },
+  "payment": {
+    "pay": {
+      "title": "Waiting for your bKash payment",
+      "body": "We hold your items for a short time only, so please pay soon. If you would rather not use bKash, pay in cash when it arrives.",
+      "button": "Pay {total} with bKash",
+      "paying": "Opening bKash…",
+      "switch": "Pay in cash on delivery instead",
+      "switching": "Switching…",
+      "switched": "Done. You will pay in cash when the order arrives."
+    },
+    "paidBkash": "Paid {total} with bKash.",
+    "errors": {
+      "notBkash": "This order is not paid by bKash.",
+      "notPayable": "This order can no longer be paid. It may have been cancelled or already confirmed.",
+      "alreadyPaid": "This order is already paid.",
+      "windowClosed": "The time to pay for this order has passed. Please place a new order.",
+      "tooManyAttempts": "This order has had too many bKash attempts today. Pay in cash on delivery instead, or try again tomorrow.",
+      "bkashUnavailable": "bKash is not available right now. Pay in cash on delivery instead.",
+      "gateway": "bKash could not start the payment. Please try again.",
+      "cannotSwitch": "This order can no longer switch to cash on delivery.",
+      "tooFast": "Too many tries in a short time. Please wait a minute and try again.",
+      "signedOut": "Your session has ended. Sign in again to pay.",
+      "gone": "We could not find this order.",
+      "unavailable": "We could not reach the shop just now. Please try again in a moment.",
+      "failed": "Something went wrong. Please try again."
+    },
+    "result": {
+      "title": "Payment result",
+      "paid": {
+        "heading": "Payment received",
+        "body": "Thank you. We have your bKash payment and are getting the order ready."
+      },
+      "pending": {
+        "heading": "Confirming your payment",
+        "body": "bKash has not told us the result yet. It usually settles within a few minutes, and your order page will show it. Please do not pay twice."
+      },
+      "failed": {
+        "heading": "The payment did not go through",
+        "body": "If bKash took any money for this attempt, it goes back to your account automatically. You can try bKash again or pay in cash on delivery."
+      },
+      "cancelled": {
+        "heading": "You cancelled the payment",
+        "body": "Your order is still waiting. You can try bKash again or pay in cash on delivery."
+      },
+      "order": "Order",
+      "seeOrder": "See your order",
+      "allOrders": "See my orders",
+      "noOrder": "We could not tell which order this payment was for. Your orders page shows where each one stands."
+    }
+  }
+}

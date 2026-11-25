@@ -47,49 +47,339 @@ enum PricingMode {
   WEIGHT
 }
 
-/// Local mirror of a Supabase Auth user. Rows are provisioned lazily on the
-/// user's first authenticated request — see AuthService.resolveUser().
-model User {
-  id             String    @id @default(uuid()) @db.Uuid
-  supabaseUserId String    @unique @map("supabase_user_id") @db.Uuid
-  email          String?   @unique
-  phone          String?   @unique
-  fullName       String?   @map("full_name")
-  role           UserRole  @default(CUSTOMER)
-  isActive       Boolean   @default(true) @map("is_active")
-  lastSeenAt     DateTime? @map("last_seen_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+/// Why stock moved. Every change to a quantity writes one of these — the stock ledger is
+/// what makes a discrepancy explainable rather than merely visible.
+enum StockMovementReason {
+  RECEIPT
+  SALE
+  RESERVED
+  RELEASED
+  ADJUSTMENT
+  DAMAGE
+  EXPIRY
+  RETURN
+  TRANSFER_IN
+  TRANSFER_OUT
+}
 
-  addresses Address[]
+/// Where an order is in its life. Transitions are enforced in OrderService, not here —
+/// Postgres cannot express "PLACED may become CONFIRMED or CANCELLED but never DELIVERED".
+enum OrderStatus {
+  PLACED
+  CONFIRMED
+  PICKING
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+/// How the customer pays. BKASH exists as a seam: the column and the enum value are here so
+/// adopting a gateway is an adapter and a status transition, not a migration of every order.
+enum PaymentMethod {
+  CASH_ON_DELIVERY
+  BKASH
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
+}
+
+/// Which language a customer is written to in. Bengali is the default because the storefront
+/// serves Bangladesh; the column exists so a notification is never guessed at send time.
+enum Language {
+  BN
+  EN
+}
+
+/// How a notification reaches the customer. Only SMS is wired today — EMAIL and PUSH are here
+/// so adopting one is an adapter, not a migration of every existing row.
+enum NotificationChannel {
+  SMS
+  EMAIL
+  PUSH
+}
+
+/// Delivery state of one notification.
+///
+/// FAILED is retryable and ABANDONED is not: the retry sweep moves a notification to ABANDONED
+/// once it has burned its attempts, so a permanently bad number stops costing work every tick.
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  ABANDONED
+}
+
+/// Which way money moved. A refund is not a negative charge: it is its own row with its own
+/// gateway reference, so the ledger shows both sides of a reversed sale rather than one
+/// mutated record.
+enum PaymentDirection {
+  CHARGE
+  REFUND
+}
+
+/// Outcome of one attempt to move money.
+///
+/// PENDING exists for gateways that answer asynchronously (bKash returns before the customer
+/// has finished authorising). Cash is never PENDING — it is CAPTURED at the doorstep or it
+/// did not happen.
+enum PaymentTransactionStatus {
+  PENDING
+  CAPTURED
+  FAILED
+  CANCELLED
+}
+
+/// Where a staff invitation stands.
+///
+/// Expiry is NOT a status: it is derived from `expires_at`, so a row cannot claim to be
+/// PENDING while its deadline has passed. Only a deliberate act — accepting or revoking —
+/// moves this column.
+enum StaffInvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+/// How a promotion reduces what the customer pays.
+///
+/// FREE_DELIVERY is its own type rather than a 100% discount, because it must reduce the
+/// delivery fee specifically and never the goods — a percentage that happened to equal the
+/// fee would discount the basket instead the moment either number moved.
+enum PromotionType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  FREE_DELIVERY
+}
+
+/// Where a review stands in moderation.
+///
+/// PENDING is the default and nothing about it is public. A halal grocery cannot let an
+/// unmoderated claim about a product's provenance or a food-safety complaint appear on the
+/// storefront unread — that is a trust and liability question, not a spam one.
+enum ReviewStatus {
+  PENDING
+  PUBLISHED
+  REJECTED
+}
+
+model User {
+  id                  String    @id @default(uuid()) @db.Uuid
+  /// The login credential. Required — an account cannot exist without one.
+  email               String    @unique
+  phone               String?   @unique
+  fullName            String?   @map("full_name")
+  /// scrypt, self-describing (see PasswordHasher). Null until a password is set:
+  /// a staff invitation creates the row before the invitee chooses one.
+  passwordHash        String?   @map("password_hash")
+  /// Null means unverified. A timestamp, because "when" is what support needs.
+  emailVerifiedAt     DateTime? @map("email_verified_at")
+  phoneVerifiedAt     DateTime? @map("phone_verified_at")
+  passwordChangedAt   DateTime? @map("password_changed_at")
+  /// AES-256-GCM ciphertext. A database dump must not yield working second factors.
+  totpSecretEncrypted String?   @map("totp_secret_encrypted")
+  totpEnabledAt       DateTime? @map("totp_enabled_at")
+  /// The last 30-second step spent, so a shoulder-surfed code cannot be reused.
+  totpLastUsedStep    Int?      @map("totp_last_used_step")
+  totpFailedAttempts  Int       @default(0) @map("totp_failed_attempts")
+  /// When the current run of failures began, so the count above can expire rather than
+  /// accumulate across months. Null when there is no run in progress.
+  totpFirstFailedAt   DateTime? @map("totp_first_failed_at")
+  totpLockedUntil     DateTime? @map("totp_locked_until")
+  role                UserRole  @default(CUSTOMER)
+  /// Which language transactional messages are written in. Not a display preference for the
+  /// storefront — the app picks that itself; this is what the customer is *messaged* in.
+  preferredLanguage   Language  @default(BN) @map("preferred_language")
+  isActive            Boolean   @default(true) @map("is_active")
+  lastSeenAt          DateTime? @map("last_seen_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  sessions             Session[]
+  emailVerifications   EmailVerification[]
+  passwordResets       PasswordReset[]
+  recoveryCodes        MfaRecoveryCode[]
+  addresses            Address[]
+  auditLog             AdminAuditLog[]
+  redemptions          PromotionRedemption[]
+  reviews              Review[]
+  invitationsSent      StaffInvitation[]     @relation("StaffInvitationsSent")
+  invitationsAccepted  StaffInvitation[]     @relation("StaffInvitationsAccepted")
+  cart                 Cart?
+  notifications        Notification[]
+  orders               Order[]
+  phoneVerifications   PhoneVerification[]
+  phoneLoginChallenges PhoneLoginChallenge[]
 
   @@index([role])
   @@map("users")
 }
 
-/// Structured Bangladesh address. Division/district/upazila are kept as text
-/// against a reference dataset rather than free-form input.
+/// One signed-in device, and the refresh token that keeps it alive.
+///
+/// The access token is a JWT and is never stored — its `sid` claim is trustworthy because
+/// the signature verified. The refresh token IS stored, but only as a SHA-256.
+model Session {
+  id                       String    @id @default(uuid()) @db.Uuid
+  userId                   String    @map("user_id") @db.Uuid
+  refreshTokenHash         String    @unique @map("refresh_token_hash")
+  /// Presenting this is either a concurrent refresh or a replay — `previousRotatedAt` says which.
+  previousRefreshTokenHash String?   @unique @map("previous_refresh_token_hash")
+  previousRotatedAt        DateTime? @map("previous_rotated_at")
+  /// Sliding idle deadline, pushed forward on each refresh.
+  expiresAt                DateTime  @map("expires_at")
+  /// Hard ceiling, never extended.
+  absoluteExpiresAt        DateTime  @map("absolute_expires_at")
+  revokedAt                DateTime? @map("revoked_at")
+  lastUsedAt               DateTime? @map("last_used_at")
+  /// Client-generated install id. Hard-bound: a mismatch kills the session.
+  deviceId                 String    @map("device_id")
+  userAgent                String?   @map("user_agent")
+  ipAddress                String?   @map("ip_address")
+  createdAt                DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// A pending email-address verification. Both credentials are stored only as SHA-256.
+model EmailVerification {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// Lowercased at write time. Where the mail was sent, kept even if the account's address
+  /// later changes — otherwise the audit trail loses the destination.
+  email      String
+  /// SHA-256 of the 32-byte link token. Unique, so the link path is one indexed lookup.
+  tokenHash  String    @unique @map("token_hash")
+  /// SHA-256 of the 6-digit code. Deliberately NOT unique: with a million possibilities two
+  /// users collide routinely, and a unique index would fail the second one's registration.
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  /// Wrong-code presentations. Capped, because six digits is a million guesses.
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("email_verifications")
+}
+
+/// A pending password reset. Both credentials are stored only as SHA-256.
+///
+/// Deliberately its own table rather than a `purpose` column on email_verifications: a shared
+/// table makes every lookup filter on purpose, and the one that forgets turns a 24-hour
+/// verification token into an account-takeover credential. Separate tables make that
+/// structurally impossible. See the password-reset design, §3.2.
+model PasswordReset {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// Lowercased at write time. Where the mail was sent, kept for the audit trail.
+  email      String
+  /// SHA-256 of the 32-byte link token. Unique, so the link path is one indexed lookup.
+  tokenHash  String    @unique @map("token_hash")
+  /// SHA-256 of the 6-digit code. NOT unique — codes collide between users routinely.
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  /// Wrong-code presentations. Capped, because six digits is a million guesses.
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  /// The cooldown read and the code path both look a record up by address, newest first.
+  @@index([email, createdAt])
+  @@map("password_resets")
+}
+
+/// Operational auth knobs, editable without a deploy. Exactly one row.
+model AuthSettings {
+  id                             String   @id @default("singleton")
+  accessTokenMinutes             Int      @default(30) @map("access_token_minutes")
+  customerRefreshIdleMinutes     Int      @default(43200) @map("customer_refresh_idle_minutes")
+  customerRefreshAbsoluteMinutes Int      @default(129600) @map("customer_refresh_absolute_minutes")
+  staffRefreshIdleMinutes        Int      @default(720) @map("staff_refresh_idle_minutes")
+  staffRefreshAbsoluteMinutes    Int      @default(10080) @map("staff_refresh_absolute_minutes")
+  staffMfaRequired               Boolean  @default(true) @map("staff_mfa_required")
+  emailVerificationGraceHours    Int      @default(168) @map("email_verification_grace_hours")
+  refreshReuseGraceSeconds       Int      @default(30) @map("refresh_reuse_grace_seconds")
+  updatedAt                      DateTime @updatedAt @map("updated_at")
+
+  @@map("auth_settings")
+}
+
+/// Single-use codes for when the authenticator app is gone. Only hashes are stored.
+model MfaRecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @unique @map("code_hash")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  @@map("mfa_recovery_codes")
+}
+
+/// Structured Bangladesh address. Division/district/upazila/area are kept as text
+/// against the vendored reference dataset rather than free-form input.
+///
+/// Column-to-level mapping, since two names are historical:
+///   division -> division
+///   district -> district
+///   upazila  -> the UNIT: an upazila, a city thana (Gulshan, Motijheel) or a
+///               development circle (Tejgaon). The column predates city coverage;
+///               it holds whichever kind the customer picked.
+///   area     -> the LEAF: a union or a post-office area. Nullable, because a city
+///               thana legitimately has no areas beneath it.
+/// GeoService.validateChain is the only thing that may judge these four values.
+///
+/// Soft-deleted via `deletedAt`: every read must exclude deleted rows, in the
+/// API (AddressRepository.ownedAndLive) and in RLS (addresses_read_own).
+///
+/// WARNING — this table also carries a PARTIAL UNIQUE INDEX that Prisma schema
+/// syntax cannot express, `addresses_one_default_per_user`, written by hand in
+/// the 'add_address_soft_delete' migration. `prisma migrate dev` does not know
+/// about it and WILL generate a `DROP INDEX` for it. Read every generated
+/// migration before applying it and delete that line if it appears.
 model Address {
-  id            String   @id @default(uuid()) @db.Uuid
-  userId        String   @map("user_id") @db.Uuid
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
   label         String?
-  recipientName String   @map("recipient_name")
+  recipientName String    @map("recipient_name")
   phone         String
   division      String
   district      String
   upazila       String
   area          String?
-  addressLine   String   @map("address_line")
-  postCode      String?  @map("post_code")
+  addressLine   String    @map("address_line")
+  postCode      String?   @map("post_code")
   latitude      Float?
   longitude     Float?
-  isDefault     Boolean  @default(false) @map("is_default")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  isDefault     Boolean   @default(false) @map("is_default")
+  deletedAt     DateTime? @map("deleted_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // `userId` alone is a redundant prefix of the composite below, so every address write
+  // maintains two indexes where one would do. Left in place deliberately: dropping it means
+  // a migration, and the applied database already has both. Fold it into the next migration
+  // that touches this table rather than spending one on it alone.
   @@index([userId])
+  @@index([userId, deletedAt])
   @@map("addresses")
 }
 
@@ -137,9 +427,24 @@ model Product {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
+  /// Postgres full-text index over the names, brand and descriptions.
+  ///
+  /// GENERATED ALWAYS in the database, so it cannot drift from the columns it summarises —
+  /// there is no application code that could forget to update it. Declared Unsupported
+  /// because Prisma has no tsvector type; it is only ever read through raw SQL, and naming it
+  /// here stops a future migration from dropping a column Prisma does not recognise.
+  searchVector Unsupported("tsvector")? @map("search_vector")
+
+  /// Denormalised rating, recomputed from published reviews whenever one is published or
+  /// withdrawn. Sum and count rather than an average: integer arithmetic cannot drift, and a
+  /// stored float would round differently from the number a recount produces.
+  ratingSum   Int @default(0) @map("rating_sum")
+  ratingCount Int @default(0) @map("rating_count")
+
   category Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   variants ProductVariant[]
   images   ProductImage[]
+  reviews  Review[]
 
   @@index([categoryId])
   @@index([isActive, publishedAt])
@@ -167,7 +472,14 @@ model ProductVariant {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product      Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems    CartItem[]
+  orderItems   OrderItem[]
+  inventory    Inventory[]
+  slots        DeliverySlot[]
+  batches      InventoryBatch[]
+  movements    StockMovement[]
+  reservations StockReservation[]
 
   @@index([productId, isActive])
   @@map("product_variants")
@@ -187,4 +499,714 @@ model ProductImage {
 
   @@index([productId, sortOrder])
   @@map("product_images")
+}
+
+/// Append-only record of every staff write.
+///
+/// Exists so a disputed price, a vanished product or a changed role can be traced to an
+/// actor and a moment. Nothing updates or deletes a row here — the API exposes reads only,
+/// and `service_role` is the sole writer.
+///
+/// `actorId` is RESTRICT rather than CASCADE on purpose: a staff member who did something
+/// must remain resolvable afterwards. Staff are disabled via `users.isActive`, never
+/// deleted, and this constraint enforces that.
+///
+/// `actorEmail` is denormalised beside the id because an email can change and the log must
+/// keep saying who acted at the time.
+model AdminAuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String   @map("actor_id") @db.Uuid
+  actorEmail String?  @map("actor_email")
+  actorRole  UserRole @map("actor_role")
+  /// Dotted verb, e.g. "product.publish". See AdminAuditActions.
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  /// State before and after. Plain JSON: money is serialised to a number by the caller,
+  /// because BigInt has no JSON representation.
+  before     Json?
+  after      Json?
+  /// The x-request-id of the call that caused this, so a log line ties to an audit row.
+  requestId  String?  @map("request_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("admin_audit_log")
+}
+
+/// A place stock physically sits. One row per hub, dark store or shop.
+///
+/// The address uses the same four levels as a customer address so delivery routing can
+/// compare them directly without a second geography vocabulary.
+model Warehouse {
+  id              String        @id @default(uuid()) @db.Uuid
+  /// Short human code used on labels and pick lists, e.g. "DHK-GUL".
+  code            String        @unique
+  nameEn          String        @map("name_en")
+  nameBn          String?       @map("name_bn")
+  division        String
+  district        String
+  upazila         String
+  area            String?
+  addressLine     String        @map("address_line")
+  postCode        String?       @map("post_code")
+  latitude        Float?
+  longitude       Float?
+  /// Radius this hub will deliver within. Perishables are additionally capped per product.
+  serviceRadiusKm Int?          @map("service_radius_km")
+  /// Which storage conditions this hub can actually hold.
+  ///
+  /// Defaults to AMBIENT alone: a hub is a dry room until someone says it has a chiller. The
+  /// safe default is the one that refuses frozen stock, not the one that silently accepts it
+  /// and lets it spoil.
+  storageTypes    StorageType[] @default([AMBIENT]) @map("storage_types")
+  isActive        Boolean       @default(true) @map("is_active")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  inventory     Inventory[]
+  batches       InventoryBatch[]
+  movements     StockMovement[]
+  reservations  StockReservation[]
+  orders        Order[]
+  deliverySlots DeliverySlot[]
+
+  @@index([isActive])
+  @@map("warehouses")
+}
+
+/// Current stock of one variant at one warehouse.
+///
+/// A rolling total kept alongside the batch rows it summarises: sellable quantity has to be
+/// answerable in one indexed read on every product page, which summing batches cannot do.
+/// `StockMovement` is the ledger that makes the two reconcilable.
+///
+/// Available to sell = quantityOnHand - quantityReserved. Reserved stock is physically
+/// present but promised to a checkout in progress.
+model Inventory {
+  id               String   @id @default(uuid()) @db.Uuid
+  warehouseId      String   @map("warehouse_id") @db.Uuid
+  variantId        String   @map("variant_id") @db.Uuid
+  quantityOnHand   Int      @default(0) @map("quantity_on_hand")
+  quantityReserved Int      @default(0) @map("quantity_reserved")
+  /// Alert threshold. Null means no alerting for this line.
+  reorderLevel     Int?     @map("reorder_level")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@unique([warehouseId, variantId])
+  @@index([variantId])
+  @@map("inventory")
+}
+
+/// One delivery of stock, with its own expiry.
+///
+/// The reason this module exists: doi and rosmalai are unsellable within hours, so "how many
+/// do we have" is the wrong question — "how many that are still good tomorrow" is the right
+/// one. Picking is first-expiry-first-out, which the (warehouse, variant, expiresAt) index
+/// serves directly.
+model InventoryBatch {
+  id             String    @id @default(uuid()) @db.Uuid
+  warehouseId    String    @map("warehouse_id") @db.Uuid
+  variantId      String    @map("variant_id") @db.Uuid
+  /// Supplier lot number, when they give one.
+  batchCode      String?   @map("batch_code")
+  /// Units left in THIS batch. Sums to Inventory.quantityOnHand across live batches.
+  quantity       Int
+  receivedAt     DateTime  @map("received_at")
+  /// Null for non-perishables. Set for anything with a shelf life.
+  expiresAt      DateTime? @map("expires_at")
+  /// Purchase cost per unit in poysha, for margin reporting. Never shown to a customer.
+  unitCostPoysha BigInt?   @map("unit_cost_poysha")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  movements StockMovement[]
+
+  @@index([warehouseId, variantId, expiresAt])
+  @@index([expiresAt])
+  @@map("inventory_batches")
+}
+
+/// Append-only stock ledger. Every quantity change writes one row.
+///
+/// Without it a discrepancy is visible but unexplainable: the count is wrong and nobody can
+/// say when or why. Nothing updates or deletes a row here.
+model StockMovement {
+  id            String              @id @default(uuid()) @db.Uuid
+  warehouseId   String              @map("warehouse_id") @db.Uuid
+  variantId     String              @map("variant_id") @db.Uuid
+  batchId       String?             @map("batch_id") @db.Uuid
+  /// Signed: positive adds, negative removes.
+  delta         Int
+  reason        StockMovementReason
+  note          String?
+  /// Staff member responsible. Null when the system moved stock, e.g. a sale.
+  actorId       String?             @map("actor_id") @db.Uuid
+  /// What caused it — an order id, a transfer id — so a movement traces back.
+  referenceType String?             @map("reference_type")
+  referenceId   String?             @map("reference_id")
+  createdAt     DateTime            @default(now()) @map("created_at")
+
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  batch     InventoryBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([warehouseId, variantId, createdAt])
+  @@index([referenceType, referenceId])
+  @@index([createdAt])
+  @@map("stock_movements")
+}
+
+/// Stock promised to a checkout that has not been paid for yet.
+///
+/// Held from the moment checkout starts and released automatically when `expiresAt` passes,
+/// so an abandoned basket cannot hold the last unit forever. A hold that merely existed with
+/// no expiry would leak stock permanently on every abandoned payment.
+model StockReservation {
+  id            String    @id @default(uuid()) @db.Uuid
+  warehouseId   String    @map("warehouse_id") @db.Uuid
+  variantId     String    @map("variant_id") @db.Uuid
+  quantity      Int
+  /// What the hold is for: a checkout session, then an order once paid.
+  referenceType String    @map("reference_type")
+  referenceId   String    @map("reference_id")
+  expiresAt     DateTime  @map("expires_at")
+  /// Set when the hold was consumed by a sale or given back. Null while it is live.
+  releasedAt    DateTime? @map("released_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  /// The sweep index: live holds past their expiry, cheapest possible query.
+  @@index([releasedAt, expiresAt])
+  @@index([referenceType, referenceId])
+  @@index([warehouseId, variantId])
+  @@map("stock_reservations")
+}
+
+/// A customer's basket. One per customer — a second live cart would mean the storefront and
+/// the app disagree about what is in it.
+///
+/// Signed-in only: a cart hangs off a user row, so there is no anonymous owner to merge or
+/// sweep. A grocery customer needs an address and a phone before they can check out anyway.
+model Cart {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+/// One line of a basket.
+///
+/// `unitPricePoyshaAtAdd` is what the price WAS when the customer added it. It is not
+/// silently honoured and it is not silently ignored: the cart is displayed at the live price,
+/// and checkout shows the customer what changed before they pay. Storing only the live price
+/// would make a change invisible; honouring the stored one would bill last week's price for
+/// perishables whose cost moves weekly.
+model CartItem {
+  id                   String   @id @default(uuid()) @db.Uuid
+  cartId               String   @map("cart_id") @db.Uuid
+  variantId            String   @map("variant_id") @db.Uuid
+  quantity             Int
+  unitPricePoyshaAtAdd BigInt   @map("unit_price_poysha_at_add")
+  addedAt              DateTime @default(now()) @map("added_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  cart    Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  /// One line per variant: adding the same item twice raises the quantity, it does not
+  /// create a second line the customer would have to reconcile by hand.
+  @@unique([cartId, variantId])
+  @@index([variantId])
+  @@map("cart_items")
+}
+
+/// A placed order.
+///
+/// The delivery address is COPIED here as text rather than referenced. A customer may edit or
+/// soft-delete the address after ordering, and an order must always say where it was actually
+/// sent — a foreign key would let history rewrite itself.
+///
+/// Every money column is BigInt poysha, frozen at placement. The catalog may reprice freely
+/// afterwards without touching what was charged.
+model Order {
+  id            String        @id @default(uuid()) @db.Uuid
+  /// Human-readable, e.g. "BB-20260830-000042". What a customer quotes on the phone.
+  orderNumber   String        @unique @map("order_number")
+  userId        String        @map("user_id") @db.Uuid
+  status        OrderStatus   @default(PLACED)
+  paymentMethod PaymentMethod @map("payment_method")
+  paymentStatus PaymentStatus @default(PENDING) @map("payment_status")
+
+  /// Which hub fulfils it. Set at placement so the reservation and the pick list agree.
+  warehouseId String @map("warehouse_id") @db.Uuid
+
+  // ── Delivery address, snapshotted ─────────────────────────────────────────
+  recipientName String  @map("recipient_name")
+  phone         String
+  division      String
+  district      String
+  upazila       String
+  area          String?
+  addressLine   String  @map("address_line")
+  postCode      String? @map("post_code")
+  latitude      Float?
+  longitude     Float?
+
+  // ── Money, frozen ─────────────────────────────────────────────────────────
+  subtotalPoysha    BigInt @map("subtotal_poysha")
+  deliveryFeePoysha BigInt @default(0) @map("delivery_fee_poysha")
+  discountPoysha    BigInt @default(0) @map("discount_poysha")
+  totalPoysha       BigInt @map("total_poysha")
+
+  customerNote String?   @map("customer_note")
+  placedAt     DateTime  @default(now()) @map("placed_at")
+  deliveredAt  DateTime? @map("delivered_at")
+  cancelledAt  DateTime? @map("cancelled_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user           User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  warehouse      Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  /// The window the customer chose, and the date it falls on. Null for orders placed before
+  /// slots existed, or where none was offered.
+  deliverySlotId String?   @map("delivery_slot_id") @db.Uuid
+  /// Date only, at midnight. The slot supplies the time of day; storing them separately is
+  /// what lets capacity be counted per slot per DAY rather than per timestamp.
+  deliveryDate   DateTime? @map("delivery_date") @db.Date
+
+  deliverySlot DeliverySlot? @relation(fields: [deliverySlotId], references: [id], onDelete: Restrict)
+
+  items       OrderItem[]
+  events      OrderEvent[]
+  payments    PaymentTransaction[]
+  redemptions PromotionRedemption[]
+
+  @@index([deliverySlotId, deliveryDate])
+  @@index([userId, placedAt])
+  @@index([status, placedAt])
+  @@index([warehouseId, status])
+  @@map("orders")
+}
+
+/// One line of an order, with everything about the product copied in.
+///
+/// The name and SKU are snapshotted alongside the price: a product renamed or deactivated
+/// next month must not change what an old invoice says was bought.
+model OrderItem {
+  id              String @id @default(uuid()) @db.Uuid
+  orderId         String @map("order_id") @db.Uuid
+  variantId       String @map("variant_id") @db.Uuid
+  sku             String
+  productNameEn   String @map("product_name_en")
+  productNameBn   String @map("product_name_bn")
+  variantNameEn   String @map("variant_name_en")
+  quantity        Int
+  unitPricePoysha BigInt @map("unit_price_poysha")
+  lineTotalPoysha BigInt @map("line_total_poysha")
+
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  review  Review?
+
+  @@index([orderId])
+  @@index([variantId])
+  @@map("order_items")
+}
+
+/// Append-only record of every status change.
+///
+/// Answers "when did it ship, and who dispatched it" — which the current status alone cannot.
+/// Nothing updates or deletes a row here.
+model OrderEvent {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @map("order_id") @db.Uuid
+  fromStatus OrderStatus? @map("from_status")
+  toStatus   OrderStatus  @map("to_status")
+  /// Staff member who moved it. Null when the customer or the system did.
+  actorId    String?      @map("actor_id") @db.Uuid
+  note       String?
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_events")
+}
+
+/// One transactional message, recorded before it is attempted.
+///
+/// The row is written first and updated with the outcome, deliberately: a send that crashes
+/// mid-flight leaves a PENDING row the retry sweep can find, whereas recording only on success
+/// would lose it silently. A failed notification must never fail the business action that
+/// triggered it, so nothing here is written inside the order transaction.
+///
+/// The rendered body is NOT stored. Bodies carry OTPs and delivery addresses; the template id
+/// plus the reference is enough to reconstruct what was said without keeping a credential in
+/// the database.
+model Notification {
+  id            String              @id @default(uuid()) @db.Uuid
+  userId        String?             @map("user_id") @db.Uuid
+  channel       NotificationChannel
+  /// Key into NOTIFICATION_TEMPLATES, not free text — the body is rendered from it at send.
+  templateId    String              @map("template_id")
+  language      Language
+  /// Phone or email as addressed at send time. Snapshotted: a customer who later changes
+  /// their number must not rewrite where a past message actually went.
+  recipient     String
+  status        NotificationStatus  @default(PENDING)
+  attempts      Int                 @default(0)
+  /// Gateway failure text from the last attempt. Never a body, never a credential.
+  lastError     String?             @map("last_error")
+  /// What the message was about, e.g. "Order" + the order id.
+  referenceType String?             @map("reference_type")
+  referenceId   String?             @map("reference_id") @db.Uuid
+  sentAt        DateTime?           @map("sent_at")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// The retry sweep index: everything still owed a delivery attempt.
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+  @@index([referenceType, referenceId])
+  @@map("notifications")
+}
+
+/// Every movement of money against an order, charge and refund alike.
+///
+/// This table is the answer to "was this order actually paid, and by what". `orders.
+/// payment_status` is a summary of these rows, not a substitute for them: a status column
+/// alone cannot say when cash was handed over, who took it, or which gateway reference to
+/// quote in a dispute.
+///
+/// Rows are append-only with exactly two exceptions. A failed attempt stays FAILED and a second
+/// attempt is a second row, so the history of a difficult payment survives. The exceptions:
+///   1. A PENDING row moves to one terminal status exactly once, by a write conditional on
+///      PENDING: a bKash CHARGE attempt to CAPTURED, FAILED or CANCELLED; an automatic bKash
+///      REFUND claim to CAPTURED.
+///   2. A PENDING automatic REFUND claim is DELETED when bKash definitively refuses the refund
+///      (or a SUPER_ADMIN resolves it as not refunded), so a later sweep may claim it again. No
+///      other row is ever deleted; a CAPTURED row never changes.
+model PaymentTransaction {
+  id                   String                   @id @default(uuid()) @db.Uuid
+  orderId              String                   @map("order_id") @db.Uuid
+  method               PaymentMethod
+  direction            PaymentDirection         @default(CHARGE)
+  status               PaymentTransactionStatus @default(PENDING)
+  /// Always positive, in poysha. The direction says which way it went.
+  amountPoysha         BigInt                   @map("amount_poysha")
+  /// The gateway's own id for this movement (bKash's paymentID on a CHARGE), or null for cash.
+  /// An automatic bKash REFUND carries 'refund:' + the charge's trxID instead, which makes it the
+  /// claim that only one refund pass can hold. Unique when present, so a replayed callback cannot
+  /// record the same payment twice.
+  gatewayReference     String?                  @unique @map("gateway_reference")
+  /// bKash's trxID. On a CHARGE it is set when the charge is CAPTURED, and a refund names it. On
+  /// an automatic REFUND it is bKash's refundTrxID (null while the claim is PENDING, or when bKash
+  /// gave none). Unique when present, so one gateway transaction cannot back two ledger rows.
+  gatewayTransactionId String?                  @unique @map("gateway_transaction_id")
+  /// Staff member who took the cash. Null for a gateway payment, which has no human.
+  collectedBy          String?                  @map("collected_by") @db.Uuid
+  /// Gateway failure text. Never a token, a PIN or a card number.
+  failureReason        String?                  @map("failure_reason")
+  capturedAt           DateTime?                @map("captured_at")
+  createdAt            DateTime                 @default(now()) @map("created_at")
+  updatedAt            DateTime                 @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+  @@index([status, createdAt])
+  @@map("payment_transactions")
+}
+
+/// An offer of a staff role to an email address that does not have one yet.
+///
+/// The raw token is NEVER stored. Only its SHA-256 hash is, exactly as a password reset would
+/// be handled: the token is a bearer credential that grants a permission, and a leaked table
+/// dump must not hand an attacker a working grant. The raw value exists once, in the email.
+///
+/// Accepting requires the signed-in user's email to match `email` on this row. Without that
+/// check the token alone would be enough, and a forwarded invitation email would let the wrong
+/// person take the role.
+model StaffInvitation {
+  id         String                @id @default(uuid()) @db.Uuid
+  /// Lowercased at write time, so one address cannot hold two open invitations by case.
+  email      String
+  role       UserRole
+  /// SHA-256 of the token that was emailed. Unique, so a lookup by hash is a single index hit.
+  tokenHash  String                @unique @map("token_hash")
+  status     StaffInvitationStatus @default(PENDING)
+  expiresAt  DateTime              @map("expires_at")
+  invitedBy  String                @map("invited_by") @db.Uuid
+  /// Set when the invitation was taken up. The account that took it, for the audit trail.
+  acceptedBy String?               @map("accepted_by") @db.Uuid
+  acceptedAt DateTime?             @map("accepted_at")
+  revokedBy  String?               @map("revoked_by") @db.Uuid
+  revokedAt  DateTime?             @map("revoked_at")
+  createdAt  DateTime              @default(now()) @map("created_at")
+  updatedAt  DateTime              @updatedAt @map("updated_at")
+
+  inviter  User  @relation("StaffInvitationsSent", fields: [invitedBy], references: [id], onDelete: Restrict)
+  acceptor User? @relation("StaffInvitationsAccepted", fields: [acceptedBy], references: [id], onDelete: SetNull)
+
+  /// Finding the open invitation for an address, which is what the uniqueness rule needs.
+  @@index([email, status])
+  @@index([status, expiresAt])
+  @@map("staff_invitations")
+}
+
+/// A delivery pricing band: one fee, and the places it applies to.
+///
+/// Zones are priced, not places. "Inside Dhaka city", "Dhaka suburbs", "rest of Bangladesh"
+/// are three fees, and each collects however many divisions, districts or units belong to it.
+/// Modelling it the other way round — a fee per district — makes a nationwide price change 64
+/// edits and guarantees they drift.
+model DeliveryZone {
+  id              String   @id @default(uuid()) @db.Uuid
+  nameEn          String   @map("name_en")
+  nameBn          String?  @map("name_bn")
+  /// Flat fee for this zone, in poysha.
+  feePoysha       BigInt   @map("fee_poysha")
+  /// Order subtotal at or above which delivery is free here. Null means never free.
+  freeAbovePoysha BigInt?  @map("free_above_poysha")
+  /// The zone used when no rule matches. Exactly one may be true — enforced by a partial
+  /// unique index, because two defaults means the fee depends on row order.
+  isDefault       Boolean  @default(false) @map("is_default")
+  isActive        Boolean  @default(true) @map("is_active")
+  sortOrder       Int      @default(0) @map("sort_order")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  rules DeliveryZoneRule[]
+
+  @@index([isActive, sortOrder])
+  @@map("delivery_zones")
+}
+
+/// One place, or family of places, that falls in a zone.
+///
+/// Specificity decides: a rule naming a unit beats one naming only its district, which beats
+/// one naming only the division. That is what lets "Dhaka division is 120 taka, except Dhaka
+/// district which is 80, except Gulshan which is 60" be three rows instead of a special case.
+///
+/// Names are the same strings the geo dataset and the address book use, validated against it
+/// on write — a typo'd district would silently never match and quietly overcharge.
+model DeliveryZoneRule {
+  id        String   @id @default(uuid()) @db.Uuid
+  zoneId    String   @map("zone_id") @db.Uuid
+  division  String
+  /// Null means the whole division.
+  district  String?
+  /// Null means the whole district. The UNIT level: upazila, city thana or circle.
+  unit      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  zone DeliveryZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  /// One place belongs to one zone. Without this the same address matches two fees.
+  @@unique([division, district, unit])
+  @@index([zoneId])
+  @@map("delivery_zone_rules")
+}
+
+/// A discount a customer can claim by code.
+///
+/// Limits are counted from `promotion_redemptions`, never from a column on this row. A
+/// `timesUsed` counter is the classic way to oversell a coupon: two checkouts read the same
+/// value, both find room, and both increment it to the same number.
+model Promotion {
+  id                String        @id @default(uuid()) @db.Uuid
+  /// Uppercased at write time and unique, so EID25 and eid25 cannot both exist.
+  code              String        @unique
+  nameEn            String        @map("name_en")
+  nameBn            String?       @map("name_bn")
+  type              PromotionType
+  /// Percent (1–100) for PERCENTAGE, poysha for FIXED_AMOUNT, ignored for FREE_DELIVERY.
+  value             BigInt
+  /// Basket value required before this code applies at all. Zero means no minimum.
+  minSubtotalPoysha BigInt        @default(0) @map("min_subtotal_poysha")
+  /// Ceiling on a PERCENTAGE discount. Null means uncapped — dangerous on a large basket.
+  maxDiscountPoysha BigInt?       @map("max_discount_poysha")
+  startsAt          DateTime      @map("starts_at")
+  /// Null means it runs until deactivated.
+  endsAt            DateTime?     @map("ends_at")
+  /// Total redemptions allowed across all customers. Null means unlimited.
+  usageLimit        Int?          @map("usage_limit")
+  /// Redemptions allowed per customer. Null means unlimited.
+  perCustomerLimit  Int?          @map("per_customer_limit")
+  isActive          Boolean       @default(true) @map("is_active")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  redemptions PromotionRedemption[]
+
+  @@index([isActive, startsAt, endsAt])
+  @@map("promotions")
+}
+
+/// One use of one promotion on one order.
+///
+/// This table IS the usage limit: counting rows here is the only count that cannot drift from
+/// what was actually granted. Written inside the order transaction, so a redemption without an
+/// order — or an order that claimed a discount without recording it — cannot exist.
+model PromotionRedemption {
+  id             String   @id @default(uuid()) @db.Uuid
+  promotionId    String   @map("promotion_id") @db.Uuid
+  /// One promotion per order. The unique index is what stops a retry double-counting.
+  orderId        String   @unique @map("order_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  /// What this redemption was actually worth, in poysha. Snapshotted: the promotion's terms
+  /// may be edited later, and what the customer received must not change with them.
+  discountPoysha BigInt   @map("discount_poysha")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Restrict)
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// Counting one customer's uses of one code, which is the per-customer limit check.
+  @@index([promotionId, userId])
+  @@map("promotion_redemptions")
+}
+
+/// One customer's rating of one thing they actually received.
+///
+/// Tied to an ORDER LINE, not to a product: `orderItemId` is unique, so a customer may review
+/// each delivered line once and cannot review a product they never bought. That is what makes
+/// "verified purchase" a property of the schema rather than a badge the application remembers
+/// to check.
+model Review {
+  id             String       @id @default(uuid()) @db.Uuid
+  productId      String       @map("product_id") @db.Uuid
+  /// The line that earns the right to review. Unique: one review per delivered line.
+  orderItemId    String       @unique @map("order_item_id") @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  /// Whole stars, 1-5.
+  rating         Int
+  title          String?
+  body           String?
+  status         ReviewStatus @default(PENDING)
+  /// Staff member who published or rejected it.
+  moderatedBy    String?      @map("moderated_by") @db.Uuid
+  moderatedAt    DateTime?    @map("moderated_at")
+  /// Why it was rejected. Internal — never returned to the customer.
+  moderationNote String?      @map("moderation_note")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// The storefront read: published reviews for one product, newest first.
+  @@index([productId, status, createdAt])
+  /// The moderation queue.
+  @@index([status, createdAt])
+  @@index([userId])
+  @@map("reviews")
+}
+
+/// A recurring delivery window offered by one hub.
+///
+/// A template, not an occurrence: "Morning 9–11, Sun/Tue/Thu, 20 orders" describes every
+/// Sunday, Tuesday and Thursday. Occurrences are computed for the next few days rather than
+/// stored, because storing them means a job that has to keep running for the shop to take
+/// orders next month.
+///
+/// Capacity belongs to the HUB, not the zone: it is a van and a driver, and both live at a
+/// warehouse.
+model DeliverySlot {
+  id                 String   @id @default(uuid()) @db.Uuid
+  warehouseId        String   @map("warehouse_id") @db.Uuid
+  labelEn            String   @map("label_en")
+  labelBn            String?  @map("label_bn")
+  /// Minutes from midnight, local time. Integers rather than a time type because the only
+  /// arithmetic ever done on them is comparison and subtraction against a cutoff.
+  startMinute        Int      @map("start_minute")
+  endMinute          Int      @map("end_minute")
+  /// Which weekdays this window runs, 0 = Sunday. The Bangladeshi week starts Sunday, and a
+  /// grocery genuinely does not deliver every day.
+  daysOfWeek         Int[]    @map("days_of_week")
+  /// How many orders this window can take, per occurrence.
+  capacity           Int
+  /// Orders close this many minutes before the window opens. This is the "order by 8am for
+  /// same-day doi" rule: a two-hour window needs the picking done before the van leaves.
+  cutoffMinutes      Int      @default(0) @map("cutoff_minutes")
+  /// Whether this window has cold transport. A perishable basket may only take a slot that
+  /// does — the delivery van is the last link in the cold chain and the easiest to forget.
+  supportsPerishable Boolean  @default(false) @map("supports_perishable")
+  isActive           Boolean  @default(true) @map("is_active")
+  sortOrder          Int      @default(0) @map("sort_order")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  warehouse        Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  orders           Order[]
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id])
+  productVariantId String?         @db.Uuid
+
+  @@index([warehouseId, isActive])
+  @@map("delivery_slots")
+}
+
+/// A signed-in user proving a number. The number is written to `users` only on success.
+model PhoneVerification {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// The number being proved, normalised (`+8801XXXXXXXXX`). Not yet on the user row.
+  phone      String
+  /// SHA-256 of the 6-digit code. Deliberately not unique: two live codes may collide.
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  /// Database clock, not the app's: the send limits compare it with `now()` in SQL.
+  createdAt  DateTime  @default(dbgenerated("statement_timestamp()")) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([phone, createdAt])
+  @@index([createdAt])
+  @@map("phone_verifications")
+}
+
+/// A customer signing in with a verified number.
+model PhoneLoginChallenge {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// The number the code was sent to. Must still be the user's verified phone at redemption.
+  phone      String
+  codeHash   String    @map("code_hash")
+  expiresAt  DateTime  @map("expires_at")
+  attempts   Int       @default(0)
+  consumedAt DateTime? @map("consumed_at")
+  ipAddress  String?   @map("ip_address")
+  /// Database clock, not the app's: the send limits compare it with `now()` in SQL.
+  createdAt  DateTime  @default(dbgenerated("statement_timestamp()")) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([phone, createdAt])
+  @@index([createdAt])
+  @@map("phone_login_challenges")
 }
