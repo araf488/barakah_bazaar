@@ -28,7 +28,9 @@ fi
 usermod -aG docker "$DEPLOY_USER"
 
 echo "== $APP_DIR"
-install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 750 "$APP_DIR" "$APP_DIR/postgres-init"
+install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 750 "$APP_DIR"
+# The postgres user inside the container (not arefin) reads this folder on first start.
+install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 755 "$APP_DIR/postgres-init"
 install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 640 "$SRC/docker-compose.yml" "$APP_DIR/"
 install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 750 "$SRC/deploy.sh" "$APP_DIR/"
 install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 755 "$SRC/postgres-init/01-roles.sh" "$APP_DIR/postgres-init/"
