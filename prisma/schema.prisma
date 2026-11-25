@@ -476,7 +476,6 @@ model ProductVariant {
   cartItems    CartItem[]
   orderItems   OrderItem[]
   inventory    Inventory[]
-  slots        DeliverySlot[]
   batches      InventoryBatch[]
   movements    StockMovement[]
   reservations StockReservation[]
@@ -1158,10 +1157,8 @@ model DeliverySlot {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  warehouse        Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
-  orders           Order[]
-  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id])
-  productVariantId String?         @db.Uuid
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  orders    Order[]
 
   @@index([warehouseId, isActive])
   @@map("delivery_slots")
