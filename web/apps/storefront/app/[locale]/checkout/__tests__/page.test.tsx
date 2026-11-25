@@ -21,6 +21,7 @@ vi.mock('../../../../lib/auth/session', () => ({ getCurrentUser: vi.fn() }));
 vi.mock('../../../../lib/checkout/getCheckout', () => ({ getCheckout: vi.fn() }));
 vi.mock('../../../../lib/checkout/actions', () => ({}));
 vi.mock('../../../../lib/account/actions', () => ({}));
+vi.mock('../../../../lib/payments/methods', () => ({ getPaymentMethods: vi.fn() }));
 
 const { default: CheckoutPage } = await import('../page');
 const { getCurrentUser } = await import('../../../../lib/auth/session');
@@ -29,6 +30,8 @@ const { redirect } = await import('../../../../i18n/navigation');
 const { OrderSummary } = await import('../../../../components/checkout/OrderSummary');
 const { AddressChooser } = await import('../../../../components/checkout/AddressChooser');
 const { SlotPicker } = await import('../../../../components/checkout/SlotPicker');
+const { PaymentChooser } = await import('../../../../components/checkout/PaymentChooser');
+const { getPaymentMethods } = await import('../../../../lib/payments/methods');
 const { AddressBook } = await import('../../../../components/account/AddressBook');
 const { emptyCart, fromServerCart } = await import('../../../../lib/cart/view');
 
@@ -66,6 +69,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getCurrentUser).mockResolvedValue(USER);
   vi.mocked(getCheckout).mockResolvedValue(READY);
+  vi.mocked(getPaymentMethods).mockResolvedValue(['CASH_ON_DELIVERY', 'BKASH']);
 });
 
 describe('checkout page', () => {
@@ -90,7 +94,10 @@ describe('checkout page', () => {
       selectedId: 'addr-1',
     });
     expect(tree.find((el) => el.type === SlotPicker)?.props.slots).toEqual([slot()]);
-    expect(tree.some((el) => el.props.children === 't:cod')).toBe(true);
+    expect(tree.find((el) => el.type === PaymentChooser)?.props.methods).toEqual([
+      'CASH_ON_DELIVERY',
+      'BKASH',
+    ]);
     expect(tree.find((el) => el.type === 'textarea')?.props).toMatchObject({
       name: 'customerNote',
       form: 'place-order',

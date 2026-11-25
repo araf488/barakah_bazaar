@@ -74,7 +74,15 @@ Outstanding is `total − captured + refunded`, computed from the ledger.
 
 ## bKash Tokenized Checkout
 
-The customer pays on bKash's own page. Three routes take part.
+The customer pays on bKash's own page. Four routes take part.
+
+### `GET /payments/methods` — what checkout may offer (public)
+
+`{ methods: [...] }`: `CASH_ON_DELIVERY` always, plus `BKASH` only when `PAYMENT_PROVIDER` is not
+`noop`. The storefront offers bKash only when it is listed, because under the noop gateway every
+start is refused with `BkashUnavailable` and the order could never be paid. It does not stop an
+API client from placing a bKash order under noop; such an order can still switch to cash on
+delivery or lapse.
 
 ### `POST /orders/:id/payments/bkash` — start a payment (customer)
 

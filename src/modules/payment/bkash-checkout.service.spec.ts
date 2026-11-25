@@ -2,6 +2,7 @@ import { HttpStatus } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
 import { createMockConfig, createMockLogger } from '../../../test/support/mocks';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { AppConfigService } from '../../config';
 import {
   OrderStatus,
   PaymentDirection,
@@ -205,6 +206,51 @@ describe('BkashCheckoutService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  describe('availableMethods', () => {
+    it('offers cash on delivery and bKash when the bKash gateway is configured', () => {
+      expect(service.availableMethods()).toEqual({
+        ok: true,
+        data: { methods: ['CASH_ON_DELIVERY', 'BKASH'] },
+      });
+    });
+
+    it('offers only cash on delivery under the noop gateway, which refuses every bKash start', () => {
+      provider = 'noop';
+      service = build();
+
+      expect(service.availableMethods()).toEqual({
+        ok: true,
+        data: { methods: ['CASH_ON_DELIVERY'] },
+      });
+    });
+
+    it('answers 500 and logs when the configuration cannot be read', () => {
+      const broken = new BkashCheckoutService(
+        payments as unknown as PaymentRepository,
+        orders as unknown as OrderRepository,
+        gateway,
+        notifications as unknown as NotificationService,
+        authService as unknown as AuthService,
+        {
+          get: () => {
+            throw new Error('config gone');
+          },
+        } as unknown as AppConfigService,
+        logger,
+      );
+
+      expect(broken.availableMethods()).toEqual({
+        ok: false,
+        status: 500,
+        message: 'Something went wrong on our end. Please try again.',
+      });
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        'Exception occurred in BkashCheckoutService.availableMethods',
+      );
+    });
   });
 
   describe('start', () => {

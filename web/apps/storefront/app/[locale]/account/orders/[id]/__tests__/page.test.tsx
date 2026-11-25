@@ -28,12 +28,14 @@ vi.mock('../../../../../../i18n/navigation', async (importOriginal) => ({
 vi.mock('../../../../../../lib/auth/session', () => ({ getCurrentUser: vi.fn() }));
 vi.mock('../../../../../../lib/checkout/getOrder', () => ({ getOrder: vi.fn() }));
 vi.mock('../../../../../../lib/orders/actions', () => ({}));
+vi.mock('../../../../../../lib/payments/actions', () => ({}));
 
 const { default: OrderPage } = await import('../page');
 const { getCurrentUser } = await import('../../../../../../lib/auth/session');
 const { getOrder } = await import('../../../../../../lib/checkout/getOrder');
 const { redirect } = await import('../../../../../../i18n/navigation');
 const { CancelOrder } = await import('../../../../../../components/orders/CancelOrder');
+const { BkashPayPanel } = await import('../../../../../../components/payments/BkashPayPanel');
 const { OrderTimeline } = await import('../../../../../../components/orders/OrderTimeline');
 const { OrderItems, OrderTotals } =
   await import('../../../../../../components/orders/OrderContents');
@@ -112,5 +114,22 @@ describe('order page', () => {
 
   it('leaves the note out when there is none', async () => {
     expect(textOf(await render())).not.toContain('t:note');
+  });
+
+  it('offers to pay a bKash order that still waits for its money', async () => {
+    vi.mocked(getOrder).mockResolvedValue(order({ paymentMethod: 'BKASH' }));
+    const panel = (await render()).find((el) => el.type === BkashPayPanel);
+    expect(panel?.props).toEqual({ orderId: 'order-1', totalPoysha: 256000, awaiting: true });
+  });
+
+  it('offers no bKash payment for a cash order or a paid one', async () => {
+    let panel = (await render()).find((el) => el.type === BkashPayPanel);
+    expect(panel?.props.awaiting).toBe(false);
+
+    vi.mocked(getOrder).mockResolvedValue(
+      order({ paymentMethod: 'BKASH', paymentStatus: 'PAID', status: 'CONFIRMED' }),
+    );
+    panel = (await render()).find((el) => el.type === BkashPayPanel);
+    expect(panel?.props.awaiting).toBe(false);
   });
 });

@@ -27,10 +27,12 @@ vi.mock('../../../../../../i18n/navigation', async (importOriginal) => ({
 }));
 vi.mock('../../../../../../lib/auth/session', () => ({ getCurrentUser: vi.fn() }));
 vi.mock('../../../../../../lib/checkout/getOrder', () => ({ getOrder: vi.fn() }));
+vi.mock('../../../../../../lib/payments/actions', () => ({}));
 
 const { default: OrderPlacedPage } = await import('../page');
 const { OrderItems, OrderTotals } =
   await import('../../../../../../components/orders/OrderContents');
+const { BkashPayPanel } = await import('../../../../../../components/payments/BkashPayPanel');
 const { getCurrentUser } = await import('../../../../../../lib/auth/session');
 const { getOrder } = await import('../../../../../../lib/checkout/getOrder');
 const { redirect } = await import('../../../../../../i18n/navigation');
@@ -47,7 +49,10 @@ const textOf = (node: ReactNode): string => {
   if (Array.isArray(node)) return node.map(textOf).join('');
   return isValidElement(node) ? textOf((node as AnyElement).props.children) : '';
 };
-const params = (locale = 'en') => ({ params: Promise.resolve({ locale, id: 'order-1' }) });
+const params = (locale = 'en', search: Record<string, string> = {}) => ({
+  params: Promise.resolve({ locale, id: 'order-1' }),
+  searchParams: Promise.resolve(search),
+});
 const USER = { id: 'u1', email: 'a@b.co', phoneVerified: false, role: 'CUSTOMER', createdAt: '' };
 
 beforeEach(() => {
@@ -75,7 +80,7 @@ describe('order placed page', () => {
     const text = textOf(await OrderPlacedPage(params()));
 
     expect(text).toContain('BB-20261119-0001');
-    expect(text).toContain('t:placed.payOnDelivery:{"total":"৳2,560.00"}');
+    expect(text).toContain('t:checkout.placed.payOnDelivery:{"total":"৳2,560.00"}');
     expect(text).toContain('House 12, Road 4, Banani, Gulshan, Dhaka 1213');
   });
 
@@ -89,11 +94,11 @@ describe('order placed page', () => {
   });
 
   it('shows the note only when the order has one', async () => {
-    expect(textOf(await OrderPlacedPage(params()))).not.toContain('t:placed.note');
+    expect(textOf(await OrderPlacedPage(params()))).not.toContain('t:checkout.placed.note');
 
     vi.mocked(getOrder).mockResolvedValue(order({ customerNote: 'Ring twice' }));
     const text = textOf(await OrderPlacedPage(params()));
-    expect(text).toContain('t:placed.note');
+    expect(text).toContain('t:checkout.placed.note');
     expect(text).toContain('Ring twice');
   });
 
@@ -102,5 +107,45 @@ describe('order placed page', () => {
       .map((element) => element.props.href)
       .filter(Boolean);
     expect(hrefs).toContain('/account/orders/order-1');
+  });
+
+  describe('a bKash order', () => {
+    const panelOf = (tree: ReturnType<typeof elementsOf>) =>
+      tree.find((element) => element.type === BkashPayPanel)?.props;
+
+    it('offers to pay while it waits, with the reason the first attempt failed', async () => {
+      vi.mocked(getOrder).mockResolvedValue(order({ paymentMethod: 'BKASH' }));
+      const tree = elementsOf(await OrderPlacedPage(params('en', { payment: 'gateway' })));
+
+      expect(panelOf(tree)).toEqual({
+        orderId: 'order-1',
+        totalPoysha: 256000,
+        awaiting: true,
+        initialError: 'gateway',
+      });
+      expect(textOf(tree)).not.toContain('t:checkout.placed.payOnDelivery');
+    });
+
+    it('ignores a reason in the link that is not one of ours', async () => {
+      vi.mocked(getOrder).mockResolvedValue(order({ paymentMethod: 'BKASH' }));
+      const tree = elementsOf(await OrderPlacedPage(params('en', { payment: '<b>hi</b>' })));
+      expect(panelOf(tree)?.initialError).toBeNull();
+    });
+
+    it('says bKash took the money once it is paid, with nothing left to pay', async () => {
+      vi.mocked(getOrder).mockResolvedValue(
+        order({ paymentMethod: 'BKASH', paymentStatus: 'PAID', status: 'CONFIRMED' }),
+      );
+      const tree = elementsOf(await OrderPlacedPage(params()));
+
+      expect(textOf(tree)).toContain('t:payment.paidBkash:{"total":"৳2,560.00"}');
+      expect(panelOf(tree)?.awaiting).toBe(false);
+    });
+
+    it('keeps the cash line for a cash order and offers no bKash payment', async () => {
+      const tree = elementsOf(await OrderPlacedPage(params()));
+      expect(textOf(tree)).toContain('t:checkout.placed.payOnDelivery');
+      expect(panelOf(tree)?.awaiting).toBe(false);
+    });
   });
 });

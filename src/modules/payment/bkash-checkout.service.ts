@@ -21,7 +21,7 @@ import { AuthService } from '../auth/auth.service';
 import { NotificationService } from '../notification/notification.service';
 import { OrderConstants } from '../order/order.constants';
 import { OrderRepository, OrderWithDetail } from '../order/order.repository';
-import { BkashCheckoutStartedDto } from './dto/bkash.dto';
+import { BkashCheckoutStartedDto, PaymentMethodsDto } from './dto/bkash.dto';
 import {
   BkashOutcome,
   BkashOutcomeWord,
@@ -80,6 +80,29 @@ export class BkashCheckoutService {
     @Inject(ConfigService) private readonly config: AppConfigService,
     @InjectPinoLogger(BkashCheckoutService.name) private readonly logger: PinoLogger,
   ) {}
+
+  /**
+   * The payment methods checkout may offer: cash on delivery always, bKash only when a real gateway
+   * is configured. Offering bKash under the noop gateway would place orders that can never be
+   * paid, because every start is refused with `BkashUnavailable`.
+   */
+  availableMethods(): ServiceResponse<PaymentMethodsDto> {
+    try {
+      const bkashLive =
+        this.config.get('PAYMENT_PROVIDER', { infer: true }) !== PaymentConstants.NoopProvider;
+      return serviceOk({
+        methods: bkashLive
+          ? [PaymentMethod.CASH_ON_DELIVERY, PaymentMethod.BKASH]
+          : [PaymentMethod.CASH_ON_DELIVERY],
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'Exception occurred in BkashCheckoutService.availableMethods',
+      );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
 
   /**
    * Starts a bKash payment for the customer's own order (spec §4): resolves the caller as an

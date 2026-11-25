@@ -64,6 +64,8 @@ export const PaymentConstants = {
   BkashStartRoute: 'orders/:id/payments/bkash',
   /** Route, under the API prefix, bKash sends the customer's browser back to. */
   BkashCallbackRoute: 'payments/bkash/callback',
+  /** Public route, under the API prefix, listing the payment methods checkout may offer. */
+  MethodsRoute: 'payments/methods',
   /** Longest `paymentID` the callback accepts; bKash's are far shorter. */
   MaxCallbackPaymentIdLength: 64,
   /** The only callback `status` that makes the callback ask bKash to execute the payment. */

@@ -104,6 +104,8 @@ check "storefront (en)"   /en                     200 text/html "<html lang=\"en
 check "admin"             /admin/                 200 text/html "Barakah Bazaar Admin"
 check "unknown api path"  /api/v1/does-not-exist  404 application/json
 check "auth guard (R1)"   /api/v1/auth/me         401 application/json
+# Public, and cash on delivery alone while PAYMENT_PROVIDER is the default noop gateway.
+check "payment methods"   /api/v1/payments/methods 200 application/json '^\{"methods":\["CASH_ON_DELIVERY"\]\}$'
 
 # /api/docs sits outside /api/v1, so these also prove the web mount hands the whole /api prefix
 # to Nest: in production Nest answers its JSON 404, never a Next page.

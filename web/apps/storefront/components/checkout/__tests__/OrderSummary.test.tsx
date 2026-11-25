@@ -123,4 +123,22 @@ describe('OrderSummary', () => {
     );
     expect(screen.getByText('৳২,৫৬০.০০', { selector: 'dd' })).toBeInTheDocument();
   });
+
+  it('names bKash on the button and in the hint once bKash is chosen on the page', () => {
+    renderWithIntl(
+      <>
+        <input type="radio" name="paymentMethod" value="CASH_ON_DELIVERY" form="place-order" />
+        <input type="radio" name="paymentMethod" value="BKASH" form="place-order" />
+        <OrderSummary cart={CART} addressId="addr-1" quote={QUOTE} blocker={null} />
+      </>,
+    );
+    expect(screen.getByText('You pay ৳2,560.00 in cash when it arrives.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByDisplayValue('BKASH'));
+
+    expect(screen.getByRole('button', { name: 'Place order and pay with bKash' })).toBeEnabled();
+    expect(screen.getByText('Next, bKash opens to take ৳2,560.00.')).toBeInTheDocument();
+    const placeForm = document.getElementById('place-order') as HTMLFormElement;
+    expect(new FormData(placeForm).get('paymentMethod')).toBe('BKASH');
+  });
 });

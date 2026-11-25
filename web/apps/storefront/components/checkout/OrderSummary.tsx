@@ -2,7 +2,7 @@
 
 import { formatCount, formatPoysha, pickLocalized } from '@barakah/ui';
 import { useLocale, useTranslations } from 'next-intl';
-import { useActionState, useId } from 'react';
+import { useActionState, useEffect, useId, useState } from 'react';
 
 import type { CartView } from '../../lib/cart/view';
 import {
@@ -12,8 +12,10 @@ import {
   previewPromoAction,
 } from '../../lib/checkout/actions';
 import type { QuoteOutcome } from '../../lib/checkout/delivery';
+import type { PaymentMethod } from '../../lib/checkout/api';
 import type { CheckoutErrorKey } from '../../lib/checkout/errors';
 import { totalOf } from '../../lib/checkout/rules';
+import { BKASH, CASH_ON_DELIVERY, parsePaymentMethod } from '../../lib/payments/rules';
 import { PLACE_ORDER_FORM_ID } from './formId';
 import { PromoBox } from './PromoBox';
 import { submitKeepingChoices } from './submitKeepingChoices';
@@ -96,9 +98,10 @@ interface PlaceButtonProps {
   blocked: boolean;
   pending: boolean;
   describedBy: string;
+  method: PaymentMethod;
 }
 
-function PlaceButton({ blocked, pending, describedBy }: PlaceButtonProps) {
+function PlaceButton({ blocked, pending, describedBy, method }: PlaceButtonProps) {
   const t = useTranslations('checkout');
   return (
     <button
@@ -107,7 +110,7 @@ function PlaceButton({ blocked, pending, describedBy }: PlaceButtonProps) {
       aria-describedby={describedBy}
       className="flex min-h-12 w-full items-center justify-center rounded-2xl bg-brand px-6 font-semibold text-white shadow-lg shadow-brand/20 transition hover:bg-brand-light active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
     >
-      {pending ? t('placing') : t('place')}
+      {pending ? t('placing') : t(method === BKASH ? 'placeBkash' : 'place')}
     </button>
   );
 }
@@ -121,6 +124,29 @@ export interface OrderSummaryProps {
 }
 
 /**
+ * The payment method chosen on the page. The radios sit in the page's payment step, joined to the
+ * place-order form by its id, so the summary listens for their changes on the document.
+ */
+const useChosenMethod = (): PaymentMethod => {
+  const [method, setMethod] = useState<PaymentMethod>(CASH_ON_DELIVERY);
+  useEffect(() => {
+    const onChange = (event: Event) => {
+      const field = event.target;
+      if (
+        field instanceof HTMLInputElement &&
+        field.name === 'paymentMethod' &&
+        field.form?.id === PLACE_ORDER_FORM_ID
+      ) {
+        setMethod(parsePaymentMethod(field.value));
+      }
+    };
+    document.addEventListener('change', onChange);
+    return () => document.removeEventListener('change', onChange);
+  }, []);
+  return method;
+};
+
+/**
  * The summary column: lines, promo code, totals and the place-order form. The totals are what
  * the shopper should expect; the API prices the order again when it is placed.
  */
@@ -130,6 +156,7 @@ export function OrderSummary({ cart, addressId, quote, blocker }: OrderSummaryPr
   const [promo, promoAction, checkingPromo] = useActionState(previewPromoAction, PROMO_IDLE);
   const [placed, placeAction, placing] = useActionState(placeOrderAction, PLACE_IDLE);
   const hintId = useId();
+  const method = useChosenMethod();
   const feePoysha = quote?.ok ? quote.quote.feePoysha : 0;
   const discountPoysha = promo.status === 'applied' ? promo.promo.discountPoysha : 0;
   const totalPoysha = totalOf(cart.subtotalPoysha, feePoysha, discountPoysha);
@@ -199,9 +226,12 @@ export function OrderSummary({ cart, addressId, quote, blocker }: OrderSummaryPr
           blocked={blocker !== null || !addressId}
           pending={placing}
           describedBy={hintId}
+          method={method}
         />
         <p id={hintId} className="text-center text-xs text-subtle">
-          {t('placeHint', { total: formatPoysha(totalPoysha, locale) })}
+          {t(method === BKASH ? 'placeHintBkash' : 'placeHint', {
+            total: formatPoysha(totalPoysha, locale),
+          })}
         </p>
       </form>
     </section>

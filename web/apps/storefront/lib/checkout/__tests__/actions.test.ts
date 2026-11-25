@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { order } from '../../../test/checkout';
 
 const REDIRECTED = new Error('NEXT_REDIRECT');
+const AWAY = new Error('NEXT_REDIRECT_EXTERNAL');
 
 vi.mock('next/cache', () => ({ refresh: vi.fn(), revalidatePath: vi.fn() }));
 vi.mock('next-intl/server', () => ({ getLocale: vi.fn(async () => 'bn') }));
@@ -12,13 +13,23 @@ vi.mock('../../../i18n/navigation', () => ({
   }),
 }));
 vi.mock('../../account/caller', () => ({ accountCaller: vi.fn() }));
+vi.mock('next/navigation', () => ({
+  redirect: vi.fn(() => {
+    throw AWAY;
+  }),
+}));
 vi.mock('../api', () => ({ checkoutApi: { previewPromotion: vi.fn(), place: vi.fn() } }));
+vi.mock('../../payments/api', () => ({ paymentsApi: { startBkash: vi.fn() } }));
+vi.mock('../../payments/methods', () => ({ getPaymentMethods: vi.fn() }));
 
 const { previewPromoAction, placeOrderAction } = await import('../actions');
 const { accountCaller } = await import('../../account/caller');
 const { checkoutApi } = await import('../api');
 const { refresh, revalidatePath } = await import('next/cache');
 const { redirect } = await import('../../../i18n/navigation');
+const { redirect: redirectAway } = await import('next/navigation');
+const { paymentsApi } = await import('../../payments/api');
+const { getPaymentMethods } = await import('../../payments/methods');
 
 const CALLER = { deviceId: 'd', accessToken: 'at' };
 const form = (fields: Record<string, string>) => {
@@ -31,6 +42,7 @@ const PROMO = { code: 'EID10', nameEn: 'Eid offer', nameBn: 'ঈদ অফার
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(accountCaller).mockResolvedValue(CALLER);
+  vi.mocked(getPaymentMethods).mockResolvedValue(['CASH_ON_DELIVERY', 'BKASH']);
 });
 
 describe('previewPromoAction', () => {
@@ -164,5 +176,86 @@ describe('placeOrderAction', () => {
       placeOrderAction({ status: 'idle' }, form({ addressId: 'addr-1' })),
     ).resolves.toMatchObject({ error: 'signedOut' });
     expect(checkoutApi.place).not.toHaveBeenCalled();
+  });
+
+  describe('paying with bKash', () => {
+    const BKASH_ORDER = order({ id: 'order-7', paymentMethod: 'BKASH' });
+
+    it('places a bKash order, then sends the browser to bKash to pay it', async () => {
+      vi.mocked(checkoutApi.place).mockResolvedValue({ ok: true, data: BKASH_ORDER });
+      vi.mocked(paymentsApi.startBkash).mockResolvedValue({
+        ok: true,
+        data: { redirectUrl: 'https://pay.bkash.example/checkout/1', expiresInSeconds: 900 },
+      });
+
+      await expect(
+        placeOrderAction({ status: 'idle' }, form({ addressId: 'addr-1', paymentMethod: 'BKASH' })),
+      ).rejects.toBe(AWAY);
+
+      expect(checkoutApi.place).toHaveBeenCalledWith(CALLER, {
+        addressId: 'addr-1',
+        paymentMethod: 'BKASH',
+      });
+      expect(paymentsApi.startBkash).toHaveBeenCalledWith(CALLER, 'order-7');
+      expect(redirectAway).toHaveBeenCalledWith('https://pay.bkash.example/checkout/1');
+      expect(revalidatePath).toHaveBeenCalledWith('/', 'layout');
+    });
+
+    it('opens the placed order with the reason when the payment cannot start', async () => {
+      vi.mocked(checkoutApi.place).mockResolvedValue({ ok: true, data: BKASH_ORDER });
+      vi.mocked(paymentsApi.startBkash).mockResolvedValue({
+        ok: false,
+        status: 502,
+        message: 'bKash could not start the payment. Please try again.',
+      });
+
+      await expect(
+        placeOrderAction({ status: 'idle' }, form({ addressId: 'a', paymentMethod: 'BKASH' })),
+      ).rejects.toBe(REDIRECTED);
+
+      expect(redirect).toHaveBeenCalledWith({
+        href: { pathname: '/checkout/placed/order-7', query: { payment: 'gateway' } },
+        locale: 'bn',
+      });
+      expect(redirectAway).not.toHaveBeenCalled();
+    });
+
+    it('never follows a payment address that is not a web page', async () => {
+      vi.mocked(checkoutApi.place).mockResolvedValue({ ok: true, data: BKASH_ORDER });
+      vi.mocked(paymentsApi.startBkash).mockResolvedValue({
+        ok: true,
+        data: { redirectUrl: 'javascript:alert(1)', expiresInSeconds: 900 },
+      });
+
+      await expect(
+        placeOrderAction({ status: 'idle' }, form({ addressId: 'a', paymentMethod: 'BKASH' })),
+      ).rejects.toBe(REDIRECTED);
+
+      expect(redirectAway).not.toHaveBeenCalled();
+      expect(redirect).toHaveBeenCalledWith({
+        href: { pathname: '/checkout/placed/order-7', query: { payment: 'gateway' } },
+        locale: 'bn',
+      });
+    });
+
+    it('refuses bKash when the shop does not offer it, without placing the order', async () => {
+      vi.mocked(getPaymentMethods).mockResolvedValue(['CASH_ON_DELIVERY']);
+
+      await expect(
+        placeOrderAction({ status: 'idle' }, form({ addressId: 'a', paymentMethod: 'BKASH' })),
+      ).resolves.toMatchObject({ status: 'error', error: 'bkashUnavailable' });
+      expect(checkoutApi.place).not.toHaveBeenCalled();
+    });
+
+    it('treats an unknown method as cash on delivery', async () => {
+      vi.mocked(checkoutApi.place).mockResolvedValue({ ok: true, data: order() });
+      await expect(
+        placeOrderAction({ status: 'idle' }, form({ addressId: 'a', paymentMethod: 'NAGAD' })),
+      ).rejects.toBe(REDIRECTED);
+      expect(vi.mocked(checkoutApi.place).mock.calls[0]?.[1].paymentMethod).toBe(
+        'CASH_ON_DELIVERY',
+      );
+      expect(paymentsApi.startBkash).not.toHaveBeenCalled();
+    });
   });
 });

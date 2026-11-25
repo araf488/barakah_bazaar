@@ -1,4 +1,3 @@
-import { Banknote } from 'lucide-react';
 import { getTranslations, setRequestLocale } from 'next-intl/server';
 import type { ReactNode } from 'react';
 
@@ -6,6 +5,7 @@ import { AddressBook } from '../../../components/account/AddressBook';
 import { AddressChooser } from '../../../components/checkout/AddressChooser';
 import { PLACE_ORDER_FORM_ID } from '../../../components/checkout/formId';
 import { OrderSummary } from '../../../components/checkout/OrderSummary';
+import { PaymentChooser } from '../../../components/checkout/PaymentChooser';
 import { SlotPicker } from '../../../components/checkout/SlotPicker';
 import type { StorefrontLocale } from '../../../i18n/messages';
 import { Link, redirect } from '../../../i18n/navigation';
@@ -14,6 +14,7 @@ import { checkoutBlocker } from '../../../lib/checkout/blocker';
 import { type CheckoutData, getCheckout } from '../../../lib/checkout/getCheckout';
 import { MAX_NOTE_LENGTH } from '../../../lib/checkout/rules';
 import { homeFilterHref } from '../../../lib/homeFilter';
+import { getPaymentMethods } from '../../../lib/payments/methods';
 import { ROUTES } from '../../../lib/routes';
 
 export const dynamic = 'force-dynamic';
@@ -114,7 +115,8 @@ async function EmptyCheckout({ failed }: { failed: boolean }) {
 }
 
 /**
- * Cash-on-delivery checkout for a signed-in shopper: address, delivery time, payment and a note
+ * Checkout for a signed-in shopper: address, delivery time, payment (cash on delivery, and bKash
+ * when the API offers it) and a note
  * on the left; the summary and the place-order form on the right (below on a phone).
  */
 export default async function CheckoutPage({ params, searchParams }: Props) {
@@ -130,8 +132,9 @@ export default async function CheckoutPage({ params, searchParams }: Props) {
     return null;
   }
   const { address } = await searchParams;
-  const [data, t] = await Promise.all([
+  const [data, methods, t] = await Promise.all([
     getCheckout(typeof address === 'string' ? address : undefined),
+    getPaymentMethods(),
     getTranslations('checkout'),
   ]);
 
@@ -152,13 +155,7 @@ export default async function CheckoutPage({ params, searchParams }: Props) {
                   <DeliveryTimeStep data={data} />
                 </Step>
                 <Step id="payment-title" title={t('paymentTitle')}>
-                  <p className="flex items-center gap-3 rounded-2xl border-2 border-brand bg-white p-4">
-                    <Banknote aria-hidden="true" size={22} className="shrink-0 text-brand" />
-                    <span>
-                      <span className="block font-semibold text-ink">{t('cod')}</span>
-                      <span className="block text-sm text-subtle">{t('codHint')}</span>
-                    </span>
-                  </p>
+                  <PaymentChooser methods={methods} />
                 </Step>
                 <div className="space-y-1">
                   <label htmlFor="customer-note" className="text-sm font-medium text-ink">

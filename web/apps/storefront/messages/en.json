@@ -415,7 +415,8 @@
       "noAddress": "Choose a delivery address first.",
       "signedOut": "Your session ended. Sign in again to place the order.",
       "unavailable": "We could not reach the shop just now. Please try again in a moment.",
-      "failed": "That did not work. Please try again."
+      "failed": "That did not work. Please try again.",
+      "bkashUnavailable": "bKash is not available right now. Choose cash on delivery."
     },
     "placed": {
       "title": "Order placed",
@@ -427,7 +428,12 @@
       "note": "Your note",
       "continue": "Continue shopping",
       "track": "Track this order"
-    }
+    },
+    "bkash": "bKash",
+    "bkashHint": "Pay now on bKash's own page. You come back here when it is done.",
+    "methodLabel": "How would you like to pay?",
+    "placeHintBkash": "Next, bKash opens to take {total}.",
+    "placeBkash": "Place order and pay with bKash"
   },
   "orders": {
     "title": "My orders",
@@ -515,5 +521,55 @@
       "stopped": "stopped here"
     },
     "loading": "Loading your orders"
+  },
+  "payment": {
+    "pay": {
+      "title": "Waiting for your bKash payment",
+      "body": "We hold your items for a short time only, so please pay soon. If you would rather not use bKash, pay in cash when it arrives.",
+      "button": "Pay {total} with bKash",
+      "paying": "Opening bKash…",
+      "switch": "Pay in cash on delivery instead",
+      "switching": "Switching…",
+      "switched": "Done. You will pay in cash when the order arrives."
+    },
+    "paidBkash": "Paid {total} with bKash.",
+    "errors": {
+      "notBkash": "This order is not paid by bKash.",
+      "notPayable": "This order can no longer be paid. It may have been cancelled or already confirmed.",
+      "alreadyPaid": "This order is already paid.",
+      "windowClosed": "The time to pay for this order has passed. Please place a new order.",
+      "tooManyAttempts": "This order has had too many bKash attempts today. Pay in cash on delivery instead, or try again tomorrow.",
+      "bkashUnavailable": "bKash is not available right now. Pay in cash on delivery instead.",
+      "gateway": "bKash could not start the payment. Please try again.",
+      "cannotSwitch": "This order can no longer switch to cash on delivery.",
+      "tooFast": "Too many tries in a short time. Please wait a minute and try again.",
+      "signedOut": "Your session has ended. Sign in again to pay.",
+      "gone": "We could not find this order.",
+      "unavailable": "We could not reach the shop just now. Please try again in a moment.",
+      "failed": "Something went wrong. Please try again."
+    },
+    "result": {
+      "title": "Payment result",
+      "paid": {
+        "heading": "Payment received",
+        "body": "Thank you. We have your bKash payment and are getting the order ready."
+      },
+      "pending": {
+        "heading": "Confirming your payment",
+        "body": "bKash has not told us the result yet. It usually settles within a few minutes, and your order page will show it. Please do not pay twice."
+      },
+      "failed": {
+        "heading": "The payment did not go through",
+        "body": "If bKash took any money for this attempt, it goes back to your account automatically. You can try bKash again or pay in cash on delivery."
+      },
+      "cancelled": {
+        "heading": "You cancelled the payment",
+        "body": "Your order is still waiting. You can try bKash again or pay in cash on delivery."
+      },
+      "order": "Order",
+      "seeOrder": "See your order",
+      "allOrders": "See my orders",
+      "noOrder": "We could not tell which order this payment was for. Your orders page shows where each one stands."
+    }
   }
 }

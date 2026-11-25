@@ -13,6 +13,8 @@ export const ROUTES = {
   resetPassword: '/reset-password',
   verifyEmail: '/verify-email',
   checkout: '/checkout',
+  /** Where the API's bKash callback sends the browser (PaymentConstants.ResultPath). */
+  paymentResult: '/checkout/payment-result',
 } as const;
 
 export type LivePage =

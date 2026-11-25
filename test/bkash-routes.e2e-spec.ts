@@ -44,8 +44,8 @@ const RESULT = 'http://localhost:3000/checkout/payment-result';
 const STRANGER_ORDER = '7f2c1f0e-3f6a-4b2e-9d5a-0c1f6d1a2b3c';
 
 /**
- * The two bKash routes through the real pipeline: that they are mounted where the spec says,
- * that the callback needs no token, and that the start route does. Settling is covered by the
+ * The bKash routes through the real pipeline: that they are mounted where the spec says, that
+ * the methods list and the callback need no token, and that the start route does. Settling is covered by the
  * service and ledger suites.
  */
 describe('bKash routes (end to end)', () => {
@@ -85,6 +85,15 @@ describe('bKash routes (end to end)', () => {
 
   beforeEach(async () => {
     await resetDatabase(prisma);
+  });
+
+  describe('GET /payments/methods', () => {
+    it('answers cash on delivery alone, with no token, while the noop gateway is configured', async () => {
+      const response = await request(app.getHttpServer()).get('/api/v1/payments/methods');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ methods: ['CASH_ON_DELIVERY'] });
+    });
   });
 
   describe('GET /payments/bkash/callback', () => {

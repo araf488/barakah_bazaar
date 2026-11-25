@@ -22,7 +22,7 @@ import { unwrapOrThrow } from '../../common/types/service-response';
 import { ThrottleBuckets } from '../../config/throttler.config';
 import { AppConfigService } from '../../config';
 import { BkashCheckoutService, CallbackResult } from './bkash-checkout.service';
-import { BkashCheckoutStartedDto } from './dto/bkash.dto';
+import { BkashCheckoutStartedDto, PaymentMethodsDto } from './dto/bkash.dto';
 import { BkashOutcome, PaymentConstants } from './payment.constants';
 import { joinUrl } from './payment-url';
 
@@ -33,8 +33,8 @@ export interface CallbackRedirect {
 }
 
 /**
- * bKash Tokenized Checkout, customer side: starting a payment, and the callback bKash sends the
- * customer's browser back to.
+ * bKash Tokenized Checkout, customer side: which payment methods checkout may offer, starting a
+ * payment, and the callback bKash sends the customer's browser back to.
  *
  * The callback is a browser navigation, so it never answers an error page: whatever happens it
  * is a 302 to the storefront result page, and the query string only picks which bKash call to
@@ -48,6 +48,19 @@ export class BkashController {
     @Inject(ConfigService) private readonly config: AppConfigService,
     @InjectPinoLogger(BkashController.name) private readonly logger: PinoLogger,
   ) {}
+
+  @Public()
+  @Get(PaymentConstants.MethodsRoute)
+  @ApiOperation({ summary: 'Payment methods checkout may offer right now' })
+  @ApiResponse({ status: HttpStatus.OK, type: PaymentMethodsDto })
+  methods(): PaymentMethodsDto {
+    try {
+      return unwrapOrThrow(this.checkout.availableMethods());
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in BkashController.methods');
+      throw error;
+    }
+  }
 
   @Post(PaymentConstants.BkashStartRoute)
   @ApiBearerAuth()

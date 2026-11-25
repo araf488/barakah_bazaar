@@ -14,6 +14,7 @@ export type CheckoutErrorKey =
   | 'promoAlreadyUsed'
   | 'promoNoDiscount'
   | 'noAddress'
+  | 'bkashUnavailable'
   | 'signedOut'
   | 'unavailable'
   | 'failed';

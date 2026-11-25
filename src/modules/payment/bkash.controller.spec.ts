@@ -27,7 +27,7 @@ const documentedStatuses = (handler: object): number[] =>
     .sort((a, b) => a - b);
 
 describe('BkashController', () => {
-  let checkout: { start: jest.Mock; handleCallback: jest.Mock };
+  let checkout: { start: jest.Mock; handleCallback: jest.Mock; availableMethods: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
   let controller: BkashController;
 
@@ -39,7 +39,7 @@ describe('BkashController', () => {
     );
 
   beforeEach(() => {
-    checkout = { start: jest.fn(), handleCallback: jest.fn() };
+    checkout = { start: jest.fn(), handleCallback: jest.fn(), availableMethods: jest.fn() };
     logger = createMockLogger();
     controller = build();
   });
@@ -49,6 +49,31 @@ describe('BkashController', () => {
       expect(documentedStatuses(BkashController.prototype.start)).toEqual([
         201, 401, 404, 409, 429, 502, 503,
       ]);
+    });
+  });
+
+  describe('methods', () => {
+    it('answers the methods the service says checkout may offer', () => {
+      const offered = { methods: ['CASH_ON_DELIVERY'] };
+      checkout.availableMethods.mockReturnValue({ ok: true, data: offered });
+
+      expect(controller.methods()).toBe(offered);
+    });
+
+    it('passes a service failure through as its HTTP status and logs it', () => {
+      checkout.availableMethods.mockReturnValue({
+        ok: false,
+        status: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: 'Something went wrong on our end. Please try again.',
+      });
+
+      expect(() => controller.methods()).toThrow(
+        expect.objectContaining({
+          status: 500,
+          message: 'Something went wrong on our end. Please try again.',
+        }),
+      );
+      expect(logger.error).toHaveBeenCalled();
     });
   });
 
@@ -91,6 +116,13 @@ describe('BkashController', () => {
 
   describe('route metadata', () => {
     const metadata = (key: string, handler: object): unknown => Reflect.getMetadata(key, handler);
+
+    it('makes the methods route public, since checkout asks before any payment starts', () => {
+      expect(metadata(MetadataKeys.IsPublic, BkashController.prototype.methods)).toBe(true);
+      expect(Reflect.getMetadata('path', BkashController.prototype.methods)).toBe(
+        'payments/methods',
+      );
+    });
 
     it('keeps the start route behind sign-in', () => {
       expect(metadata(MetadataKeys.IsPublic, BkashController.prototype.start)).toBeUndefined();

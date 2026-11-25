@@ -6,6 +6,7 @@ import { CancelOrder } from '../../../../../components/orders/CancelOrder';
 import { OrderItems, OrderTotals } from '../../../../../components/orders/OrderContents';
 import { OrderStatusBadge } from '../../../../../components/orders/OrderStatusBadge';
 import { OrderTimeline } from '../../../../../components/orders/OrderTimeline';
+import { BkashPayPanel } from '../../../../../components/payments/BkashPayPanel';
 import type { StorefrontLocale } from '../../../../../i18n/messages';
 import { Link, redirect } from '../../../../../i18n/navigation';
 import { placeLine } from '../../../../../lib/account/format';
@@ -13,6 +14,7 @@ import { getCurrentUser } from '../../../../../lib/auth/session';
 import type { Order } from '../../../../../lib/checkout/api';
 import { getOrder } from '../../../../../lib/checkout/getOrder';
 import { formatOrderDate } from '../../../../../lib/orders/format';
+import { awaitsBkashPayment } from '../../../../../lib/payments/rules';
 import { orderPath, ROUTES } from '../../../../../lib/routes';
 
 export const dynamic = 'force-dynamic';
@@ -69,9 +71,9 @@ async function PaymentCard({ order }: { order: Order }) {
 }
 
 /**
- * One of the shopper's orders: where it is now and how it got there, the cancel button while
- * the shop has not started packing, and what was ordered at what price. Somebody else's order,
- * or one that is gone, is a 404.
+ * One of the shopper's orders: where it is now and how it got there, a way to pay while a bKash
+ * order waits for its money, the cancel button while the shop has not started packing, and what
+ * was ordered at what price. Somebody else's order, or one that is gone, is a 404.
  */
 export default async function OrderPage({ params }: Props) {
   const { locale, id } = await params;
@@ -112,6 +114,11 @@ export default async function OrderPage({ params }: Props) {
           {t('placedOn', { date: formatOrderDate(order.placedAt, appLocale) })}
         </p>
       </div>
+      <BkashPayPanel
+        orderId={order.id}
+        totalPoysha={order.totalPoysha}
+        awaiting={awaitsBkashPayment(order)}
+      />
       <div className="grid gap-6 lg:grid-cols-[1fr_1.1fr]">
         <section aria-labelledby="tracking-title" className={`${CARD} space-y-4 self-start`}>
           <h2 id="tracking-title" className="font-display text-xl font-semibold text-ink">

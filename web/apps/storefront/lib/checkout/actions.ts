@@ -1,14 +1,20 @@
 'use server';
 
 import { refresh, revalidatePath } from 'next/cache';
+import { redirect as redirectAway } from 'next/navigation';
 
 import { getLocale } from 'next-intl/server';
 
 import type { StorefrontLocale } from '../../i18n/messages';
 import { redirect } from '../../i18n/navigation';
 import { accountCaller } from '../account/caller';
+import type { CallerContext } from '../auth/api';
+import { paymentsApi } from '../payments/api';
+import { paymentErrorFor } from '../payments/errors';
+import { getPaymentMethods } from '../payments/methods';
+import { BKASH, isNavigableUrl, parsePaymentMethod } from '../payments/rules';
 import { orderPlacedPath } from '../routes';
-import { checkoutApi, type PlaceOrderInput, type PromotionPreview } from './api';
+import { checkoutApi, type Order, type PlaceOrderInput, type PromotionPreview } from './api';
 import { type CheckoutErrorKey, checkoutErrorFor } from './errors';
 import { MAX_NOTE_LENGTH, MAX_PROMO_CODE_LENGTH } from './rules';
 import { parseSlotValue } from './slots';
@@ -63,8 +69,7 @@ const orderInputOf = (form: FormData): PlaceOrderInput => {
   const customerNote = field(form, 'customerNote').slice(0, MAX_NOTE_LENGTH);
   return {
     addressId: field(form, 'addressId'),
-    // Cash on delivery only, for now: bKash waits on its payment-result page.
-    paymentMethod: 'CASH_ON_DELIVERY',
+    paymentMethod: parsePaymentMethod(form.get('paymentMethod')),
     ...(slot ? { deliverySlotId: slot.slotId, deliveryDate: slot.date } : {}),
     ...(promotionCode ? { promotionCode } : {}),
     ...(customerNote ? { customerNote } : {}),
@@ -72,9 +77,37 @@ const orderInputOf = (form: FormData): PlaceOrderInput => {
   };
 };
 
+const placeRefusal = (error: CheckoutErrorKey): PlaceOrderState => ({
+  status: 'error',
+  error,
+  at: Date.now(),
+});
+
 /**
- * Places the order and opens its confirmation page. A refusal redraws the page (the basket, fee
- * or windows it was about have changed) and says what to do in the shopper's language.
+ * After a bKash order is placed, sends the browser to bKash's page. When the payment cannot start
+ * the order still exists, so its confirmation page opens with the reason and a way to pay again or
+ * switch to cash on delivery.
+ */
+const startBkashPayment = async (caller: CallerContext, order: Order): Promise<never> => {
+  const started = await paymentsApi.startBkash(caller, order.id);
+  if (started.ok && isNavigableUrl(started.data.redirectUrl)) {
+    return redirectAway(started.data.redirectUrl);
+  }
+  return redirect({
+    href: {
+      pathname: orderPlacedPath(order.id),
+      query: {
+        payment: started.ok ? 'gateway' : paymentErrorFor(started.status, started.message),
+      },
+    },
+    locale: (await getLocale()) as StorefrontLocale,
+  });
+};
+
+/**
+ * Places the order. Cash on delivery opens its confirmation page; bKash goes on to bKash's page.
+ * A refusal redraws the page (the basket, fee or windows it was about have changed) and says what
+ * to do in the shopper's language.
  */
 export async function placeOrderAction(
   _prev: PlaceOrderState,
@@ -82,24 +115,26 @@ export async function placeOrderAction(
 ): Promise<PlaceOrderState> {
   const input = orderInputOf(form);
   if (!input.addressId) {
-    return { status: 'error', error: 'noAddress', at: Date.now() };
+    return placeRefusal('noAddress');
   }
   const caller = await accountCaller();
   if (!caller) {
-    return { status: 'error', error: 'signedOut', at: Date.now() };
+    return placeRefusal('signedOut');
+  }
+  if (input.paymentMethod === BKASH && !(await getPaymentMethods()).includes(BKASH)) {
+    return placeRefusal('bkashUnavailable');
   }
   const result = await checkoutApi.place(caller, input);
   if (!result.ok) {
     refresh();
-    return {
-      status: 'error',
-      error: checkoutErrorFor(result.status, result.message),
-      at: Date.now(),
-    };
+    return placeRefusal(checkoutErrorFor(result.status, result.message));
   }
   // The cart is now empty; without this the header and drawer keep the old one, because the
   // router reuses the cached layout across the redirect.
   revalidatePath('/', 'layout');
+  if (input.paymentMethod === BKASH) {
+    return startBkashPayment(caller, result.data);
+  }
   return redirect({
     href: orderPlacedPath(result.data.id),
     locale: (await getLocale()) as StorefrontLocale,
