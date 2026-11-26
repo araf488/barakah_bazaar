@@ -4,7 +4,7 @@ Production (`main` → GitHub Environment `prod`) runs on the Vultr VM that also
 mediguideapp.com: Ubuntu 24.04, 1 vCPU, about 1 GB RAM plus 2.4 GB swap, nginx behind Cloudflare,
 certbot for TLS. Login user `arefin` (sudo asks for a password).
 
-```
+```text
 Cloudflare ──443──> nginx (sites-enabled/barakahstore) ──> 127.0.0.1:3100  barakah-app  (the CI image)
                                                                              │
 CI runner ──ssh tunnel 15432──────────────────────────────> 127.0.0.1:5432  barakah-postgres (volume pgdata)
@@ -103,13 +103,57 @@ systemctl list-timers barakah-db-backup.timer
   previous image stays on the VM after each deploy; older ones are removed. Migrations are not
   rolled back.
 - **Change a setting:** edit `/opt/barakah/app.env`, then `cd /opt/barakah && docker compose up -d app`.
-- **Restore a backup:** dumps are in `/var/backups/barakah` (14 days). Restore into an empty
-  database with
-  `docker exec -i barakah-postgres pg_restore -U barakah_admin -d barakah --clean < FILE`. They are
-  on the same VM: copy them off the machine too.
+- **Restore a backup:** plain dumps are in `/var/backups/barakah` (14 days, root only). Restore
+  into an empty database with
+  `docker exec -i barakah-postgres pg_restore -U barakah_admin -d barakah --clean < FILE`. Off the
+  VM, use the encrypted copies on the owner's Mac (below).
 - **Storage:** Supabase Storage is optional. Without `SUPABASE_URL` and
   `SUPABASE_SERVICE_ROLE_KEY`, admin image uploads are unavailable and health reports storage as
   `disabled`. Set both in `app.env` to enable it.
+
+## Off-site backups (owner's Mac)
+
+Each nightly dump is also encrypted with [age](https://age-encryption.org) to the owner's public
+key into `/var/backups/barakah-offsite` (14 days), and the owner's Mac pulls it daily. The VM
+holds only the public key: neither the VM nor anyone who reaches it can read those copies. The
+pull key can do one thing: read that folder through `rrsync -ro` (no shell, no writes, no
+forwarding).
+
+Set up once, in this order:
+
+1. **On the Mac:** `brew install age rsync` (macOS's own `openrsync` is refused by `rrsync`).
+2. **Keys on the Mac:**
+
+   ```sh
+   mkdir -p ~/.config/barakah && age-keygen -o ~/.config/barakah/backup-age-key.txt
+   chmod 600 ~/.config/barakah/backup-age-key.txt
+   ssh-keygen -t ed25519 -f ~/.ssh/barakah_backup -N "" -C "barakah-backup-pull"
+   ```
+
+   Save `backup-age-key.txt` in a password manager as well: without it no copy can be opened.
+
+3. **On the VM:**
+
+   ```sh
+   scp deploy/vm/setup-offsite-backup.sh deploy/vm/db-backup.sh ~/.ssh/barakah_backup.pub arefin@149.28.157.20:~/barakah-deploy/
+   ssh -t arefin@149.28.157.20 "sudo bash ~/barakah-deploy/setup-offsite-backup.sh $(grep -o 'age1[0-9a-z]*' ~/.config/barakah/backup-age-key.txt) ~/barakah-deploy/barakah_backup.pub"
+   ```
+
+   It installs `age`, stores the public key, creates the outbox, authorises the pull key read-only
+   and makes the first encrypted copy.
+
+4. **Back on the Mac:** `bash deploy/mac/install-backup-pull.sh`. It pulls now, then daily at 10:00
+   and at login, into `~/Backups/barakahstore` (60 days), and shows a macOS notification if a pull
+   fails or the newest copy is more than two days old. Log:
+   `~/Library/Logs/barakah-backup-pull.log`.
+
+**Restore from a Mac copy:**
+
+```sh
+age -d -i ~/.config/barakah/backup-age-key.txt ~/Backups/barakahstore/barakah-YYYY-MM-DD.dump.age > restore.dump
+scp restore.dump arefin@149.28.157.20:~/
+ssh arefin@149.28.157.20 'docker exec -i barakah-postgres pg_restore -U barakah_admin -d barakah --clean < ~/restore.dump && rm ~/restore.dump'
+```
 
 ## Limits to know
 
