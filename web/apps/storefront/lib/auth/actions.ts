@@ -4,11 +4,18 @@ import { cookies } from 'next/headers';
 import { getLocale } from 'next-intl/server';
 
 import { redirect } from '../../i18n/navigation';
-import { type AuthResult, authApi, type LoginResponse, sessionTokensOf } from './api';
+import {
+  type AuthResult,
+  authApi,
+  type ExplainedResult,
+  type LoginResponse,
+  sessionTokensOf,
+} from './api';
 import { mergeGuestCart } from '../cart/merge';
 import { callerFromAction } from './caller';
 import { clearSession, SESSION_COOKIE, writeMfaChallenge, writeSession } from './cookies';
 import { type AuthErrorKey, authErrorFor } from './errors';
+import { type PasswordPolicyError, passwordPolicyErrorOf } from './passwordPolicy';
 import {
   checkCode,
   checkEmail,
@@ -21,7 +28,10 @@ import {
 /** What a form shows after its action ran. `sent` and `done` are the success screens. */
 export type AuthFormState =
   | { status: 'idle' }
-  | { status: 'error'; error: AuthErrorKey | FieldError | 'staffPortal' | 'mfaExpired' }
+  | {
+      status: 'error';
+      error: AuthErrorKey | FieldError | PasswordPolicyError | 'staffPortal' | 'mfaExpired';
+    }
   | { status: 'mfa' }
   | { status: 'sent'; email: string }
   | { status: 'done' };
@@ -38,6 +48,20 @@ const fail = (error: Extract<AuthFormState, { status: 'error' }>['error']): Auth
 
 const refused = (result: AuthResult<unknown>): AuthFormState =>
   result.ok ? { status: 'idle' } : fail(authErrorFor(result.status));
+
+const BAD_REQUEST = 400;
+
+/**
+ * `refused`, for calls that set a password: a 400 naming a policy rule says which rule, so the
+ * visitor learns what to change instead of reading "something is not right".
+ */
+const refusedPassword = (result: ExplainedResult<unknown>): AuthFormState => {
+  if (result.ok) {
+    return { status: 'idle' };
+  }
+  const rule = result.status === BAD_REQUEST ? passwordPolicyErrorOf(result.message) : null;
+  return fail(rule ?? authErrorFor(result.status));
+};
 
 const goTo = async (path: string): Promise<never> =>
   redirect({ href: path, locale: await getLocale() });
@@ -120,7 +144,7 @@ export async function registerAction(_prev: AuthFormState, form: FormData): Prom
     fullName,
     preferredLanguage,
   });
-  return result.ok ? { status: 'sent', email } : refused(result);
+  return result.ok ? { status: 'sent', email } : refusedPassword(result);
 }
 
 export async function verifyEmailAction(
@@ -185,7 +209,7 @@ export async function resetPasswordAction(
   }
   const proof = token ? { token } : { email, code };
   const result = await authApi.resetPassword(await callerFromAction(), { ...proof, newPassword });
-  return result.ok ? { status: 'done' } : refused(result);
+  return result.ok ? { status: 'done' } : refusedPassword(result);
 }
 
 /** Revokes the session at the API (best effort), clears the cookies, and goes home. */

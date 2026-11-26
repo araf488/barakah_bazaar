@@ -5,6 +5,7 @@ import { useActionState, useId, useState } from 'react';
 
 import type { PasswordChangeError } from '../../lib/account/passwordChange';
 import { changePasswordAction, type PasswordChangeState } from '../../lib/account/securityActions';
+import { PASSWORD_POLICY_ERRORS } from '../../lib/auth/passwordPolicy';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '../../lib/auth/rules';
 import { FORM_ERROR_ID_SUFFIX, PasswordField, SubmitButton } from '../auth/fields';
 
@@ -14,15 +15,8 @@ const IDLE: PasswordChangeState = { status: 'idle' };
 const CURRENT_ERRORS: readonly PasswordChangeError[] = ['currentMissing', 'currentWrong'];
 const CONFIRM_ERRORS: readonly PasswordChangeError[] = ['passwordMismatch'];
 const NEW_PASSWORD_ERRORS: readonly PasswordChangeError[] = [
-  'passwordShort',
-  'passwordLong',
+  ...PASSWORD_POLICY_ERRORS,
   'passwordSame',
-  'passwordCommon',
-  'passwordIdentity',
-  'passwordShopName',
-  'passwordDistinct',
-  'passwordSequential',
-  'passwordClasses',
 ];
 
 const errorIn = (state: PasswordChangeState, errors: readonly PasswordChangeError[]): boolean =>

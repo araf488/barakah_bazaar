@@ -126,7 +126,7 @@ export const authApi = {
   register: (
     caller: CallerContext,
     input: { email: string; password: string; fullName: string; preferredLanguage: 'BN' | 'EN' },
-  ) => callApi<{ status: string }>('POST', '/auth/register', caller, input),
+  ) => callApiExplained<{ status: string }>('POST', '/auth/register', caller, input),
   verifyEmail: (
     caller: CallerContext,
     proof: { token: string } | { email: string; code: string },
@@ -138,7 +138,7 @@ export const authApi = {
   resetPassword: (
     caller: CallerContext,
     input: ({ token: string } | { email: string; code: string }) & { newPassword: string },
-  ) => callApi<{ passwordReset: boolean }>('POST', '/auth/reset-password', caller, input),
+  ) => callApiExplained<{ passwordReset: boolean }>('POST', '/auth/reset-password', caller, input),
 };
 
 /** A login answer that carries a complete session, narrowed for cookie writing. */

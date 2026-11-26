@@ -71,6 +71,30 @@ describe('authApi', () => {
     await expect(authApi.login(CALLER, 'a@b.co', 'x')).resolves.toEqual({ ok: false, status: 401 });
   });
 
+  it.each([
+    [
+      'register',
+      () =>
+        authApi.register(CALLER, {
+          email: 'a@b.co',
+          password: 'Abcdefghijk1',
+          fullName: 'Tahmina Rahman',
+          preferredLanguage: 'BN',
+        }),
+    ],
+    [
+      'resetPassword',
+      () => authApi.resetPassword(CALLER, { token: 'tok', newPassword: 'Abcdefghijk1' }),
+    ],
+  ])(
+    '%s keeps the refusal message, so the form can name the broken password rule',
+    async (_name, call) => {
+      const message = 'That password is too common. Please choose a different one.';
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ message }, 400)));
+      await expect(call()).resolves.toEqual({ ok: false, status: 400, message });
+    },
+  );
+
   it('reports an unreachable API as status 0', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));

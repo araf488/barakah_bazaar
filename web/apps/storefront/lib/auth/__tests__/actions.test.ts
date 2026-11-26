@@ -243,6 +243,21 @@ describe('registerAction', () => {
     });
     expect(authApi.register).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [400, 'Your password must not contain your name or email address.', 'passwordIdentity'],
+    [400, 'That password is too common. Please choose a different one.', 'passwordCommon'],
+    [400, 'password must be a string', 'invalid'],
+    [400, null, 'invalid'],
+    [429, null, 'tooMany'],
+    [0, null, 'unavailable'],
+  ])('reads a %i refusal with message %j as %s', async (status, message, error) => {
+    vi.mocked(authApi.register).mockResolvedValue({ ok: false, status, message });
+    await expect(actions.registerAction(IDLE, form(valid))).resolves.toEqual({
+      status: 'error',
+      error,
+    });
+  });
 });
 
 describe('verifyEmailAction', () => {
@@ -308,6 +323,31 @@ describe('password reset and resend', () => {
         form({ email: 'a@b.co', code: '1', password: 'long enough pw', confirm: 'long enough pw' }),
       ),
     ).resolves.toEqual({ status: 'error', error: 'codeInvalid' });
+  });
+
+  const resetByToken = () =>
+    actions.resetPasswordAction(
+      IDLE,
+      form({ token: 'tok', password: 'long enough pw', confirm: 'long enough pw' }),
+    );
+
+  it('names the password rule the API refused the new password for', async () => {
+    vi.mocked(authApi.resetPassword).mockResolvedValue({
+      ok: false,
+      status: 400,
+      message:
+        'Your password must include an uppercase letter, a lowercase letter, a number and a special character.',
+    });
+    await expect(resetByToken()).resolves.toEqual({ status: 'error', error: 'passwordClasses' });
+  });
+
+  it('still reads an expired link as expired, whatever its message', async () => {
+    vi.mocked(authApi.resetPassword).mockResolvedValue({
+      ok: false,
+      status: 410,
+      message: 'Your password must be at least 12 characters.',
+    });
+    await expect(resetByToken()).resolves.toEqual({ status: 'error', error: 'expired' });
   });
 });
 

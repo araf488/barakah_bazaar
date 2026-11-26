@@ -158,7 +158,7 @@
       "recoveryCode": "Recovery code",
       "showPassword": "Show password",
       "hidePassword": "Hide password",
-      "passwordHint": "At least 12 characters."
+      "passwordHint": "At least 12 characters, with an uppercase letter, a lowercase letter, a number and a symbol."
     },
     "signIn": {
       "title": "Sign in",
@@ -235,6 +235,12 @@
       "emailInvalid": "Enter a valid email address.",
       "passwordShort": "Use at least 12 characters.",
       "passwordLong": "Use 128 characters or fewer.",
+      "passwordCommon": "That password is too common. Choose a different one.",
+      "passwordIdentity": "Leave your name and email address out of the password.",
+      "passwordShopName": "Leave Barakah and Bazaar out of the password.",
+      "passwordDistinct": "Use at least 6 different characters.",
+      "passwordSequential": "Avoid long runs such as abcdef or 123456.",
+      "passwordClasses": "Include an uppercase letter, a lowercase letter, a number and a symbol.",
       "passwordMismatch": "The two passwords do not match.",
       "nameMissing": "Enter your name.",
       "codeInvalid": "Enter the 6-digit code.",

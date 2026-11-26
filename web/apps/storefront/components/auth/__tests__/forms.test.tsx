@@ -99,10 +99,10 @@ describe('SignInForm', () => {
 });
 
 describe('RegisterForm', () => {
-  it('asks for a 12-character password and says so', () => {
+  it('states the whole password rule up front, not just its length', () => {
     renderWithIntl(<RegisterForm />);
     expect(screen.getByLabelText('Password')).toHaveAccessibleDescription(
-      'At least 12 characters.',
+      'At least 12 characters, with an uppercase letter, a lowercase letter, a number and a symbol.',
     );
     expect(screen.getByLabelText('Password')).toHaveAttribute('minlength', '12');
   });
@@ -116,6 +116,30 @@ describe('RegisterForm', () => {
     expect(screen.getByRole('heading', { name: 'Confirm your email' })).toBeInTheDocument();
     expect(screen.getByLabelText('Email address')).toHaveValue('a@b.co');
     expect(screen.getByLabelText('6-digit code')).toBeInTheDocument();
+  });
+});
+
+describe.each([
+  ['RegisterForm', () => <RegisterForm />, 'registerAction', 'Create account', 'Password'],
+  [
+    'ResetPasswordForm',
+    () => <ResetPasswordForm token="tok" />,
+    'resetPasswordAction',
+    'Update password',
+    'New password',
+  ],
+] as const)('%s with a password the API refused', (_name, render, action, button, label) => {
+  it('names the broken rule and marks the password, not the confirmation', async () => {
+    vi.mocked(actions[action]).mockResolvedValue({ status: 'error', error: 'passwordIdentity' });
+    renderWithIntl(render());
+
+    await submit(button);
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Leave your name and email address out of the password.',
+    );
+    expect(screen.getByLabelText(label)).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('Confirm password')).not.toHaveAttribute('aria-invalid');
   });
 });
 
