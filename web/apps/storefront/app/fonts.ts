@@ -1,4 +1,4 @@
-import { Fraunces, Hind_Siliguri, Outfit } from 'next/font/google';
+import { Fraunces, Noto_Sans_Bengali, Noto_Serif_Bengali, Outfit } from 'next/font/google';
 
 // next/font downloads each face at build time and self-hosts it, so no request ever goes to
 // Google from a visitor's browser and the fallback is size-adjusted (no layout shift). Its
@@ -22,14 +22,26 @@ const body = Outfit({
 
 /**
  * Bengali glyphs, including the taka sign U+09F3 in every price. Neither Latin face carries
- * them, so both font stacks fall through to this one glyph by glyph.
+ * them, so each stack falls through to a Bengali face glyph by glyph: the sans beside Outfit
+ * for running text, the serif beside Fraunces for headings and prices. Both are variable on
+ * weight, so one file per face covers every weight the design uses.
  */
-const bengali = Hind_Siliguri({
+const bengali = Noto_Sans_Bengali({
   subsets: ['bengali'],
-  weight: ['400', '500', '600', '700'],
   display: 'swap',
   variable: '--bb-face-bengali',
 });
 
-/** The three `--bb-face-*` variable classes, applied once on `<html>`. */
-export const fontVariables = [display.variable, body.variable, bengali.variable].join(' ');
+const bengaliDisplay = Noto_Serif_Bengali({
+  subsets: ['bengali'],
+  display: 'swap',
+  variable: '--bb-face-bengali-display',
+});
+
+/** The four `--bb-face-*` variable classes, applied once on `<html>`. */
+export const fontVariables = [
+  display.variable,
+  body.variable,
+  bengali.variable,
+  bengaliDisplay.variable,
+].join(' ');

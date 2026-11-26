@@ -24,11 +24,16 @@ export const color = {
  * neither Fraunces nor Outfit carries a Bengali glyph. Bangla headlines and the
  * taka sign — U+09F3, which sits in the Bengali block and therefore appears in
  * every price on every page — would otherwise render in a system fallback.
+ *
+ * Two Bengali faces, mirroring the Latin pair: a serif for the display role
+ * (headings, prices) beside Fraunces, and a sans for running text beside Outfit.
+ * Both are Noto (SIL Open Font License), chosen by the owner on 2026-11-26.
  */
 export const font = {
   display: '"Fraunces", Georgia, serif',
   body: '"Outfit", system-ui, sans-serif',
-  bengali: '"Hind Siliguri", "Outfit", system-ui, sans-serif',
+  bengali: '"Noto Sans Bengali", "Outfit", system-ui, sans-serif',
+  bengaliDisplay: '"Noto Serif Bengali", "Fraunces", Georgia, serif',
 } as const;
 
 /**

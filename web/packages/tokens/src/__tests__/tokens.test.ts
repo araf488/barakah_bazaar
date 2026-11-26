@@ -21,8 +21,9 @@ describe('brand tokens', () => {
     expect(tokens.font.body).toContain('Outfit');
   });
 
-  it('names a Bengali face, because the Figma font stack has none', () => {
-    expect(tokens.font.bengali).toContain('Hind Siliguri');
+  it('names Bengali faces, because the Figma font stack has none', () => {
+    expect(tokens.font.bengali).toContain('Noto Sans Bengali');
+    expect(tokens.font.bengaliDisplay).toContain('Noto Serif Bengali');
   });
 
   it('carries no monospace role, which nothing in the design uses', () => {

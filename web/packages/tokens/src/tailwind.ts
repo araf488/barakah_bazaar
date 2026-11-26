@@ -9,12 +9,14 @@ export const THEME_CSS_HEADER =
 
 /**
  * Tailwind's name for each font role. The Figma file calls the body face `sans`, so the
- * utilities read `font-sans`, `font-display` and `font-bengali` exactly as its markup does.
+ * utilities read `font-sans`, `font-display` and `font-bengali` exactly as its markup does;
+ * the Bengali serif for headings is `font-bengali-display`.
  */
 const FONT_THEME_NAME: Readonly<Record<keyof Tokens['font'], string>> = {
   display: 'display',
   body: 'sans',
   bengali: 'bengali',
+  bengaliDisplay: 'bengali-display',
 };
 
 /**

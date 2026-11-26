@@ -3,7 +3,8 @@
 @theme {
   --font-display: "Fraunces", Georgia, serif;
   --font-sans: "Outfit", system-ui, sans-serif;
-  --font-bengali: "Hind Siliguri", "Outfit", system-ui, sans-serif;
+  --font-bengali: "Noto Sans Bengali", "Outfit", system-ui, sans-serif;
+  --font-bengali-display: "Noto Serif Bengali", "Fraunces", Georgia, serif;
   --color-brand: #1a3d2b;
   --color-brand-light: #2d6448;
   --color-brand-dark: #0f2418;

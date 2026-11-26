@@ -6,19 +6,26 @@
 
 /*
  * next/font serves each face under a hashed family name, exposed as a `--bb-face-*` variable on
- * <html> (app/fonts.ts). These point the design's three font roles at those faces. Bengali is
- * second in every stack so Bangla text and the taka sign render in Hind Siliguri while Latin
- * text keeps Fraunces or Outfit.
+ * <html> (app/fonts.ts). These point the design's font roles at those faces. A Bengali face is
+ * second in every stack so Bangla text and the taka sign render in Noto while Latin text keeps
+ * Fraunces or Outfit: Noto Serif Bengali under the display serif, Noto Sans Bengali under the
+ * body sans.
  */
 @theme inline {
-  --font-display: var(--bb-face-display), var(--bb-face-bengali), Georgia, serif;
+  --font-display: var(--bb-face-display), var(--bb-face-bengali-display), Georgia, serif;
   --font-sans: var(--bb-face-body), var(--bb-face-bengali), system-ui, sans-serif;
   --font-bengali: var(--bb-face-bengali), var(--bb-face-body), system-ui, sans-serif;
+  --font-bengali-display: var(--bb-face-bengali-display), var(--bb-face-display), Georgia, serif;
 }
 
 @layer base {
   html {
     scroll-behavior: smooth;
+    /*
+     * Neither Noto Bengali face has an italic. Without this the browser slants Bangla glyphs
+     * itself, which distorts the script; Latin italics still come from Fraunces' real italic.
+     */
+    font-synthesis-style: none;
   }
 
   body {

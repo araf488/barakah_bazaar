@@ -21,7 +21,12 @@ describe('tailwind theme', () => {
 
     expect(css).toContain('  --font-sans: "Outfit", system-ui, sans-serif;');
     expect(css).toContain('  --font-display: "Fraunces", Georgia, serif;');
-    expect(css).toContain('  --font-bengali: "Hind Siliguri", "Outfit", system-ui, sans-serif;');
+    expect(css).toContain(
+      '  --font-bengali: "Noto Sans Bengali", "Outfit", system-ui, sans-serif;',
+    );
+    expect(css).toContain(
+      '  --font-bengali-display: "Noto Serif Bengali", "Fraunces", Georgia, serif;',
+    );
     expect(css).not.toContain('--font-body');
   });
 

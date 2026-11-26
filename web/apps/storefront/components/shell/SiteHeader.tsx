@@ -116,17 +116,20 @@ export function SiteHeader({
 
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-white/95 shadow-sm shadow-brand/5 backdrop-blur-md">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+      {/* Full width: the brand and search hold the left edge, the actions the right edge. */}
+      <div className="px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center gap-4 lg:gap-8">
-          <Link
-            href={ROUTES.home}
-            aria-label={shell('homeLink')}
-            className="flex min-h-11 shrink-0 items-center rounded-xl transition-opacity hover:opacity-80"
-          >
-            <BrandMark tone="onLight" />
-          </Link>
-          <HeaderSearch />
-          <div className="ml-auto flex shrink-0 items-center gap-2 sm:ml-0 lg:gap-4">
+          <div className="flex min-w-0 flex-1 items-center gap-4 lg:gap-8">
+            <Link
+              href={ROUTES.home}
+              aria-label={shell('homeLink')}
+              className="flex min-h-11 shrink-0 items-center rounded-xl transition-opacity hover:opacity-80"
+            >
+              <BrandMark tone="onLight" />
+            </Link>
+            <HeaderSearch />
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-2 lg:gap-4">
             <LocaleSwitcher />
             <AccountLinks user={user} delivery={delivery} />
             <CartDrawer cart={cart} delivery={delivery} />
