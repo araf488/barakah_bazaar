@@ -25,10 +25,14 @@ export interface LoginResponse extends Partial<SessionTokens> {
 /** The outcome of one auth call: the body, or the status that refused it (0 = unreachable). */
 export type AuthResult<T> = { ok: true; data: T } | { ok: false; status: number };
 
-/** Who is calling: the install's device id and, when known, the browser's user agent. */
+/**
+ * Who is calling: the install's device id and, when known, the browser's user agent and address
+ * (see `browser.ts`).
+ */
 export interface CallerContext {
   deviceId: string;
   userAgent?: string | null;
+  clientIp?: string;
   accessToken?: string;
 }
 
@@ -36,6 +40,7 @@ export interface CallerContext {
 export const UNREACHABLE_STATUS = 0;
 
 const DEVICE_ID_HEADER = 'X-Device-Id';
+const FORWARDED_FOR_HEADER = 'X-Forwarded-For';
 const JSON_MEDIA_TYPE = 'application/json';
 const NO_CONTENT_STATUS = 204;
 
@@ -44,6 +49,7 @@ const headersFor = (caller: CallerContext): Record<string, string> => ({
   'Content-Type': JSON_MEDIA_TYPE,
   [DEVICE_ID_HEADER]: caller.deviceId,
   ...(caller.userAgent ? { 'User-Agent': caller.userAgent } : {}),
+  ...(caller.clientIp ? { [FORWARDED_FOR_HEADER]: caller.clientIp } : {}),
   ...(caller.accessToken ? { Authorization: `Bearer ${caller.accessToken}` } : {}),
 });
 

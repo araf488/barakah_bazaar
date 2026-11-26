@@ -9,6 +9,7 @@ export const ROUTES = {
   register: '/register',
   account: '/account',
   orders: '/account/orders',
+  security: '/account/security',
   forgotPassword: '/forgot-password',
   resetPassword: '/reset-password',
   verifyEmail: '/verify-email',
@@ -18,7 +19,15 @@ export const ROUTES = {
 } as const;
 
 export type LivePage =
-  'category' | 'product' | 'fresh' | 'signIn' | 'register' | 'account' | 'orders' | 'checkout';
+  | 'category'
+  | 'product'
+  | 'fresh'
+  | 'signIn'
+  | 'register'
+  | 'account'
+  | 'orders'
+  | 'security'
+  | 'checkout';
 
 /**
  * Which pages exist today. A link is rendered only when its destination does, so the shell never
@@ -33,6 +42,7 @@ export const LIVE_PAGES: Record<LivePage, boolean> = {
   register: true,
   account: true,
   orders: true,
+  security: true,
   checkout: true,
 };
 

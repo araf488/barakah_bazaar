@@ -1,6 +1,7 @@
 import { cookies, headers } from 'next/headers';
 
 import type { CallerContext } from '../auth/api';
+import { browserOf } from '../auth/browser';
 import { SESSION_COOKIE } from '../auth/cookies';
 
 /**
@@ -14,5 +15,5 @@ export const accountCaller = async (): Promise<CallerContext | null> => {
   if (!accessToken || !deviceId) {
     return null;
   }
-  return { deviceId, accessToken, userAgent: incoming.get('user-agent') };
+  return { deviceId, accessToken, ...browserOf(incoming) };
 };

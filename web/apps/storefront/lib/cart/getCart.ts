@@ -2,6 +2,7 @@ import { cookies, headers } from 'next/headers';
 import { cache } from 'react';
 
 import { getProductBySlug, type ProductDetail } from '../api/catalog';
+import { browserOf } from '../auth/browser';
 import { SESSION_COOKIE } from '../auth/cookies';
 import { getCurrentUser } from '../auth/session';
 import { cartApi } from './api';
@@ -35,10 +36,6 @@ export const getCart = cache(async (): Promise<CartView> => {
   }
   const accessToken = jar.get(SESSION_COOKIE.access)?.value ?? '';
   const deviceId = jar.get(SESSION_COOKIE.device)?.value ?? '';
-  const result = await cartApi.get({
-    deviceId,
-    accessToken,
-    userAgent: incoming.get('user-agent'),
-  });
+  const result = await cartApi.get({ deviceId, accessToken, ...browserOf(incoming) });
   return result.ok ? fromServerCart(result.data) : emptyCart('account', 'error');
 });

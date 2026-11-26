@@ -44,6 +44,28 @@ describe('authApi', () => {
     });
   });
 
+  it('forwards the visitor’s address so the API rate-limits each shopper, not the server', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'u1' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authApi.me({ ...CALLER, clientIp: '203.0.113.7' });
+
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({
+      'X-Forwarded-For': '203.0.113.7',
+    });
+  });
+
+  it('sends no forwarded address when it has none', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'u1' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authApi.me(CALLER);
+
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).not.toHaveProperty(
+      'X-Forwarded-For',
+    );
+  });
+
   it('returns the status of a refused call', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 401)));
     await expect(authApi.login(CALLER, 'a@b.co', 'x')).resolves.toEqual({ ok: false, status: 401 });

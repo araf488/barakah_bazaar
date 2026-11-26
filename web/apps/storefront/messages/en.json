@@ -299,7 +299,74 @@
     "nav": "Account",
     "orders": "My orders",
     "ordersHint": "See where an order is, or cancel one before it is packed.",
-    "ordersLink": "See my orders"
+    "ordersLink": "See my orders",
+    "security": "Sign-in and security",
+    "securityHint": "Change your password and see which devices are signed in.",
+    "securityLink": "Manage security"
+  },
+  "security": {
+    "title": "Sign-in and security",
+    "intro": "Change your password and see where your account is signed in.",
+    "back": "My account",
+    "password": {
+      "title": "Change password",
+      "intro": "Changing it signs out every other device. This one stays signed in.",
+      "current": "Current password",
+      "new": "New password",
+      "confirm": "New password again",
+      "hint": "At least 12 characters, with an uppercase letter, a lowercase letter, a number and a symbol.",
+      "submit": "Change password",
+      "pending": "Changing…",
+      "changed": "Password changed. Every other device has been signed out.",
+      "errors": {
+        "currentMissing": "Enter your current password.",
+        "passwordShort": "Use at least 12 characters.",
+        "passwordLong": "Use 128 characters or fewer.",
+        "passwordMismatch": "The two new passwords do not match.",
+        "passwordSame": "Choose a password different from your current one.",
+        "passwordCommon": "That password is too common. Choose a different one.",
+        "passwordIdentity": "Leave your name and email address out of the password.",
+        "passwordShopName": "Leave Barakah and Bazaar out of the password.",
+        "passwordDistinct": "Use at least 6 different characters.",
+        "passwordSequential": "Avoid long runs such as abcdef or 123456.",
+        "passwordClasses": "Include an uppercase letter, a lowercase letter, a number and a symbol.",
+        "currentWrong": "Your current password is not right.",
+        "invalid": "Something in the form is not right. Please check it and try again.",
+        "signedOut": "Your session has ended. Sign in again to continue.",
+        "tooMany": "Too many attempts. Please wait a minute and try again.",
+        "failed": "We could not change your password just now. Please try again in a moment."
+      }
+    },
+    "devices": {
+      "title": "Where you are signed in",
+      "intro": "If you see a device you do not recognise, sign it out and change your password.",
+      "thisDevice": "This device",
+      "deviceOn": "{browser} on {system}",
+      "unknownDevice": "Unknown device",
+      "lastActive": "Last active {when}",
+      "signedIn": "Signed in {when}",
+      "network": "Network <ip>{address}</ip>",
+      "signOut": "Sign out",
+      "signOutNamed": "Sign out {device}",
+      "signingOut": "Signing out…",
+      "only": "No other device is signed in to your account.",
+      "loading": "Loading your devices",
+      "loadError": "We could not load your devices just now.",
+      "retry": "Try again",
+      "everywhere": {
+        "open": "Sign out of all devices",
+        "hint": "This one too. You will need your password to sign back in.",
+        "title": "Sign out of every device?",
+        "body": "Every device, this one included, will ask for your password again.",
+        "confirm": "Sign out everywhere",
+        "pending": "Signing out…",
+        "keep": "Stay signed in"
+      },
+      "errors": {
+        "signedOut": "Your session has ended. Sign in again to continue.",
+        "failed": "That did not work. Please try again in a moment."
+      }
+    }
   },
   "address": {
     "add": "Add an address",

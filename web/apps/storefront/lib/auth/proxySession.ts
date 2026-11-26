@@ -1,6 +1,7 @@
 import type { NextRequest, NextResponse } from 'next/server';
 
 import { authApi, sessionTokensOf } from './api';
+import { browserOf } from './browser';
 import { clearSession, SESSION_COOKIE, writeDeviceId, writeSession } from './cookies';
 
 /** Refresh answers that mean the refresh token itself is dead, not that the API is down. */
@@ -27,10 +28,7 @@ export const maintainSession = async (
     return;
   }
 
-  const result = await authApi.refresh(
-    { deviceId, userAgent: request.headers.get('user-agent') },
-    refreshToken,
-  );
+  const result = await authApi.refresh({ deviceId, ...browserOf(request.headers) }, refreshToken);
   const tokens = result.ok ? sessionTokensOf(result.data) : null;
   if (tokens) {
     writeSession(response.cookies, tokens);

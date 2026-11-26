@@ -55,6 +55,20 @@ describe('maintainSession', () => {
     expect(response.cookies.get('bb_refresh')?.value).toBe('new-rt');
   });
 
+  it('refreshes on behalf of the visitor’s address, not the server’s', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(SESSION));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = new NextRequest('http://localhost/bn', {
+      headers: { cookie: 'bb_device=d; bb_refresh=rt', 'x-forwarded-for': '203.0.113.7' },
+    });
+
+    await maintainSession(request, NextResponse.next());
+
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({
+      'X-Forwarded-For': '203.0.113.7',
+    });
+  });
+
   it('signs the visitor out when the refresh token is dead', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 401)));
     const response = NextResponse.next();
