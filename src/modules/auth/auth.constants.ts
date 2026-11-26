@@ -34,7 +34,7 @@ export const AuthConstants = {
    */
   ScryptMaxMemSafetyBytes: 1_048_576,
   /** Filename of the bundled weak-password denylist, resolved relative to this module. */
-  // eslint-disable-next-line sonarjs/no-hardcoded-passwords -- a filename, not a credential
+
   CommonPasswordsFileName: 'common-passwords.txt',
   PasswordMinLength: 12,
   PasswordMaxLength: 128,
@@ -325,6 +325,11 @@ export const AuthMessages = {
   InvalidMfaCode: 'That code is not valid.',
   /** Enabling MFA was requested before `setup` produced a secret to confirm. */
   MfaSetupRequired: 'Set up two-factor authentication before enabling it.',
+  /**
+   * An enrolment token was spent after the account had already turned MFA on: setting up again
+   * would silently replace the secret the authenticator app holds.
+   */
+  MfaAlreadyEnabled: 'Two-factor authentication is already set up. Sign in with a code instead.',
   /** A staff account tried to turn MFA off while `staffMfaRequired` is set. */
   MfaCannotBeDisabledForStaff:
     'Two-factor authentication is required for staff accounts and cannot be disabled.',

@@ -20,10 +20,10 @@ and every feature mentioned as not yet built.
 
 ## What lives here
 
-| Path                  | Application                     | Port                           | Audience                             |
-| --------------------- | ------------------------------- | ------------------------------ | ------------------------------------ |
-| `web/apps/storefront` | Next.js (App Router), SSR + SEO | 3001 (dev)                     | customers, Bangla-first with English |
-| `web/apps/admin`      | React + Vite SPA                | 3002 (dev), served at `/admin` | staff, role-gated, English chrome    |
+| Path                             | Application                     | Port                           | Audience                             |
+| -------------------------------- | ------------------------------- | ------------------------------ | ------------------------------------ |
+| `web/apps/storefront`            | Next.js (App Router), SSR + SEO | 3001 (dev)                     | customers, Bangla-first with English |
+| `web/apps/storefront` (`/admin`) | Next.js route group, same app   | 3001 (dev), served at `/admin` | staff, role-gated, English chrome    |
 
 Shared packages:
 
@@ -32,12 +32,12 @@ Shared packages:
 | `web/packages/tokens`     | Brand primitives — colour, type scale, spacing. Framework-free; emits CSS custom properties, a TS object and JSON so the Flutter app can consume the same values. |
 | `web/packages/ui`         | The handful of primitives that encode business rules (money, localized names, perishability, cutoff clock), styled with the tokens' Tailwind theme.               |
 | `web/packages/api-client` | Generated API client, TanStack Query hooks, MSW mock handlers, auth wiring (model to be decided, see Stack), error mapping.                                       |
-| `web/packages/config`     | Shared TypeScript, ESLint and Prettier configuration, including the import-boundary rules that keep the two apps separate.                                        |
+| `web/packages/config`     | Shared TypeScript, ESLint and Prettier configuration, including the import-boundary rules that keep shared packages from importing the app.                       |
 | `web/contracts/`          | The API's OpenAPI snapshot plus hand-authored fragments for endpoints the backend has not built yet.                                                              |
 
 In production there is no separate deploy target. The root `Dockerfile` builds
-both apps into the one image, and the API process serves them: `/admin/**` is the
-admin SPA's static build, everything outside `/api/**` goes to the storefront's
+the storefront app into the one image, and the API process serves it: everything
+outside `/api/**`, including `/admin/**`, goes to the storefront's
 Next handler, all on one origin. See "One process, three surfaces" in the root
 README. The storefront stays a self-contained workspace app, so it can be split
 out later if it ever has to scale on its own.
@@ -48,8 +48,10 @@ out later if it ever has to scale on its own.
 
 - **Storefront** — Next.js App Router, locale-prefixed routes (`/bn` default,
   `/en`), server-rendered catalog pages with ISR.
-- **Admin** — React + Vite SPA, MFA (auth model to be decided, see Auth below).
-- **UI** — Tailwind CSS v4 in both apps, no component library. `web/packages/tokens`
+- **Admin** — the `/admin` route group of the storefront Next app; staff sign in with a
+  password and an authenticator code (TOTP, enrolled on first sign-in), and the tokens
+  live in httpOnly cookies scoped to `/admin`. English-only chrome.
+- **UI** — Tailwind CSS v4 in the app, no component library. `web/packages/tokens`
   emits `src/theme.css`, a Tailwind `@theme` block that uses the Figma file's own names
   (`bg-brand`, `text-gold`, `font-display`, `animate-marquee`). Re-run
   `npm run emit -w @barakah/tokens` after changing a token; a test fails until you do.
@@ -147,7 +149,6 @@ required public prefix:
 | App        | Variable              |
 | ---------- | --------------------- |
 | storefront | `NEXT_PUBLIC_APP_ENV` |
-| admin      | `VITE_APP_ENV`        |
 
 `NODE_ENV` keeps its framework meaning — build optimisation — and is **never** read
 to decide behaviour. `APP_ENV` is the only source of truth, validated at startup
@@ -192,9 +193,9 @@ convenience one.
   a test asserts its absence from the production build rather than trusting
   configuration.
 
-Local ports: API `3000`, storefront `3001`, admin `3002`. `next dev` and `vite`
-do not default to those (Next takes 3000, Vite 5173), so pass them, as shown
-under Getting started. Both origins are already in the `CORS_ALLOWED_ORIGINS`
+Local ports: API `3000`, storefront and `/admin` `3001`. `next dev`
+does not default to those (Next takes 3000), so pass them, as shown
+under Getting started. The origins are already in the `CORS_ALLOWED_ORIGINS`
 value in the root `.env.example` (the schema itself defaults it to empty). In the deployed image the web apps are same-origin with
 the API, so CORS never applies to them.
 
@@ -211,15 +212,13 @@ npm install                   # installs the API and every web workspace
 npm run web:lint              # ESLint with web/eslint.config.mjs over web/
 npm run web:typecheck         # tsc -p web/tsconfig.json --noEmit
 npm run web:test              # Vitest across the web workspaces
-npm run web:build             # storefront (.next), then admin (dist)
+npm run web:build             # storefront (.next)
 
 npm run start:dev                               # the API, http://localhost:3000
 npm run dev -w @barakah/storefront -- -p 3001   # storefront dev server
-npm run dev -w @barakah/admin -- --port 3002    # admin dev server, at /admin/
 ```
 
-The dev servers run on their own and are not mounted in Nest. The admin dev
-server proxies `/api` to `http://localhost:3000`. The storefront reads
+The dev server runs on its own and is not mounted in Nest; it serves `/admin/` too. The storefront reads
 `WEB_INTERNAL_API_BASE_URL` for its server-side fetches (default: the API on
 `127.0.0.1:3000`).
 

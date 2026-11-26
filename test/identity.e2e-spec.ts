@@ -2025,7 +2025,7 @@ describe('Identity (end to end)', () => {
 
       const { body } = emailSender.latestTo(INVITEE_EMAIL);
       const base = app.get(ConfigService).get<string>('APP_PUBLIC_BASE_URL');
-      const prefix = `${base}/accept-invitation?token=`;
+      const prefix = `${base}/admin/accept-invitation?token=`;
       expect(body).toContain(prefix);
       expect(body).toContain('as OPS');
       expect(body).toContain('valid for 7 days');
@@ -2297,7 +2297,7 @@ describe('Identity (end to end)', () => {
       expect(resent.body.token).not.toBe(first.token);
       const emailed = await waitForEmailTo(emailSender, INVITEE_EMAIL, alreadySeen);
       const base = app.get(ConfigService).get<string>('APP_PUBLIC_BASE_URL');
-      const prefix = `${base}/accept-invitation?token=`;
+      const prefix = `${base}/admin/accept-invitation?token=`;
       expect(emailed.body).toContain(prefix);
       const emailedToken = emailed.body.split(prefix)[1].split('\n')[0];
       expect(emailedToken).toMatch(/^[\w-]{43}$/);

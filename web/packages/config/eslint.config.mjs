@@ -6,16 +6,12 @@ import prettier from 'eslint-config-prettier';
 /** Cognitive-complexity ceiling, identical to the API repo's Sonar gate. */
 export const COGNITIVE_COMPLEXITY_MAX = 15;
 
-/** Neither app may import the other; shared packages may import no app. */
+/** Shared packages may not import the app; shared code lives in web/packages/. */
 const CROSS_APP_BOUNDARY = {
   patterns: [
     {
       group: ['**/apps/storefront/**'],
-      message: 'Cross-app import. Move shared code into web/packages/.',
-    },
-    {
-      group: ['**/apps/admin/**'],
-      message: 'Cross-app import. Move shared code into web/packages/.',
+      message: 'App import from a shared package. Move shared code into web/packages/.',
     },
   ],
 };

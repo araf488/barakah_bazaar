@@ -117,11 +117,13 @@ describe('StaffInvitationService', () => {
       const emailed = (email.send.mock.calls[0][0] as { body: string }).body;
       const token = extractToken(emailed);
 
-      expect(emailed).toContain('https://admin.example.com/accept-invitation?token=');
+      expect(emailed).toContain('https://admin.example.com/admin/accept-invitation?token=');
       expect(token).not.toBe('');
       // The raw token appears exactly once, and only as the link's query value.
       expect(emailed.split(token)).toHaveLength(2);
-      expect(emailed).toContain(`https://admin.example.com/accept-invitation?token=${token}\n`);
+      expect(emailed).toContain(
+        `https://admin.example.com/admin/accept-invitation?token=${token}\n`,
+      );
     });
 
     it('emails the role, the link and the validity in days, with no sign-in-and-enter-a-code step', async () => {
@@ -135,7 +137,7 @@ describe('StaffInvitationService', () => {
       expect(sent.body).toBe(
         'You have been invited to join the Barakah Bazaar backoffice as OPS.\n\n' +
           'Open this link to choose your password and create your account:\n\n' +
-          `  https://admin.example.com/accept-invitation?token=${token}\n\n` +
+          `  https://admin.example.com/admin/accept-invitation?token=${token}\n\n` +
           'The invitation is valid for 7 days. If you were not expecting this, ignore it.',
       );
       // The removed flow told the invitee to sign in first and type a code.

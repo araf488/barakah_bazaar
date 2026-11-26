@@ -360,6 +360,13 @@ export class MfaService {
       return serviceFail(HttpStatus.UNAUTHORIZED, AuthMessages.InvalidCredentials);
     }
 
+    // An enrolment token outlives the enrolment it was issued for by up to its five minutes.
+    // Spent after `enable`, `setup` would overwrite the secret the authenticator app holds and
+    // lock the account out of its own second factor.
+    if (user.totpEnabledAt) {
+      return serviceFail(HttpStatus.CONFLICT, AuthMessages.MfaAlreadyEnabled);
+    }
+
     return serviceOk(user);
   }
 

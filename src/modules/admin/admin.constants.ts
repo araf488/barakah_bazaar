@@ -31,8 +31,11 @@ export const AdminConstants = {
   EmailMaxLength: 320,
   /** Longest invitation token accepted on the accept endpoint. */
   InvitationTokenMaxLength: 128,
-  /** Frontend path the emailed invitation link points at; the token is appended as a query. */
-  InvitationAcceptPath: '/accept-invitation',
+  /**
+   * Admin portal path the emailed invitation link points at; the token is appended as a query.
+   * The portal is served by the storefront app under /admin (staff cookies are scoped there).
+   */
+  InvitationAcceptPath: '/admin/accept-invitation',
   /** Subject line of the staff invitation email. */
   InvitationEmailSubject: 'You have been invited to the Barakah Bazaar backoffice',
   /**
@@ -119,7 +122,7 @@ export const AdminAuditActions = {
   AuthSessionRevoked: 'auth.session_revoked',
   // Not a credential: this is the audit action written when someone changes their password,
   // and the literal is the queryable name of that event.
-  // eslint-disable-next-line sonarjs/no-hardcoded-passwords
+
   AuthPasswordChanged: 'auth.password_changed',
   AuthNewDevice: 'auth.new_device',
   /** The auth settings row was changed through `PATCH /admin/auth-settings`. */

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for the one-container image: API + SSR storefront + admin SPA.
+# Smoke test for the one-container image: API + SSR storefront (incl. /admin).
 # Usage: scripts/smoke-web.sh <image-tag>
 # Runs the image once, in a deployed mode, with throwaway values, and always removes it.
 #
@@ -101,7 +101,7 @@ check "health"            /api/v1/health          200 application/json "\"enviro
 check "storefront root"   /                       307 ""
 check "storefront (bn)"   /bn                     200 text/html "<html lang=\"bn\""
 check "storefront (en)"   /en                     200 text/html "<html lang=\"en\""
-check "admin"             /admin/                 200 text/html "Barakah Bazaar Admin"
+check "admin"             /admin/sign-in          200 text/html "Staff sign-in"
 check "unknown api path"  /api/v1/does-not-exist  404 application/json
 check "auth guard (R1)"   /api/v1/auth/me         401 application/json
 # Public, and cash on delivery alone while PAYMENT_PROVIDER is the default noop gateway.

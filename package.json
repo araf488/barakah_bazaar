@@ -30,7 +30,7 @@
     "web:lint": "eslint --config web/eslint.config.mjs web",
     "web:typecheck": "tsc -p web/tsconfig.json --noEmit",
     "web:test": "npm run test --workspaces --if-present",
-    "web:build": "npm run build -w @barakah/storefront && npm run build -w @barakah/admin",
+    "web:build": "npm run build -w @barakah/storefront",
     "build:all": "npm run build && npm run web:build"
   },
   "jest": {

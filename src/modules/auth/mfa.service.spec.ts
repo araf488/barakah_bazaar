@@ -796,8 +796,10 @@ describe('MfaService', () => {
 
     it('verifies the token as "enrolment", never as "access" or "mfa"', async () => {
       tokens.verify.mockResolvedValue(enrolmentClaims);
-      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
-      repository.saveTotpSecret.mockResolvedValue(userRow());
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: null }),
+      );
+      repository.saveTotpSecret.mockResolvedValue(userRow({ totpEnabledAt: null }));
 
       await service.setupForEnrolment('enrol-token', DEVICE_ID);
 
@@ -806,8 +808,10 @@ describe('MfaService', () => {
 
     it('issues a secret for an account that has none yet — the whole point of enrolment', async () => {
       tokens.verify.mockResolvedValue(enrolmentClaims);
-      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
-      repository.saveTotpSecret.mockResolvedValue(userRow());
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: null }),
+      );
+      repository.saveTotpSecret.mockResolvedValue(userRow({ totpEnabledAt: null }));
 
       const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
 
@@ -831,14 +835,16 @@ describe('MfaService', () => {
     });
 
     it('refuses a stale or missing credential stamp', async () => {
-      repository.findById.mockResolvedValue(userRow({ passwordChangedAt: new Date(5) }));
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, passwordChangedAt: new Date(5) }),
+      );
       tokens.verify.mockResolvedValue(enrolmentClaims);
       const stale = await service.setupForEnrolment('enrol-token', DEVICE_ID);
       tokens.verify.mockResolvedValue({
         ok: true,
         claims: { ...enrolmentClaims.claims, credentialStamp: undefined },
       });
-      repository.findById.mockResolvedValue(userRow());
+      repository.findById.mockResolvedValue(userRow({ totpEnabledAt: null }));
       const missing = await service.setupForEnrolment('enrol-token', DEVICE_ID);
 
       const expected = {
@@ -857,9 +863,9 @@ describe('MfaService', () => {
         claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
       });
       repository.findById.mockResolvedValue(
-        userRow({ totpSecretEncrypted: null, passwordChangedAt: new Date(5) }),
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: null, passwordChangedAt: new Date(5) }),
       );
-      repository.saveTotpSecret.mockResolvedValue(userRow());
+      repository.saveTotpSecret.mockResolvedValue(userRow({ totpEnabledAt: null }));
 
       const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
 
@@ -882,6 +888,25 @@ describe('MfaService', () => {
       const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
 
       expect(result).toMatchObject({ ok: false, status: HttpStatus.SERVICE_UNAVAILABLE });
+    });
+
+    it('refuses an account that already finished enrolment, keeping its secret', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(
+        userRow({
+          totpSecretEncrypted: 'sealed-secret',
+          totpEnabledAt: new Date(),
+        }),
+      );
+
+      const result = await service.setupForEnrolment('enrol-token', DEVICE_ID);
+
+      expect(result).toEqual({
+        ok: false,
+        status: HttpStatus.CONFLICT,
+        message: 'Two-factor authentication is already set up. Sign in with a code instead.',
+      });
+      expect(repository.saveTotpSecret).not.toHaveBeenCalled();
     });
 
     it('never logs the enrolment token', async () => {
@@ -908,7 +933,9 @@ describe('MfaService', () => {
 
     it('confirms the factor and hands back ten recovery codes', async () => {
       tokens.verify.mockResolvedValue(enrolmentClaims);
-      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: 'sealed-secret' }),
+      );
       repository.enableTotp.mockResolvedValue(true);
 
       const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
@@ -919,9 +946,26 @@ describe('MfaService', () => {
       ).toHaveLength(10);
     });
 
+    it('refuses to enable twice, so recovery codes are never silently replaced', async () => {
+      tokens.verify.mockResolvedValue(enrolmentClaims);
+      repository.findById.mockResolvedValue(
+        userRow({
+          totpSecretEncrypted: 'sealed-secret',
+          totpEnabledAt: new Date(),
+        }),
+      );
+
+      const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.CONFLICT });
+      expect(repository.enableTotp).not.toHaveBeenCalled();
+    });
+
     it('verifies the token as "enrolment"', async () => {
       tokens.verify.mockResolvedValue(enrolmentClaims);
-      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: 'sealed-secret' }),
+      );
       repository.enableTotp.mockResolvedValue(true);
 
       await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
@@ -931,7 +975,11 @@ describe('MfaService', () => {
 
     it('refuses a stale or missing credential stamp without enabling anything', async () => {
       repository.findById.mockResolvedValue(
-        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+        userRow({
+          totpEnabledAt: null,
+          totpSecretEncrypted: 'sealed-secret',
+          passwordChangedAt: new Date(5),
+        }),
       );
       tokens.verify.mockResolvedValue(enrolmentClaims);
       const stale = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
@@ -939,7 +987,9 @@ describe('MfaService', () => {
         ok: true,
         claims: { ...enrolmentClaims.claims, credentialStamp: undefined },
       });
-      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: 'sealed-secret' }),
+      );
       const missing = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
 
       const expected = {
@@ -958,7 +1008,11 @@ describe('MfaService', () => {
         claims: { ...enrolmentClaims.claims, credentialStamp: 5 },
       });
       repository.findById.mockResolvedValue(
-        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+        userRow({
+          totpEnabledAt: null,
+          totpSecretEncrypted: 'sealed-secret',
+          passwordChangedAt: new Date(5),
+        }),
       );
       repository.enableTotp.mockResolvedValue(true);
 
@@ -974,7 +1028,11 @@ describe('MfaService', () => {
       });
       // The resolver reads the row before the reset: its stamp matches the token.
       repository.findById.mockResolvedValue(
-        userRow({ totpSecretEncrypted: 'sealed-secret', passwordChangedAt: new Date(5) }),
+        userRow({
+          totpEnabledAt: null,
+          totpSecretEncrypted: 'sealed-secret',
+          passwordChangedAt: new Date(5),
+        }),
       );
       // By the write, the reset has stamped a newer passwordChangedAt on the live row.
       const live = { passwordChangedAt: new Date(9) };
@@ -1003,7 +1061,9 @@ describe('MfaService', () => {
 
     it('refuses a wrong code without enabling anything', async () => {
       tokens.verify.mockResolvedValue(enrolmentClaims);
-      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: 'sealed-secret' }));
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: 'sealed-secret' }),
+      );
       crypto.totp.verify.mockReturnValue({ ok: false, step: 11 });
 
       const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '000000');
@@ -1014,7 +1074,9 @@ describe('MfaService', () => {
 
     it('refuses when setup has not run, so there is no secret to confirm', async () => {
       tokens.verify.mockResolvedValue(enrolmentClaims);
-      repository.findById.mockResolvedValue(userRow({ totpSecretEncrypted: null }));
+      repository.findById.mockResolvedValue(
+        userRow({ totpEnabledAt: null, totpSecretEncrypted: null }),
+      );
 
       const result = await service.enableForEnrolment('enrol-token', DEVICE_ID, '123456');
 

@@ -42,15 +42,15 @@ describe('resolveWebTarget', () => {
     });
   });
 
-  describe('admin paths go to the admin SPA', () => {
+  describe('admin paths go to Next', () => {
     it.each([
       '/admin',
       '/admin/',
       '/admin/orders/123',
       '/admin/assets/app.js',
       '/admin/missing.js',
-    ])('routes %s to admin', (path) => {
-      expect(resolveWebTarget(path, API_PREFIX)).toBe('admin');
+    ])('routes %s to next', (path) => {
+      expect(resolveWebTarget(path, API_PREFIX)).toBe('next');
     });
 
     it('routes /administrator to Next: admin must be a whole segment', () => {

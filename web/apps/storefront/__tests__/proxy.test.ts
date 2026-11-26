@@ -38,10 +38,27 @@ describe('locale proxy', () => {
     expect(matches(path)).toBe(true);
   });
 
-  it.each(['/api/v1/health', '/admin', '/admin/orders', '/_next/static/app.js', '/favicon.ico'])(
+  it.each(['/api/v1/health', '/_next/static/app.js', '/favicon.ico'])(
     'never runs on %s',
     (path) => {
       expect(matches(path)).toBe(false);
     },
   );
+});
+
+describe('staff portal paths', () => {
+  it.each(['/admin', '/admin/sign-in', '/admin/orders/1'])('runs on %s', (path) => {
+    expect(matches(path)).toBe(true);
+  });
+
+  it('never puts the portal into a locale', async () => {
+    const res = await run('/admin/sign-in');
+    expect(res.headers.get('location')).toBeNull();
+    expect(res.status).toBe(200);
+  });
+
+  it('still sends /administrator, a shop path, into a locale', async () => {
+    const res = await run('/administrator');
+    expect(res.headers.get('location')).toBe(`${ORIGIN}/bn/administrator`);
+  });
 });

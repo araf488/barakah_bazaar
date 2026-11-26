@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LoggerService } from '@nestjs/common';
@@ -12,23 +12,17 @@ const INTERNAL_API_BASE_URL = 'http://127.0.0.1:4321/api/v1';
 interface Fixture {
   root: string;
   storefrontDir: string;
-  adminDistDir: string;
 }
 
 /** A temp directory laid out like a finished `npm run web:build`, minus whatever is skipped. */
-const createFixture = (skip: { nextBuild?: boolean; adminIndex?: boolean } = {}): Fixture => {
+const createFixture = (skip: { nextBuild?: boolean } = {}): Fixture => {
   const root = mkdtempSync(join(tmpdir(), 'web-mount-spec-'));
   const storefrontDir = join(root, 'storefront');
-  const adminDistDir = join(root, 'admin-dist');
   mkdirSync(storefrontDir, { recursive: true });
-  mkdirSync(adminDistDir, { recursive: true });
   if (!skip.nextBuild) {
     mkdirSync(join(storefrontDir, '.next'));
   }
-  if (!skip.adminIndex) {
-    writeFileSync(join(adminDistDir, 'index.html'), '<title>Barakah Bazaar Admin</title>');
-  }
-  return { root, storefrontDir, adminDistDir };
+  return { root, storefrontDir };
 };
 
 const createLogger = (): jest.Mocked<LoggerService> => ({
@@ -61,7 +55,6 @@ describe('mountWeb', () => {
   const optionsFor = (current: Fixture, overrides: Partial<WebMountOptions> = {}) => ({
     apiPrefix: 'api',
     storefrontDir: current.storefrontDir,
-    adminDistDir: current.adminDistDir,
     internalApiBaseUrl: INTERNAL_API_BASE_URL,
     createNextHandler: jest.fn().mockResolvedValue(jest.fn()),
     logger: createLogger(),
@@ -78,17 +71,8 @@ describe('mountWeb', () => {
       );
     });
 
-    it('fails naming the admin index.html path when the admin was never built', async () => {
-      fixture = createFixture({ adminIndex: true });
-      const { app } = createApp();
-
-      await expect(mountWeb(app, optionsFor(fixture))).rejects.toThrow(
-        `WEB_ENABLED=true but the web build output is missing: ${fixture.adminDistDir}/index.html. Run "npm run web:build" before starting.`,
-      );
-    });
-
     it('never prepares Next and never mounts anything when a build is missing, so half a site is never served', async () => {
-      fixture = createFixture({ adminIndex: true });
+      fixture = createFixture({ nextBuild: true });
       const { app, use } = createApp();
       const options = optionsFor(fixture);
 
@@ -187,7 +171,6 @@ describe('webMountOptionsFrom', () => {
     expect(options).toEqual({
       apiPrefix: 'api',
       storefrontDir: '/srv/app/web/apps/storefront',
-      adminDistDir: '/srv/app/web/apps/admin/dist',
       internalApiBaseUrl: 'http://127.0.0.1:3000/api/v1',
     });
   });

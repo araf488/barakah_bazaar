@@ -1,5 +1,5 @@
-# One image serves the API, the SSR storefront and the admin SPA (WEB_ENABLED=true).
-# Layout must match src/web/web.constants.ts: web/apps/storefront/.next and web/apps/admin/dist
+# One image serves the API and the SSR storefront, which also serves /admin (WEB_ENABLED=true).
+# Layout must match src/web/web.constants.ts: web/apps/storefront/.next
 # resolved from the directory above dist/.
 
 # ─── deps stage: one root install across the workspaces, one lockfile ────────
@@ -9,7 +9,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
 COPY web/apps/storefront/package.json ./web/apps/storefront/package.json
-COPY web/apps/admin/package.json ./web/apps/admin/package.json
 COPY web/packages/config/package.json ./web/packages/config/package.json
 COPY web/packages/tokens/package.json ./web/packages/tokens/package.json
 COPY web/packages/ui/package.json ./web/packages/ui/package.json
@@ -52,7 +51,6 @@ COPY --from=builder --chown=nestjs:nodejs /app/web/packages ./web/packages
 COPY --from=builder --chown=nestjs:nodejs /app/web/apps/storefront/.next ./web/apps/storefront/.next
 COPY --from=builder --chown=nestjs:nodejs /app/web/apps/storefront/public ./web/apps/storefront/public
 COPY --from=builder --chown=nestjs:nodejs /app/web/apps/storefront/package.json /app/web/apps/storefront/next.config.mjs ./web/apps/storefront/
-COPY --from=builder --chown=nestjs:nodejs /app/web/apps/admin/dist ./web/apps/admin/dist
 COPY --chown=nestjs:nodejs package.json ./
 
 USER nestjs

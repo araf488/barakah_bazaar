@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +23,7 @@ import { mountWeb, WebRequestHandler } from './web-mount';
 /**
  * Proves the mount order against a real Nest + Express app: API traffic reaches Nest's router
  * and guard chain, web traffic never does. Next is replaced by a stub handler (no real Next
- * app is ever prepared here) and the admin build by a temp directory.
+ * app is ever prepared here) and the build output by a temp directory.
  */
 
 /** Every path the stub guard was asked about — a web path showing up here is the bug. */
@@ -59,10 +59,6 @@ class ProbeController {
 })
 class ProbeModule {}
 
-const ADMIN_INDEX_HTML = '<!doctype html><title>Barakah Bazaar Admin</title>';
-const ADMIN_ASSET_JS = 'console.log("admin");';
-const ADMIN_ROBOTS_TXT = 'User-agent: *\nDisallow: /';
-
 const stubNextHandler: WebRequestHandler = (req: IncomingMessage, res: ServerResponse) => {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -85,12 +81,7 @@ interface Harness {
 const createHarness = async (nextHandler: WebRequestHandler): Promise<Harness> => {
   const root = mkdtempSync(join(tmpdir(), 'web-mount-int-'));
   const storefrontDir = join(root, 'storefront');
-  const adminDistDir = join(root, 'admin-dist');
   mkdirSync(join(storefrontDir, '.next'), { recursive: true });
-  mkdirSync(join(adminDistDir, 'assets'), { recursive: true });
-  writeFileSync(join(adminDistDir, 'index.html'), ADMIN_INDEX_HTML);
-  writeFileSync(join(adminDistDir, 'assets', 'app.js'), ADMIN_ASSET_JS);
-  writeFileSync(join(adminDistDir, 'robots.txt'), ADMIN_ROBOTS_TXT);
 
   const moduleRef = await Test.createTestingModule({ imports: [ProbeModule] }).compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false });
@@ -101,7 +92,6 @@ const createHarness = async (nextHandler: WebRequestHandler): Promise<Harness> =
   await mountWeb(app, {
     apiPrefix: 'api',
     storefrontDir,
-    adminDistDir,
     internalApiBaseUrl: 'http://127.0.0.1:3000/api/v1',
     createNextHandler: () => Promise.resolve(nextHandler),
     logger,
@@ -208,63 +198,22 @@ describe('mountWeb (integration)', () => {
 
     it('serves web paths without the guard ever running', async () => {
       await http().get('/');
+      await http().get('/admin');
       await http().get('/admin/orders/1');
-      await http().get('/admin/assets/app.js');
-      await http().get('/admin/missing.js');
       await http().get('/administrator');
 
       expect(guardedPaths).toEqual([]);
     });
   });
 
-  describe('admin SPA', () => {
-    it.each(['/admin', '/admin/', '/admin/orders/1'])(
-      'answers %s with index.html and no-cache',
-      async (path) => {
-        const response = await http().get(path);
-
-        expect(response.status).toBe(200);
-        expect(response.headers['content-type']).toMatch(/^text\/html/);
-        expect(response.headers['cache-control']).toBe('no-cache');
-        expect(response.text).toBe('<!doctype html><title>Barakah Bazaar Admin</title>');
-      },
-    );
-
-    it('answers a direct GET /admin/index.html with the shell and no-cache, like the SPA fallback', async () => {
-      const response = await http().get('/admin/index.html');
+  describe('admin paths', () => {
+    it.each(['/admin', '/admin/orders/1'])('sends %s to the Next handler', async (path) => {
+      const response = await http().get(path);
 
       expect(response.status).toBe(200);
-      expect(response.headers['content-type']).toMatch(/^text\/html/);
-      expect(response.headers['cache-control']).toBe('no-cache');
-      expect(response.text).toBe('<!doctype html><title>Barakah Bazaar Admin</title>');
+      expect(response.text).toBe(`next:${path}`);
+      expect(guardedPaths).toEqual([]);
     });
-
-    it('keeps the default cache on other top-level build files', async () => {
-      const response = await http().get('/admin/robots.txt');
-
-      expect(response.status).toBe(200);
-      expect(response.headers['cache-control']).toBe('public, max-age=0');
-      expect(response.text).toBe('User-agent: *\nDisallow: /');
-    });
-
-    it('serves a hashed asset with a long immutable cache', async () => {
-      const response = await http().get('/admin/assets/app.js');
-
-      expect(response.status).toBe(200);
-      expect(response.headers['content-type']).toMatch(/javascript/);
-      expect(response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
-      expect(response.text).toBe('console.log("admin");');
-    });
-
-    it.each(['/admin/missing.js', '/admin/assets/missing.js'])(
-      'answers %s with 404 rather than falling back to index.html',
-      async (path) => {
-        const response = await http().get(path);
-
-        expect(response.status).toBe(404);
-        expect(response.text).toBe('Not Found');
-      },
-    );
   });
 });
 

@@ -12,12 +12,11 @@ describe('shared eslint config', () => {
     expect(found?.['sonarjs/cognitive-complexity']).toEqual(['error', 15]);
   });
 
-  it('forbids cross-app imports in both directions', () => {
+  it('forbids shared packages importing the app', () => {
     // Serialise only each block's `rules`, never the whole array: typescript-eslint's
     // recommended config carries a self-referential plugin object, so stringifying the
     // array throws on the circular structure. `rules` is the field this asserts on.
     const serialised = JSON.stringify(config.map((block) => block.rules ?? null));
     expect(serialised).toContain('apps/storefront');
-    expect(serialised).toContain('apps/admin');
   });
 });

@@ -10,7 +10,7 @@ same API also serves the mobile app:
 | Client                              | Where                                | Talks to                      |
 | ----------------------------------- | ------------------------------------ | ----------------------------- |
 | Public storefront (Next.js)         | `web/apps/storefront`, in this repo  | this API + Supabase Realtime  |
-| Admin portal (React + Vite)         | `web/apps/admin`, in this repo       | this API + Supabase Storage   |
+| Admin portal (Next.js, `/admin`)    | `web/apps/storefront`, in this repo  | this API + Supabase Storage   |
 | Mobile app (Flutter, Android + iOS) | separate repo (`barakah_bazaar_app`) | this API + `supabase_flutter` |
 
 Every client signs in against **this API** — see [Authentication](#authentication).
@@ -48,7 +48,7 @@ still boots and reports itself degraded.
 ```
         ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
         │  Public Storefront   │   │    Admin Portal      │   │   Flutter App        │
-        │  (Next.js, SSR/SEO)  │   │  (React + Vite SPA)  │   │  (Android + iOS)     │
+        │  (Next.js, SSR/SEO)  │   │  (Next.js, /admin)   │   │  (Android + iOS)     │
         └──────────┬───────────┘   └──────────┬───────────┘   └──────────┬───────────┘
                    │                          │                          │
                    │  REST /api/v1  (this API's access token as Bearer)  │
@@ -80,18 +80,18 @@ still boots and reports itself degraded.
 ### One process, three surfaces
 
 With `WEB_ENABLED=true`, one Node process on one port serves the API, the SSR
-storefront and the admin SPA. Resolution order is fixed, and the mount is plain
+storefront and the admin portal (a route group of the storefront app under
+`/admin`). Resolution order is fixed, and the mount is plain
 Express middleware registered in `src/main.ts` before `listen`, so web traffic
 never reaches a Nest guard, pipe or interceptor:
 
 1. `/api/**` (the `API_PREFIX`, so `/api/v1/**`) goes to Nest, as always. An
    unknown API path stays a Nest JSON 404, never a Next page.
-2. `/admin` and `/admin/**` serve the admin SPA build (`web/apps/admin/dist`).
-   Extension-less paths fall back to `index.html`; hashed `assets/` get a
-   one-year immutable cache and `index.html` is `no-cache`. A path with an
-   extension and no file is a plain 404.
-3. Everything else goes to the Next.js handler (`web/apps/storefront/.next`,
-   prepared in production mode at startup).
+2. Everything else, including `/admin` and `/admin/**`, goes to the Next.js
+   handler (`web/apps/storefront/.next`, prepared in production mode at
+   startup). The admin portal lives in the storefront app under `/admin`;
+   staff tokens are kept in httpOnly cookies scoped to `/admin`, and the
+   admin chrome is English-only.
 
 If either build output is missing, startup fails naming the missing path. With
 `WEB_ENABLED=false` (the default) nothing is mounted and the API behaves as
@@ -146,17 +146,16 @@ API's port):
 ```bash
 npm run start:dev                               # API, http://localhost:3000
 npm run dev -w @barakah/storefront -- -p 3001   # storefront, http://localhost:3001
-npm run dev -w @barakah/admin -- --port 3002    # admin, http://localhost:3002/admin/
+npm run dev -w @barakah/storefront -- -p 3001   # storefront and /admin, http://localhost:3001/admin/
 ```
 
-The admin dev server proxies `/api` to `http://localhost:3000`. The storefront
-dev server has no proxy; its server-side fetches use `WEB_INTERNAL_API_BASE_URL`,
+The storefront dev server (which also serves `/admin`) has no proxy; its server-side fetches use `WEB_INTERNAL_API_BASE_URL`,
 which defaults to the API on `127.0.0.1:${PORT}`.
 
 To run the real one-process build locally (the same thing the image does):
 
 ```bash
-npm run build:all                      # API to dist/, then the storefront and admin builds
+npm run build:all                      # API to dist/, then the storefront build
 WEB_ENABLED=true npm run start:prod    # http://localhost:3000/ , /admin/ , /api/v1/health
 ```
 
@@ -206,7 +205,7 @@ fails with every problem at once, so a bad deploy is diagnosed in one pass.
 | `LOG_LEVEL`                     | no                          | pino level; `silent` in tests                                                                                                                                                                                                                         |
 | `CORS_ALLOWED_ORIGINS`          | **in staging & production** | Comma-separated. Empty = no cross-origin browser call allowed                                                                                                                                                                                         |
 | `SWAGGER_ENABLED`               | no                          | Rejected in production                                                                                                                                                                                                                                |
-| `WEB_ENABLED`                   | no                          | Default `false`. `true` mounts the storefront and admin SPA; startup fails if either build is missing. The Docker image sets it                                                                                                                       |
+| `WEB_ENABLED`                   | no                          | Default `false`. `true` mounts the storefront (incl. `/admin`); startup fails if its build is missing. The Docker image sets it                                                                                                                       |
 | `WEB_INTERNAL_API_BASE_URL`     | no                          | URL the storefront's server-side fetches use to reach this API. Default `http://127.0.0.1:${PORT}/${API_PREFIX}/${API_VERSION}`                                                                                                                       |
 | `DATABASE_URL`                  | **in staging & production** | Used by the running app. Direct connection (5432) suits a long-lived container                                                                                                                                                                        |
 | `DIRECT_URL`                    | for migrations              | Direct/session-mode connection. DDL over the Supavisor pooler is unreliable                                                                                                                                                                           |
@@ -292,7 +291,7 @@ stops. See [Deployment](#deployment).
 | `npm run web:lint`                  | ESLint over `web/` with `web/eslint.config.mjs`             |
 | `npm run web:typecheck`             | `tsc -p web/tsconfig.json --noEmit`                         |
 | `npm run web:test`                  | Vitest across the web workspaces                            |
-| `npm run web:build`                 | Build the storefront (`.next`), then the admin (`dist`)     |
+| `npm run web:build`                 | Build the storefront (`.next`)                              |
 | `npm run build:all`                 | `build`, then `web:build`                                   |
 | `bash scripts/smoke-web.sh <image>` | Smoke-test a built image (needs Docker); CI runs it         |
 
@@ -342,8 +341,7 @@ test/
   degraded-boot.e2e-spec.ts  proves a fresh clone runs
   support/                   shared mocks and fixtures
 web/                         npm workspaces (apps and shared packages), own ESLint/tsconfig
-  apps/storefront/           Next.js (App Router), mounted into Nest at runtime
-  apps/admin/                React + Vite SPA, built to static files Nest serves at /admin
+  apps/storefront/           Next.js (App Router) incl. the /admin portal, mounted into Nest at runtime
   packages/config|tokens|ui/ shared configuration, brand tokens, UI primitives
 scripts/smoke-web.sh         container smoke test used by CI
 scripts/prune-runtime-modules.sh  image build step: drops the Prisma CLI tree prune keeps
@@ -644,7 +642,7 @@ Three things to know before an incident:
 ## Deployment
 
 Supabase hosts Postgres, Storage and Realtime. Everything else — the API, the
-SSR storefront and the admin SPA — is **one container image**, built from the
+SSR storefront and the admin portal — is **one container image**, built from the
 root `Dockerfile` (stages: deps, build, runtime). The runtime stage carries
 production dependencies only, `dist/`, `prisma/` and the two web builds, runs as
 the non-root `nestjs` user on port 3000, sets `WEB_ENABLED=true`, and health-checks
@@ -667,7 +665,7 @@ origin for public URLs, CORS and `SUPABASE_URL`); none of them are secrets.
 It also asserts `/api/v1/payments/methods` is public and offers cash on delivery
 alone under the default noop payment gateway. CI
 runs it once per mode. It asserts `/api/v1/health` is 200 and reports the
-requested environment, `/` is HTML from Next, `/admin/` is HTML from the SPA, an
+requested environment, `/` is HTML from Next, `/admin/sign-in` is HTML from Next, an
 unknown `/api/v1` path is a JSON 404, and `/api/v1/auth/me` without a token is a
 JSON 401. `/api/docs` is the Swagger page in staging and a JSON 404 in
 production. With
