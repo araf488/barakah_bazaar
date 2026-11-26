@@ -17,6 +17,7 @@ import {
   AdminReviewListDto,
   CreateReviewDto,
   ModerateReviewDto,
+  MyReviewsDto,
   ReviewDto,
   ReviewListDto,
   ReviewQueryDto,
@@ -111,6 +112,37 @@ export class ReviewService {
         { err: error, productId },
         'Exception occurred in ReviewService.listForProduct',
       );
+      return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
+    }
+  }
+
+  /**
+   * The caller's side of reviewing: delivered products still waiting for a review, and the
+   * reviews they have written in every status. Both reads run together; either failing is a 503,
+   * since half the page would claim the other half is empty.
+   */
+  async listMine(user: AuthenticatedUser): Promise<ServiceResponse<MyReviewsDto>> {
+    try {
+      const owner = await this.authService.resolveActiveUserId(user);
+      if (!owner.ok) {
+        return owner;
+      }
+
+      const [lines, own] = await Promise.all([
+        this.repository.findAwaitingLines(owner.data, ReviewConstants.AwaitingLineScanLimit),
+        this.repository.findByUser(owner.data, ReviewConstants.MineReviewLimit),
+      ]);
+
+      if (lines === null || own === null) {
+        return serviceFail(HttpStatus.SERVICE_UNAVAILABLE, ReviewMessages.ListUnavailable);
+      }
+
+      return serviceOk({
+        awaiting: ReviewMapper.toAwaitingList(lines),
+        reviews: own.map((row) => ReviewMapper.toMineDto(row)),
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in ReviewService.listMine');
       return serviceFail(HttpStatus.INTERNAL_SERVER_ERROR, ErrorMessages.UnexpectedError);
     }
   }

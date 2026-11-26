@@ -308,7 +308,10 @@
     "ordersLink": "See my orders",
     "security": "Sign-in and security",
     "securityHint": "Change your password and see which devices are signed in.",
-    "securityLink": "Manage security"
+    "securityLink": "Manage security",
+    "reviews": "Reviews",
+    "reviewsHint": "Review the products from your delivered orders, and see the reviews you have written.",
+    "reviewsLink": "My reviews"
   },
   "security": {
     "title": "Sign-in and security",
@@ -567,7 +570,8 @@
         "FAILED": "Payment did not go through"
       },
       "note": "Your note",
-      "reason": "Reason"
+      "reason": "Reason",
+      "reviewItems": "Review these products"
     },
     "cancel": {
       "open": "Cancel this order",
@@ -643,6 +647,84 @@
       "seeOrder": "See your order",
       "allOrders": "See my orders",
       "noOrder": "We could not tell which order this payment was for. Your orders page shows where each one stands."
+    }
+  },
+  "reviews": {
+    "title": "Customer reviews",
+    "count": "{count, plural, =0 {No reviews} one {# review} other {# reviews}}",
+    "intro": "Every review comes from a delivered Barakah Bazaar order and is read by our team before it appears.",
+    "average": "Average rating",
+    "rated": "Rated {rating} out of 5",
+    "verified": "Verified purchase",
+    "empty": "No written reviews yet.",
+    "emptyHint": "Customers who received this product can review it from their account.",
+    "loadError": "Reviews could not be loaded just now.",
+    "retry": "Try again",
+    "more": "Show more reviews",
+    "shown": "Showing {shown} of {total}",
+    "seeAll": "Read the reviews"
+  },
+  "myReviews": {
+    "title": "My reviews",
+    "intro": "Tell other shoppers how the products from your delivered orders turned out.",
+    "back": "Back to account",
+    "sent": "Thank you. Your review will appear on the product page once our team has read it.",
+    "loadError": "Your reviews could not be loaded just now.",
+    "retry": "Try again",
+    "loading": "Loading your reviews…",
+    "empty": "Nothing to review yet. Products from your delivered orders appear here.",
+    "awaiting": {
+      "title": "Waiting for your review",
+      "count": "{count, plural, one {# product} other {# products}}",
+      "delivered": "Delivered {date}",
+      "order": "Order <num>{number}</num>",
+      "write": "Write a review",
+      "writeNamed": "Write a review of {product}"
+    },
+    "mine": {
+      "title": "Your reviews",
+      "writtenOn": "Written {date}",
+      "status": {
+        "PENDING": "Being checked",
+        "PUBLISHED": "Published",
+        "REJECTED": "Not published"
+      },
+      "statusHint": {
+        "PENDING": "Our team reads every review before it appears on the product page.",
+        "PUBLISHED": "Shown on the product page.",
+        "REJECTED": "This review was not added to the product page."
+      },
+      "view": "View product"
+    },
+    "form": {
+      "rating": "Your rating",
+      "star": "{count, plural, one {# star} other {# stars}}",
+      "ratingWords": {
+        "1": "Poor",
+        "2": "Fair",
+        "3": "Good",
+        "4": "Very good",
+        "5": "Excellent"
+      },
+      "chosen": "{rating} out of 5: {word}",
+      "titleLabel": "Headline (optional)",
+      "bodyLabel": "Your review (optional)",
+      "bodyHint": "Quality, freshness, packing: what would help someone deciding whether to buy it?",
+      "characters": "{used} of {max} characters",
+      "submit": "Send review",
+      "pending": "Sending…",
+      "errors": {
+        "ratingMissing": "Choose a rating from 1 to 5 stars.",
+        "titleLong": "Keep the headline to 120 characters.",
+        "bodyLong": "Keep the review to 2,000 characters.",
+        "notReceived": "This item cannot be reviewed from your account.",
+        "notDelivered": "You can review this once it has been delivered.",
+        "alreadyReviewed": "You have already reviewed this item.",
+        "invalid": "Something in the review is not right. Please check it and try again.",
+        "signedOut": "Your session has ended. Sign in again to send your review.",
+        "tooMany": "Too many attempts. Please wait a minute and try again.",
+        "failed": "We could not send your review just now. Please try again in a moment."
+      }
     }
   }
 }

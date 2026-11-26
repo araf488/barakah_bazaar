@@ -12,6 +12,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { AuthenticatedUser } from '../../common/types/authenticated-user';
 import { unwrapOrThrow } from '../../common/types/service-response';
@@ -23,6 +24,7 @@ import {
   AdminReviewListDto,
   CreateReviewDto,
   ModerateReviewDto,
+  MyReviewsDto,
   ReviewDto,
   ReviewListDto,
   ReviewQueryDto,
@@ -31,9 +33,10 @@ import {
 /**
  * Customer-facing reviews.
  *
- * Reading published reviews needs no role. Writing one needs a delivered order line the caller
- * owns, which the service proves — there is no product id in the create payload at all, so a
- * review cannot be aimed at a product the customer never bought.
+ * Reading published reviews needs no session at all: a guest deciding what to buy reads them
+ * on the product page. Writing one needs a delivered order line the caller owns, which the
+ * service proves — there is no product id in the create payload at all, so a review cannot be
+ * aimed at a product the customer never bought.
  */
 @ApiTags('Reviews')
 @ApiBearerAuth()
@@ -44,6 +47,7 @@ export class ReviewController {
     @InjectPinoLogger(ReviewController.name) private readonly logger: PinoLogger,
   ) {}
 
+  @Public()
   @Get('product/:productId')
   @ApiOperation({ summary: 'Published reviews for a product, newest first' })
   @ApiResponse({ status: HttpStatus.OK, type: ReviewListDto })
@@ -58,6 +62,18 @@ export class ReviewController {
         { err: error, productId },
         'Exception occurred in ReviewController.listForProduct',
       );
+      throw error;
+    }
+  }
+
+  @Get('mine')
+  @ApiOperation({ summary: 'My reviews, and delivered products still waiting for one' })
+  @ApiResponse({ status: HttpStatus.OK, type: MyReviewsDto })
+  async listMine(@CurrentUser() user: AuthenticatedUser): Promise<MyReviewsDto> {
+    try {
+      return unwrapOrThrow(await this.reviews.listMine(user));
+    } catch (error) {
+      this.logger.error({ err: error }, 'Exception occurred in ReviewController.listMine');
       throw error;
     }
   }

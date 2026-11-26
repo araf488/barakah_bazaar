@@ -12,6 +12,11 @@ import { ProductDescription } from '../../../../components/product/ProductDescri
 import { ProductGallery } from '../../../../components/product/ProductGallery';
 import { RatingSummary } from '../../../../components/product/RatingSummary';
 import { RelatedProducts } from '../../../../components/product/RelatedProducts';
+import {
+  ProductReviews,
+  REVIEWS_ANCHOR,
+  REVIEWS_PARAM,
+} from '../../../../components/reviews/ProductReviews';
 import type { StorefrontLocale } from '../../../../i18n/messages';
 import {
   fetchTopCategories,
@@ -19,6 +24,7 @@ import {
   getProductBySlug,
 } from '../../../../lib/api/catalog';
 import { pickDescription } from '../../../../lib/description';
+import { reviewsToShow } from '../../../../lib/reviews/rules';
 
 /** Prices and stock are live, so the page renders per request (its data is cached per minute). */
 export const dynamic = 'force-dynamic';
@@ -28,6 +34,7 @@ const META_DESCRIPTION_LENGTH = 160;
 
 interface ProductPageProps {
   params: Promise<{ locale: string; slug: string }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }
 
 export async function generateMetadata({ params }: ProductPageProps): Promise<Metadata> {
@@ -47,10 +54,12 @@ export async function generateMetadata({ params }: ProductPageProps): Promise<Me
 
 /**
  * Product detail: breadcrumb, gallery, name and rating, size and price, how it travels, the
- * description, and more from the same category. An unknown or unpublished slug is a 404.
+ * description, the published reviews, and more from the same category. An unknown or
+ * unpublished slug is a 404.
  */
-export default async function ProductPage({ params }: ProductPageProps) {
+export default async function ProductPage({ params, searchParams }: ProductPageProps) {
   const { locale, slug } = await params;
+  const shownReviews = reviewsToShow((await searchParams)?.[REVIEWS_PARAM]);
   setRequestLocale(locale as StorefrontLocale);
   const [result, categories, t] = await Promise.all([
     getProductBySlug(slug),
@@ -91,13 +100,19 @@ export default async function ProductPage({ params }: ProductPageProps) {
             <h1 className="mb-3 font-display text-3xl leading-tight font-semibold text-ink sm:text-4xl">
               <LocalizedName entity={product} locale={locale as StorefrontLocale} />
             </h1>
-            <RatingSummary rating={product.rating} />
+            <RatingSummary rating={product.rating} href={`#${REVIEWS_ANCHOR}`} />
           </div>
           <BuyBox slug={product.slug} variants={product.variants} />
           <HandlingCard handling={product.handling} />
           <ProductDescription product={product} />
         </div>
       </div>
+      <ProductReviews
+        productId={product.id}
+        slug={product.slug}
+        rating={product.rating}
+        shown={shownReviews}
+      />
       <Suspense fallback={null}>
         <RelatedProducts
           slug={product.slug}

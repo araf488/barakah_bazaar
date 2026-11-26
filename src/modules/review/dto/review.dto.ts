@@ -106,3 +106,40 @@ export class AdminReviewListDto {
   @ApiProperty() page!: number;
   @ApiProperty() pageSize!: number;
 }
+
+/** A delivered line the caller has not reviewed yet, with what a list needs to show it. */
+export class AwaitingReviewDto {
+  @ApiProperty({ format: 'uuid', description: 'Send this as `orderItemId` to review it.' })
+  orderItemId!: string;
+  @ApiProperty({ format: 'uuid' }) productId!: string;
+  @ApiProperty() productSlug!: string;
+  @ApiProperty() productNameEn!: string;
+  @ApiProperty() productNameBn!: string;
+  @ApiProperty() variantNameEn!: string;
+  @ApiPropertyOptional({ nullable: true }) imageUrl!: string | null;
+  @ApiProperty({ example: 'BB-20260830-000042' }) orderNumber!: string;
+  @ApiPropertyOptional({ nullable: true, type: String, format: 'date-time' })
+  deliveredAt!: string | null;
+}
+
+/**
+ * One of the caller's own reviews. Its author may see the status, so a review still waiting
+ * for moderation is not mistaken for a lost one; the moderation note stays with staff.
+ */
+export class MyReviewDto extends ReviewDto {
+  @ApiProperty({ enum: ReviewStatus }) status!: ReviewStatus;
+  @ApiProperty() productSlug!: string;
+  @ApiProperty() productNameEn!: string;
+  @ApiProperty() productNameBn!: string;
+  @ApiPropertyOptional({ nullable: true }) imageUrl!: string | null;
+}
+
+export class MyReviewsDto {
+  @ApiProperty({
+    type: [AwaitingReviewDto],
+    description:
+      'One line per product, newest delivery first; products already reviewed are left out.',
+  })
+  awaiting!: AwaitingReviewDto[];
+  @ApiProperty({ type: [MyReviewDto] }) reviews!: MyReviewDto[];
+}

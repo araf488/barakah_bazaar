@@ -46,6 +46,22 @@ const review = (overrides = {}) => ({
   ...overrides,
 });
 
+const card = (id: string, slug: string, url: string | null = null) => ({
+  id,
+  slug,
+  nameEn: `${slug} en`,
+  nameBn: `${slug} bn`,
+  images: url ? [{ url }] : [],
+});
+
+const awaitingLine = (id: string, productId: string, overrides = {}) => ({
+  id,
+  variantNameEn: '1 kg',
+  order: { orderNumber: `BB-${id}`, deliveredAt: new Date('2026-11-20T08:00:00.000Z') },
+  variant: { product: card(productId, `slug-${productId}`, `https://img/${productId}.webp`) },
+  ...overrides,
+});
+
 describe('ReviewService', () => {
   let repository: {
     findReviewableLine: jest.Mock;
@@ -54,6 +70,8 @@ describe('ReviewService', () => {
     moderateAndRecount: jest.Mock;
     findPublishedForProduct: jest.Mock;
     findForModeration: jest.Mock;
+    findAwaitingLines: jest.Mock;
+    findByUser: jest.Mock;
   };
   let authService: { resolveActiveUserId: jest.Mock };
   let logger: jest.Mocked<PinoLogger>;
@@ -67,6 +85,8 @@ describe('ReviewService', () => {
       moderateAndRecount: jest.fn().mockResolvedValue(review({ status: ReviewStatus.PUBLISHED })),
       findPublishedForProduct: jest.fn(),
       findForModeration: jest.fn(),
+      findAwaitingLines: jest.fn().mockResolvedValue([]),
+      findByUser: jest.fn().mockResolvedValue([]),
     };
     authService = {
       resolveActiveUserId: jest.fn().mockResolvedValue({ ok: true, data: 'user-1' }),
@@ -286,6 +306,115 @@ describe('ReviewService', () => {
       const result = await service.listForModeration({});
 
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe('listMine', () => {
+    it('resolves the caller and reads both lists with their limits', async () => {
+      await service.listMine(customer);
+
+      expect(authService.resolveActiveUserId).toHaveBeenCalledWith(customer);
+      expect(repository.findAwaitingLines).toHaveBeenCalledWith('user-1', 100);
+      expect(repository.findByUser).toHaveBeenCalledWith('user-1', 50);
+    });
+
+    it('shows one awaiting line per product, the newest delivery', async () => {
+      repository.findAwaitingLines.mockResolvedValue([
+        awaitingLine('line-new', 'prod-1'),
+        awaitingLine('line-old', 'prod-1'),
+        awaitingLine('line-2', 'prod-2', {
+          order: { orderNumber: 'BB-2', deliveredAt: null },
+        }),
+      ]);
+
+      const result = await service.listMine(customer);
+
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          awaiting: [
+            {
+              orderItemId: 'line-new',
+              productId: 'prod-1',
+              productSlug: 'slug-prod-1',
+              productNameEn: 'slug-prod-1 en',
+              productNameBn: 'slug-prod-1 bn',
+              variantNameEn: '1 kg',
+              imageUrl: 'https://img/prod-1.webp',
+              orderNumber: 'BB-line-new',
+              deliveredAt: '2026-11-20T08:00:00.000Z',
+            },
+            expect.objectContaining({ orderItemId: 'line-2', deliveredAt: null }),
+          ],
+          reviews: [],
+        },
+      });
+    });
+
+    it("shows the author their review's status and product, but never the moderation note", async () => {
+      repository.findByUser.mockResolvedValue([
+        {
+          ...review({ status: ReviewStatus.REJECTED, moderationNote: 'internal only' }),
+          product: card('prod-1', 'ajwa-dates'),
+        },
+      ]);
+
+      const result = await service.listMine(customer);
+
+      expect(result.ok && result.data.reviews).toEqual([
+        {
+          id: 'rev-1',
+          productId: 'prod-1',
+          rating: 5,
+          title: 'Excellent',
+          body: 'Fresh and well packed.',
+          isVerifiedPurchase: true,
+          createdAt: '2026-08-31T00:00:00.000Z',
+          status: ReviewStatus.REJECTED,
+          productSlug: 'ajwa-dates',
+          productNameEn: 'ajwa-dates en',
+          productNameBn: 'ajwa-dates bn',
+          imageUrl: null,
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toContain('internal only');
+      expect(JSON.stringify(result)).not.toContain('line-1');
+    });
+
+    it('passes through a caller who cannot be resolved, reading nothing', async () => {
+      authService.resolveActiveUserId.mockResolvedValue({
+        ok: false,
+        status: HttpStatus.UNAUTHORIZED,
+        message: 'Your session has ended.',
+      });
+
+      const result = await service.listMine(customer);
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.UNAUTHORIZED });
+      expect(repository.findAwaitingLines).not.toHaveBeenCalled();
+      expect(repository.findByUser).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the awaiting lines', 'findAwaitingLines'],
+      ['the own reviews', 'findByUser'],
+    ] as const)('reports 503 when %s cannot be read', async (_label, method) => {
+      repository[method].mockResolvedValue(null);
+
+      await expect(service.listMine(customer)).resolves.toEqual({
+        ok: false,
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'Could not load your reviews. Please try again.',
+      });
+    });
+
+    it('reports 500 and logs when something throws', async () => {
+      repository.findByUser.mockRejectedValue(new Error('boom'));
+
+      const result = await service.listMine(customer);
+
+      expect(result).toMatchObject({ ok: false, status: HttpStatus.INTERNAL_SERVER_ERROR });
+      expect(logger.error).toHaveBeenCalled();
     });
   });
 });

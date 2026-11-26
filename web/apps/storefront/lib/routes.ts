@@ -10,6 +10,7 @@ export const ROUTES = {
   account: '/account',
   orders: '/account/orders',
   security: '/account/security',
+  reviews: '/account/reviews',
   forgotPassword: '/forgot-password',
   resetPassword: '/reset-password',
   verifyEmail: '/verify-email',
@@ -27,6 +28,7 @@ export type LivePage =
   | 'account'
   | 'orders'
   | 'security'
+  | 'reviews'
   | 'checkout';
 
 /**
@@ -43,6 +45,7 @@ export const LIVE_PAGES: Record<LivePage, boolean> = {
   account: true,
   orders: true,
   security: true,
+  reviews: true,
   checkout: true,
 };
 

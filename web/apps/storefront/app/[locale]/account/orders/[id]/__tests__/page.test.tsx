@@ -132,4 +132,18 @@ describe('order page', () => {
     panel = (await render()).find((el) => el.type === BkashPayPanel);
     expect(panel?.props.awaiting).toBe(false);
   });
+
+  it('leads a delivered order to reviewing its products', async () => {
+    vi.mocked(getOrder).mockResolvedValue(order({ status: 'DELIVERED' }));
+
+    const link = (await render()).find((el) => el.props.href === '/account/reviews');
+
+    expect(link?.props.children).toBe('t:detail.reviewItems');
+  });
+
+  it('offers no review before the order is delivered', async () => {
+    vi.mocked(getOrder).mockResolvedValue(order({ status: 'DISPATCHED' }));
+
+    expect((await render()).some((el) => el.props.href === '/account/reviews')).toBe(false);
+  });
 });

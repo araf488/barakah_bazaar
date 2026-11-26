@@ -15,7 +15,7 @@ import type { Order } from '../../../../../lib/checkout/api';
 import { getOrder } from '../../../../../lib/checkout/getOrder';
 import { formatOrderDate } from '../../../../../lib/orders/format';
 import { awaitsBkashPayment } from '../../../../../lib/payments/rules';
-import { orderPath, ROUTES } from '../../../../../lib/routes';
+import { LIVE_PAGES, orderPath, ROUTES } from '../../../../../lib/routes';
 
 export const dynamic = 'force-dynamic';
 
@@ -140,6 +140,14 @@ export default async function OrderPage({ params }: Props) {
             <div className="mt-3 border-t border-border pt-3">
               <OrderTotals order={order} />
             </div>
+            {order.status === 'DELIVERED' && LIVE_PAGES.reviews ? (
+              <Link
+                href={ROUTES.reviews}
+                className="mt-4 inline-flex min-h-11 items-center rounded-xl border border-border bg-white px-4 text-sm font-semibold text-ink transition hover:border-brand hover:text-brand active:scale-[0.98]"
+              >
+                {t('detail.reviewItems')}
+              </Link>
+            ) : null}
           </section>
           <DeliveryCard order={order} />
           <PaymentCard order={order} />

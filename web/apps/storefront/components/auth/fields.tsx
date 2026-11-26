@@ -90,18 +90,30 @@ export function PasswordField(props: Omit<InputProps, 'type' | 'trailing'>) {
   );
 }
 
-/** The form's primary action; disabled with a progress label while its action runs. */
-export function SubmitButton({ label, pending }: { label: string; pending: string }) {
+/**
+ * The form's primary action; disabled with a progress label while its action runs. A form that
+ * dispatches from `onSubmit` (to skip React's reset) has no form status, so it passes `busy`.
+ */
+export function SubmitButton({
+  label,
+  pending,
+  busy = false,
+}: {
+  label: string;
+  pending: string;
+  busy?: boolean;
+}) {
   const status = useFormStatus();
+  const running = status.pending || busy;
 
   return (
     <button
       type="submit"
-      disabled={status.pending}
-      aria-disabled={status.pending}
+      disabled={running}
+      aria-disabled={running}
       className="flex min-h-12 w-full items-center justify-center rounded-2xl bg-brand px-6 font-semibold text-white shadow-lg shadow-brand/20 transition hover:bg-brand-light active:scale-[0.98] disabled:opacity-70"
     >
-      {status.pending ? pending : label}
+      {running ? pending : label}
     </button>
   );
 }

@@ -23,8 +23,8 @@ export async function generateMetadata({ params }: Props) {
 }
 
 /**
- * The signed-in customer's page: profile, ways into their orders and their sign-in security, and
- * the address book. A visitor who is not signed in is sent to sign in and brought back.
+ * The signed-in customer's page: profile, ways into their orders, their reviews and their sign-in
+ * security, and the address book. A visitor who is not signed in is sent to sign in and brought back.
  */
 export default async function AccountPage({ params }: Props) {
   const { locale } = await params;
@@ -112,6 +112,25 @@ export default async function AccountPage({ params }: Props) {
             className="inline-flex min-h-11 items-center rounded-xl border border-border bg-white px-5 text-sm font-semibold text-ink transition hover:border-brand hover:text-brand active:scale-[0.98]"
           >
             {t('account.securityLink')}
+          </Link>
+        </section>
+      ) : null}
+      {LIVE_PAGES.reviews ? (
+        <section
+          aria-labelledby="reviews-title"
+          className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border bg-white p-5"
+        >
+          <div>
+            <h2 id="reviews-title" className="font-display text-xl font-semibold text-ink">
+              {t('account.reviews')}
+            </h2>
+            <p className="mt-1 text-sm text-subtle">{t('account.reviewsHint')}</p>
+          </div>
+          <Link
+            href={ROUTES.reviews}
+            className="inline-flex min-h-11 items-center rounded-xl border border-border bg-white px-5 text-sm font-semibold text-ink transition hover:border-brand hover:text-brand active:scale-[0.98]"
+          >
+            {t('account.reviewsLink')}
           </Link>
         </section>
       ) : null}

@@ -25,6 +25,20 @@ Three refusals, and two of them answer identically on purpose: a line belonging 
 returns the same 404 as a line that does not exist, so the endpoint cannot be used to probe
 other customers' orders.
 
+## Routes
+
+| Route                                         | Who                    | What                                                        |
+| --------------------------------------------- | ---------------------- | ----------------------------------------------------------- |
+| `GET /reviews/product/:productId`             | anyone (`@Public`)     | published reviews, newest first, paged                      |
+| `GET /reviews/mine`                           | the customer           | delivered products still awaiting a review, and own reviews |
+| `POST /reviews`                               | the customer           | review a delivered line                                     |
+| `GET /admin/reviews`, `…/publish`, `…/reject` | SUPER_ADMIN, MARKETING | the moderation queue                                        |
+
+`GET /reviews/mine` folds the awaiting lines to **one per product** (the newest delivery) and
+leaves out a product the customer already reviewed through any line: buying the same dates
+twice should not ask for a second opinion. Own reviews carry their `status`, so a review waiting
+for moderation is not mistaken for a lost one; the moderation note still never leaves staff.
+
 ## Nothing is public until a human reads it
 
 Reviews are created `PENDING`. For a halal grocery an unmoderated claim about a product's

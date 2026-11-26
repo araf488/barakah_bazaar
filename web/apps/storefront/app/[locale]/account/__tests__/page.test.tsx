@@ -93,4 +93,14 @@ describe('account page', () => {
     const link = tree.find((el) => el.props.href === '/account/security');
     expect(link?.props.children).toBe('t:account.securityLink');
   });
+
+  it('leads to the customer’s reviews', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(USER);
+    vi.mocked(getAddressBook).mockResolvedValue({ ok: true, addresses: [] });
+
+    const tree = elementsOf(await AccountPage(params));
+
+    const link = tree.find((el) => el.props.href === '/account/reviews');
+    expect(link?.props.children).toBe('t:account.reviewsLink');
+  });
 });

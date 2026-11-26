@@ -29,6 +29,8 @@ const { ProductGallery } = await import('../../../../../components/product/Produ
 const { BuyBox } = await import('../../../../../components/product/BuyBox');
 const { HandlingCard } = await import('../../../../../components/product/HandlingCard');
 const { RelatedProducts } = await import('../../../../../components/product/RelatedProducts');
+const { RatingSummary } = await import('../../../../../components/product/RatingSummary');
+const { ProductReviews } = await import('../../../../../components/reviews/ProductReviews');
 
 type AnyElement = ReactElement<{ children?: ReactNode; [prop: string]: unknown }>;
 
@@ -43,8 +45,9 @@ const elementsOf = (node: ReactNode): AnyElement[] => {
   return [element, ...elementsOf(element.props.children)];
 };
 
-const params = (locale = 'en', slug = 'ajwa-dates') => ({
+const params = (locale = 'en', slug = 'ajwa-dates', query: Record<string, string> = {}) => ({
   params: Promise.resolve({ locale, slug }),
+  searchParams: Promise.resolve(query),
 });
 const PRODUCT = productDetail();
 const TREE = [category()];
@@ -64,6 +67,24 @@ describe('product page', () => {
     expect(of(BuyBox)?.props.variants).toBe(PRODUCT.variants);
     expect(of(HandlingCard)?.props.handling).toBe(PRODUCT.handling);
     expect(of(RelatedProducts)?.props).toMatchObject({ slug: 'ajwa-dates', categorySlug: 'dates' });
+  });
+
+  it('lists the published reviews below the product, and links the rating to them', async () => {
+    const tree = elementsOf(await ProductPage(params()));
+
+    expect(tree.find((el) => el.type === ProductReviews)?.props).toEqual({
+      productId: PRODUCT.id,
+      slug: 'ajwa-dates',
+      rating: PRODUCT.rating,
+      shown: 6,
+    });
+    expect(tree.find((el) => el.type === RatingSummary)?.props.href).toBe('#reviews');
+  });
+
+  it('shows six more reviews for each "show more" step in the address', async () => {
+    const tree = elementsOf(await ProductPage(params('en', 'ajwa-dates', { reviews: '3' })));
+
+    expect(tree.find((el) => el.type === ProductReviews)?.props.shown).toBe(18);
   });
 
   it('names the gallery in the reader’s language', async () => {

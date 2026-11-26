@@ -17,6 +17,34 @@ export type ReviewableLine = Prisma.OrderItemGetPayload<{
   };
 }>;
 
+/** What a list needs to show a product: names, the slug to link to and its first image. */
+const productCardSelect = {
+  id: true,
+  slug: true,
+  nameEn: true,
+  nameBn: true,
+  images: {
+    orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
+    take: 1,
+    select: { url: true },
+  },
+} satisfies Prisma.ProductSelect;
+
+const awaitingLineSelect = {
+  id: true,
+  variantNameEn: true,
+  order: { select: { orderNumber: true, deliveredAt: true } },
+  variant: { select: { product: { select: productCardSelect } } },
+} satisfies Prisma.OrderItemSelect;
+
+/** A delivered, unreviewed line with the product it is for. */
+export type AwaitingLine = Prisma.OrderItemGetPayload<{ select: typeof awaitingLineSelect }>;
+
+/** One of a customer's own reviews with the product it is about. */
+export type OwnReview = Prisma.ReviewGetPayload<{
+  include: { product: { select: typeof productCardSelect } };
+}>;
+
 export interface CreateReviewData {
   productId: string;
   orderItemId: string;
@@ -159,6 +187,52 @@ export class ReviewRepository {
     take: number,
   ): Promise<ReviewPage | null> {
     return this.page({ productId, status: ReviewStatus.PUBLISHED }, skip, take);
+  }
+
+  /**
+   * The caller's delivered lines that could still be reviewed, newest delivery first.
+   *
+   * A product the caller has already reviewed, through any line, is left out: buying the same
+   * dates twice should not ask for a second opinion of them. Inactive products are left out
+   * too, since their reviews would have nowhere to appear.
+   */
+  async findAwaitingLines(userId: string, take: number): Promise<AwaitingLine[] | null> {
+    try {
+      return await this.prisma.orderItem.findMany({
+        where: {
+          order: { userId, status: ReviewRepository.reviewableOrderStatus },
+          review: { is: null },
+          variant: { product: { isActive: true, reviews: { none: { userId } } } },
+        },
+        orderBy: [{ order: { deliveredAt: 'desc' } }, { id: 'asc' }],
+        take,
+        select: awaitingLineSelect,
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId },
+        'Exception occurred in ReviewRepository.findAwaitingLines',
+      );
+      return null;
+    }
+  }
+
+  /** The caller's own reviews in every status, newest first. */
+  async findByUser(userId: string, take: number): Promise<OwnReview[] | null> {
+    try {
+      return await this.prisma.review.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take,
+        include: { product: { select: productCardSelect } },
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error, userId },
+        'Exception occurred in ReviewRepository.findByUser',
+      );
+      return null;
+    }
   }
 
   /** The moderation queue, or any status a staff member asks for. */

@@ -25,6 +25,7 @@ describe('ReviewController', () => {
   let reviews: {
     create: jest.Mock;
     listForProduct: jest.Mock;
+    listMine: jest.Mock;
     listForModeration: jest.Mock;
     publish: jest.Mock;
     reject: jest.Mock;
@@ -37,6 +38,7 @@ describe('ReviewController', () => {
     reviews = {
       create: jest.fn(),
       listForProduct: jest.fn(),
+      listMine: jest.fn(),
       listForModeration: jest.fn(),
       publish: jest.fn(),
       reject: jest.fn(),
@@ -49,6 +51,24 @@ describe('ReviewController', () => {
   describe('authorization', () => {
     it('leaves reading and writing reviews open to any signed-in customer', () => {
       expect(new Reflector().get(MetadataKeys.Roles, ReviewController)).toBeUndefined();
+    });
+
+    it('lets a guest read published reviews, which the product page shows before sign-in', () => {
+      const reflector = new Reflector();
+      expect(reflector.get(MetadataKeys.IsPublic, ReviewController.prototype.listForProduct)).toBe(
+        true,
+      );
+    });
+
+    it("keeps writing and the caller's own reviews behind a session", () => {
+      const reflector = new Reflector();
+      expect(reflector.get(MetadataKeys.IsPublic, ReviewController)).toBeUndefined();
+      expect(
+        reflector.get(MetadataKeys.IsPublic, ReviewController.prototype.create),
+      ).toBeUndefined();
+      expect(
+        reflector.get(MetadataKeys.IsPublic, ReviewController.prototype.listMine),
+      ).toBeUndefined();
     });
 
     it('restricts moderation to super admins and marketing', () => {
@@ -87,6 +107,25 @@ describe('ReviewController', () => {
     reviews.listForProduct.mockResolvedValue({ ok: true, data: page });
 
     await expect(controller.listForProduct('prod-1', {})).resolves.toEqual(page);
+  });
+
+  it("returns the caller's reviews and awaiting lines", async () => {
+    const mine = { awaiting: [], reviews: [] };
+    reviews.listMine.mockResolvedValue({ ok: true, data: mine });
+
+    await expect(controller.listMine(customer)).resolves.toEqual(mine);
+    expect(reviews.listMine).toHaveBeenCalledWith(customer);
+  });
+
+  it('turns an unreadable list into an HTTP error and logs it', async () => {
+    reviews.listMine.mockResolvedValue({
+      ok: false,
+      status: HttpStatus.SERVICE_UNAVAILABLE,
+      message: 'Could not load your reviews. Please try again.',
+    });
+
+    await expect(controller.listMine(customer)).rejects.toThrow(HttpException);
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it('publishes by id, with the actor', async () => {

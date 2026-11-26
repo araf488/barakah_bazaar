@@ -1,5 +1,5 @@
 import { PinoLogger } from 'nestjs-pino';
-import { ReviewStatus } from '../../infra/prisma/prisma-client';
+import { OrderStatus, ReviewStatus } from '../../infra/prisma/prisma-client';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { createMockLogger } from '../../../test/support/mocks';
 import { ReviewRepository } from './review.repository';
@@ -12,7 +12,7 @@ describe('ReviewRepository', () => {
   let prisma: {
     $transaction: jest.Mock;
     review: { create: jest.Mock; findUnique: jest.Mock; findMany: jest.Mock; count: jest.Mock };
-    orderItem: { findUnique: jest.Mock };
+    orderItem: { findUnique: jest.Mock; findMany: jest.Mock };
   };
   let logger: jest.Mocked<PinoLogger>;
   let repository: ReviewRepository;
@@ -38,7 +38,7 @@ describe('ReviewRepository', () => {
         findMany: jest.fn(),
         count: jest.fn(),
       },
-      orderItem: { findUnique: jest.fn() },
+      orderItem: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
     };
     logger = createMockLogger();
     repository = new ReviewRepository(prisma as unknown as PrismaService, logger);
@@ -189,6 +189,67 @@ describe('ReviewRepository', () => {
       prisma.$transaction.mockRejectedValue(new Error('connection reset'));
 
       await expect(repository.findPublishedForProduct('prod-1', 0, 20)).resolves.toBeNull();
+    });
+  });
+
+  describe('findAwaitingLines', () => {
+    it("reads only the caller's delivered, unreviewed lines for products they have not reviewed", async () => {
+      await repository.findAwaitingLines('user-1', 100);
+
+      const args = prisma.orderItem.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({
+        order: { userId: 'user-1', status: OrderStatus.DELIVERED },
+        review: { is: null },
+        variant: { product: { isActive: true, reviews: { none: { userId: 'user-1' } } } },
+      });
+      expect(args.take).toBe(100);
+    });
+
+    it('reads the newest delivery first, so folding to one line per product keeps the latest', async () => {
+      await repository.findAwaitingLines('user-1', 100);
+
+      expect(prisma.orderItem.findMany.mock.calls[0][0].orderBy).toEqual([
+        { order: { deliveredAt: 'desc' } },
+        { id: 'asc' },
+      ]);
+    });
+
+    it('fetches only the primary image, not the whole gallery', async () => {
+      await repository.findAwaitingLines('user-1', 100);
+
+      const product = prisma.orderItem.findMany.mock.calls[0][0].select.variant.select.product;
+      expect(product.select.images).toEqual({
+        orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }],
+        take: 1,
+        select: { url: true },
+      });
+    });
+
+    it('returns null and logs with the user id when the read fails', async () => {
+      prisma.orderItem.findMany.mockRejectedValue(new Error('connection reset'));
+
+      await expect(repository.findAwaitingLines('user-1', 100)).resolves.toBeNull();
+      expect(logger.error.mock.calls[0][0]).toMatchObject({ userId: 'user-1' });
+    });
+  });
+
+  describe('findByUser', () => {
+    it("reads the caller's reviews in every status, newest first, with their products", async () => {
+      prisma.review.findMany.mockResolvedValue([]);
+
+      await repository.findByUser('user-1', 50);
+
+      const args = prisma.review.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({ userId: 'user-1' });
+      expect(args.orderBy).toEqual({ createdAt: 'desc' });
+      expect(args.take).toBe(50);
+      expect(args.include.product.select).toMatchObject({ slug: true, nameEn: true, nameBn: true });
+    });
+
+    it('returns null when the read fails', async () => {
+      prisma.review.findMany.mockRejectedValue(new Error('connection reset'));
+
+      await expect(repository.findByUser('user-1', 50)).resolves.toBeNull();
     });
   });
 });
